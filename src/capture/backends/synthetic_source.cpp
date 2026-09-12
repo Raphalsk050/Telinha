@@ -307,6 +307,7 @@ Outcome SyntheticSource::acquire(CapturedFrame& out, std::uint32_t timeout_ms) n
     out.metadata.cursor_changed =
         options_.include_cursor && cursor_.shape_changed_since_last_frame();
     out.metadata.full_surface_dirty = dirty_.full_surface();
+    out.metadata.dirty_metadata_available = true;
 
     out.dirty_rects = dirty_.dirty_rects();
     out.move_rects = dirty_.move_rects();

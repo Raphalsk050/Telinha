@@ -22,4 +22,13 @@ const char* to_string(AudioCaptureScope scope) noexcept
     return "Unrecognized";
 }
 
+const char* to_string(ProcessLoopbackMode mode) noexcept
+{
+    switch (mode) {
+        case ProcessLoopbackMode::IncludeProcessTree: return "IncludeProcessTree";
+        case ProcessLoopbackMode::ExcludeProcessTree: return "ExcludeProcessTree";
+    }
+    return "Unrecognized";
+}
+
 }  // namespace tl::audio

@@ -245,16 +245,15 @@ Outcome SenderSession::open_audio()
 
 Outcome SenderSession::open_transport()
 {
-    transport::IceServer servers[kMaxIceServers];
     for (std::uint32_t index = 0; index < options_.network.ice_server_count; ++index) {
-        servers[index] = to_ice_server(options_.network.ice_servers[index]);
+        ice_servers_[index] = to_ice_server(options_.network.ice_servers[index]);
     }
 
     transport::TransportConfig config;
     config.role = transport::TransportRole::Sender;
     config.candidate_policy = options_.network.candidate_policy;
     config.ice_servers =
-        Span<const transport::IceServer>(servers, options_.network.ice_server_count);
+        Span<const transport::IceServer>(ice_servers_, options_.network.ice_server_count);
     config.local_port_min = options_.network.local_port_min;
     config.local_port_max = options_.network.local_port_max;
     config.start_bitrate_bps = options_.network.start_bitrate_bps;

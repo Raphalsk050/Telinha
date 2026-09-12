@@ -65,6 +65,7 @@ private:
     void report(Nanoseconds local_now_ns);
 
     SenderOptions options_;
+    transport::IceServer ice_servers_[kMaxIceServers] = {};
     capture::CapturePipeline pipeline_;
     std::unique_ptr<encode::VideoEncoder> encoder_;
     std::unique_ptr<audio::AudioSource> audio_source_;

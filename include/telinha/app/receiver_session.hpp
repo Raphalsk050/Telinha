@@ -63,6 +63,7 @@ private:
     void ask_for_keyframe(const char* reason) noexcept;
 
     ReceiverOptions options_;
+    transport::IceServer ice_servers_[kMaxIceServers] = {};
     std::unique_ptr<transport::MediaTransport> transport_;
     std::unique_ptr<receive::VideoRenderer> renderer_;
     std::unique_ptr<receive::AudioRenderer> audio_renderer_;

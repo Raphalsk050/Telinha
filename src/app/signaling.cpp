@@ -4,10 +4,48 @@
 #include <cstring>
 #include <new>
 
+#include "telinha/app/clipboard.hpp"
 #include "telinha/core/log.hpp"
 
 namespace tl::app {
 namespace {
+
+constexpr char kTokenPrefix[] = "VExT";
+constexpr std::size_t kTokenPrefixLength = sizeof(kTokenPrefix) - 1;
+constexpr int kClipboardAttempts = 3;
+
+bool looks_like_token(const char* text, std::size_t length) noexcept
+{
+    return length > kTokenPrefixLength && std::memcmp(text, kTokenPrefix, kTokenPrefixLength) == 0;
+}
+
+std::size_t strip_edges(char* text, std::size_t length) noexcept
+{
+    std::size_t begin = 0;
+    while (begin < length && (text[begin] == ' ' || text[begin] == '\n' || text[begin] == '\r' ||
+                              text[begin] == '\t')) {
+        ++begin;
+    }
+    std::size_t end = length;
+    while (end > begin && (text[end - 1] == ' ' || text[end - 1] == '\n' || text[end - 1] == '\r' ||
+                           text[end - 1] == '\t')) {
+        --end;
+    }
+    const std::size_t useful = end - begin;
+    if (begin != 0) {
+        std::memmove(text, text + begin, useful);
+    }
+    text[useful] = '\0';
+    return useful;
+}
+
+void wait_for_enter() noexcept
+{
+    int character = std::getchar();
+    while (character != '\n' && character != EOF) {
+        character = std::getchar();
+    }
+}
 
 std::size_t trimmed_length(Span<const char> text) noexcept
 {
@@ -151,6 +189,20 @@ Outcome publish_token(const SignalingOptions& options, const char* label, const 
         return ok();
     }
 
+    if (options.use_clipboard && clipboard_available()) {
+        const Outcome copied = clipboard_write(Span<const char>(token, length));
+        if (copied.ok()) {
+            std::printf(
+                "\n%s copiado para a area de transferencia.\n"
+                "Cole agora na conversa com a outra pessoa e tecle enter aqui.\n",
+                label);
+            std::fflush(stdout);
+            return ok();
+        }
+        TL_LOG_WARN("sinalizacao: nao consegui usar a area de transferencia (%s)",
+                    to_string(copied.status()));
+    }
+
     std::printf("\n===== %s =====\n%.*s\n===== fim =====\n\n", label, static_cast<int>(length),
                 token);
     std::fflush(stdout);
@@ -176,6 +228,36 @@ Outcome consume_token(const SignalingOptions& options, const char* label, char* 
             out[--length] = '\0';
         }
         return length == 0 ? fail(Status::Empty, "consume_token: vazio") : ok();
+    }
+
+    if (options.use_clipboard && clipboard_available()) {
+        for (int attempt = 0; attempt < kClipboardAttempts; ++attempt) {
+            std::printf(
+                "\nCopie o %s que a outra pessoa te mandou, com ctrl c, e tecle enter "
+                "aqui.\n",
+                label);
+            std::fflush(stdout);
+            wait_for_enter();
+
+            const Outcome pasted = clipboard_read(out, capacity, length);
+            if (pasted.ok()) {
+                length = strip_edges(out, length);
+                if (looks_like_token(out, length)) {
+                    std::printf("Recebido.\n");
+                    std::fflush(stdout);
+                    return ok();
+                }
+                std::printf(
+                    "O que esta copiado nao parece um codigo do telinha. Copie o texto "
+                    "inteiro que a outra pessoa mandou.\n");
+            } else {
+                std::printf("Nao achei texto na area de transferencia.\n");
+            }
+            std::fflush(stdout);
+        }
+        std::printf("Vamos pelo terminal entao.\n");
+        std::fflush(stdout);
+        length = 0;
     }
 
     std::printf("Cole aqui o %s e tecle enter duas vezes:\n", label);

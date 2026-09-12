@@ -1,7 +1,9 @@
 set(TELINHA_APP_SOURCES
     app_options.cpp
+    clipboard.cpp
     receiver_session.cpp
-    signaling.cpp)
+    signaling.cpp
+    wizard.cpp)
 
 set(TELINHA_APP_HAS_SENDER 0)
 if(TARGET Telinha::Encode AND TARGET Telinha::Audio)
@@ -26,6 +28,10 @@ target_link_libraries(telinha_app PUBLIC
 
 if(TELINHA_APP_HAS_SENDER)
     target_link_libraries(telinha_app PUBLIC Telinha::Encode Telinha::Audio)
+endif()
+
+if(WIN32)
+    target_link_libraries(telinha_app PRIVATE user32)
 endif()
 
 telinha_apply_target_defaults(telinha_app)

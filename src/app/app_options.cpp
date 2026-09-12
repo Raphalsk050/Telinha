@@ -59,6 +59,7 @@ const char* to_string(AppMode mode) noexcept
     switch (mode) {
         case AppMode::None: return "None";
         case AppMode::Usage: return "Usage";
+        case AppMode::Wizard: return "Wizard";
         case AppMode::List: return "List";
         case AppMode::Probe: return "Probe";
         case AppMode::Send: return "Send";
@@ -82,6 +83,7 @@ void print_usage() noexcept
     std::printf(
         "telinha - compartilhamento de tela ponto a ponto\n"
         "\n"
+        "  telinha                 modo guiado, pergunta tudo na tela\n"
         "  telinha list [monitores|janelas]\n"
         "  telinha probe\n"
         "  telinha send [opcoes]\n"
@@ -138,7 +140,7 @@ Outcome parse_command_line(int argc, const char* const* argv, AppOptions& out, c
     apply_defaults(out);
 
     if (argc < 2) {
-        out.mode = AppMode::Usage;
+        out.mode = AppMode::Wizard;
         return ok();
     }
 
@@ -152,6 +154,9 @@ Outcome parse_command_line(int argc, const char* const* argv, AppOptions& out, c
         out.mode = AppMode::Send;
     } else if (equals(command, "recv") || equals(command, "receive")) {
         out.mode = AppMode::Receive;
+    } else if (equals(command, "assistente") || equals(command, "wizard")) {
+        out.mode = AppMode::Wizard;
+        return ok();
     } else if (equals(command, "--help") || equals(command, "-h") || equals(command, "help")) {
         out.mode = AppMode::Usage;
         return ok();

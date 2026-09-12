@@ -15,6 +15,7 @@ namespace tl::app {
 enum class AppMode : std::uint8_t {
     None = 0,
     Usage,
+    Wizard,
     List,
     Probe,
     Send,
@@ -62,6 +63,7 @@ struct NetworkOptions {
 struct SignalingOptions {
     char in_path[kPathCapacity] = {};
     char out_path[kPathCapacity] = {};
+    bool use_clipboard = false;
 };
 
 struct SenderOptions {

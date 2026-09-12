@@ -3,6 +3,7 @@
 
 #include "telinha/app/app_options.hpp"
 #include "telinha/app/receiver_session.hpp"
+#include "telinha/app/wizard.hpp"
 #include "telinha/capture/capture_source.hpp"
 #include "telinha/core/log.hpp"
 #include "telinha/receive/backends.hpp"
@@ -26,6 +27,14 @@ extern "C" void handle_interrupt(int) noexcept
 {
     g_interrupted = 1;
 }
+
+#if TL_PLATFORM_WINDOWS
+bool launched_from_explorer() noexcept
+{
+    DWORD owners[4] = {};
+    return GetConsoleProcessList(owners, 4) == 1;
+}
+#endif
 
 const char* availability(bool available) noexcept
 {
@@ -181,8 +190,9 @@ int main(int argc, char** argv)
 
     int status = 0;
     switch (options.mode) {
-        case tl::app::AppMode::Usage:
-        case tl::app::AppMode::None: tl::app::print_usage(); break;
+        case tl::app::AppMode::Usage: tl::app::print_usage(); break;
+        case tl::app::AppMode::None:
+        case tl::app::AppMode::Wizard: status = tl::app::run_wizard(options); break;
         case tl::app::AppMode::List: status = run_list(options); break;
         case tl::app::AppMode::Probe: status = run_probe(); break;
         case tl::app::AppMode::Receive: status = run_receive(options); break;
@@ -202,6 +212,14 @@ int main(int argc, char** argv)
 
 #if TL_PLATFORM_WINDOWS
     timeEndPeriod(1);
+    if (launched_from_explorer()) {
+        std::printf("\nTecle enter para fechar.\n");
+        std::fflush(stdout);
+        int character = std::getchar();
+        while (character != '\n' && character != EOF) {
+            character = std::getchar();
+        }
+    }
 #endif
     return status;
 }

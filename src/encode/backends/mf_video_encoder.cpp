@@ -2,19 +2,20 @@
 
 #if TL_PLATFORM_WINDOWS
 
+#include "mf_platform.hpp"
+
 #include <codecapi.h>
 #include <d3d11_4.h>
 #include <dxgi.h>
-#include <icodecapi.h>
 #include <mferror.h>
 #include <mftransform.h>
+#include <strmif.h>
 
 #include <cstddef>
 #include <cstring>
 #include <new>
 
 #include "d3d_frame_converter.hpp"
-#include "mf_platform.hpp"
 #include "telinha/core/arena.hpp"
 #include "telinha/core/log.hpp"
 

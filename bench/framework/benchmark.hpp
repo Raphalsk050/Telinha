@@ -78,16 +78,18 @@ template<typename Fn>
 
 inline void print(const BenchmarkResult& result)
 {
-    const double per_item =
-        result.items_per_iteration == 0
-            ? 0.0
-            : result.report.mean_ns / static_cast<double>(result.items_per_iteration);
+    const double items =
+        result.items_per_iteration == 0 ? 1.0 : static_cast<double>(result.items_per_iteration);
 
-    std::printf("%-44s n=%-9llu p50 %9.1f ns  p99 %9.1f ns  1%%low %9.1f ns  mean/item %8.2f ns\n",
-                result.name, static_cast<unsigned long long>(result.iterations),
-                static_cast<double>(result.report.p50_ns),
-                static_cast<double>(result.report.p99_ns), result.report.low_one_percent_ns,
-                per_item);
+    std::printf(
+        "%-40s n=%-8llu  p50 %8.2f  p99 %8.2f  p99.9 %8.2f  1%%low %8.2f  max %8.2f  "
+        "(ns per item)\n",
+        result.name, static_cast<unsigned long long>(result.iterations),
+        static_cast<double>(result.report.p50_ns) / items,
+        static_cast<double>(result.report.p99_ns) / items,
+        static_cast<double>(result.report.p999_ns) / items,
+        result.report.low_one_percent_ns / items,
+        static_cast<double>(result.report.max_ns) / items);
 }
 
 }  // namespace tl::bench

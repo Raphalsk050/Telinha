@@ -123,6 +123,9 @@ Outcome CapturePipeline::capture_next(ClassifiedFrame& out, std::uint32_t timeou
     tiles_.clear();
     if (frame.metadata.full_surface_dirty) {
         ++stats_.frames_full_dirty;
+        if (frame.dirty_rects.count() == 0) {
+            ++stats_.frames_without_dirty_metadata;
+        }
         tiles_.mark_all();
     } else {
         tiles_.mark(frame.dirty_rects);

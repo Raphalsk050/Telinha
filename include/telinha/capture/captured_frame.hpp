@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "telinha/capture/capture_target.hpp"
 #include "telinha/capture/pixel_format.hpp"
 #include "telinha/core/clock.hpp"
 #include "telinha/core/config.hpp"
@@ -24,6 +25,7 @@ struct FrameSurface {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     PixelFormat format = PixelFormat::Unknown;
+    SurfaceRotation rotation = SurfaceRotation::None;
 
     [[nodiscard]] bool valid() const noexcept { return memory != SurfaceMemory::None; }
 };

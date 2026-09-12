@@ -35,7 +35,10 @@ struct CaptureSourceInfo {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     PixelFormat format = PixelFormat::Unknown;
+    SurfaceRotation rotation = SurfaceRotation::None;
     std::uint32_t refresh_millihertz = 0;
+    std::uint32_t process_id = 0;
+    void* native_device = nullptr;
 };
 
 class CaptureSource {
@@ -51,6 +54,14 @@ public:
     [[nodiscard]] virtual Outcome acquire(CapturedFrame& out, std::uint32_t timeout_ms) = 0;
 
     virtual void release() noexcept = 0;
+
+    [[nodiscard]] virtual Outcome map_for_readback(FrameSurface& out) noexcept
+    {
+        out = FrameSurface{};
+        return fail(Status::NotSupported, "CaptureSource::map_for_readback");
+    }
+
+    virtual void unmap_readback() noexcept {}
 
     [[nodiscard]] virtual CaptureSourceInfo info() const noexcept = 0;
 

@@ -5,6 +5,7 @@
 #include <memory>
 #include <new>
 #include <type_traits>
+#include <utility>
 
 #include "telinha/core/config.hpp"
 #include "telinha/core/span.hpp"
@@ -132,10 +133,15 @@ public:
     ArenaStorage& operator=(const ArenaStorage&) = delete;
 
     ArenaStorage(ArenaStorage&& other) noexcept
-        : block_(other.block_), capacity_(other.capacity_), arena_(other.block_, other.capacity_)
+        : block_(other.block_),
+          capacity_(other.capacity_),
+          alignment_(other.alignment_),
+          arena_(std::move(other.arena_))
     {
         other.block_ = nullptr;
         other.capacity_ = 0;
+        other.alignment_ = kCacheLineSize;
+        other.arena_ = LinearArena();
     }
 
     ArenaStorage& operator=(ArenaStorage&& other) noexcept
@@ -144,9 +150,12 @@ public:
             release();
             block_ = other.block_;
             capacity_ = other.capacity_;
-            arena_ = LinearArena(block_, capacity_);
+            alignment_ = other.alignment_;
+            arena_ = std::move(other.arena_);
             other.block_ = nullptr;
             other.capacity_ = 0;
+            other.alignment_ = kCacheLineSize;
+            other.arena_ = LinearArena();
         }
         return *this;
     }
@@ -184,6 +193,7 @@ private:
             block_ = nullptr;
         }
         capacity_ = 0;
+        alignment_ = kCacheLineSize;
         arena_ = LinearArena();
     }
 

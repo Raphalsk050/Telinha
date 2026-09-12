@@ -41,7 +41,7 @@ public:
 
         capacity_ = capacity;
         for (std::uint32_t i = 0; i < capacity; ++i) {
-            generations_[i] = 1;
+            generations_[i] = 0;
             next_free_[i] = i + 1;
         }
         next_free_[capacity - 1] = kInvalidIndex;
@@ -58,7 +58,7 @@ public:
         }
         const std::uint32_t index = free_head_;
         free_head_ = next_free_[index];
-        next_free_[index] = kInvalidIndex;
+        ++generations_[index];
         ::new (static_cast<void*>(&slots_[index])) T(std::forward<Args>(args)...);
         ++live_count_;
         return handle_type{index, generations_[index]};
@@ -70,7 +70,7 @@ public:
             return false;
         }
         const std::uint32_t index = handle.index;
-        generations_[index] = generations_[index] + 1 == 0 ? 1 : generations_[index] + 1;
+        ++generations_[index];
         next_free_[index] = free_head_;
         free_head_ = index;
         --live_count_;
@@ -79,8 +79,8 @@ public:
 
     [[nodiscard]] bool alive(handle_type handle) const noexcept
     {
-        return handle.index < capacity_ && generations_[handle.index] == handle.generation &&
-               next_free_[handle.index] == kInvalidIndex;
+        return handle.index < capacity_ && (handle.generation & 1u) != 0 &&
+               generations_[handle.index] == handle.generation;
     }
 
     [[nodiscard]] T* get(handle_type handle) noexcept

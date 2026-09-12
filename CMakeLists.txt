@@ -31,10 +31,6 @@ include(cmake/TelinhaCompilerOptions.cmake)
 add_subdirectory(src/core)
 add_subdirectory(src/capture)
 
-if(TELINHA_BUILD_TOOLS)
-    add_subdirectory(tools)
-endif()
-
 if(TELINHA_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
@@ -42,4 +38,8 @@ endif()
 
 if(TELINHA_BUILD_BENCHMARKS)
     add_subdirectory(bench)
+endif()
+
+if(TELINHA_BUILD_TOOLS)
+    add_subdirectory(tools)
 endif()

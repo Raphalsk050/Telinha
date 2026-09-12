@@ -60,8 +60,8 @@ public:
 
     [[nodiscard]] std::size_t size_approx() const noexcept
     {
-        const std::size_t tail = tail_.value.load(std::memory_order_acquire);
         const std::size_t head = head_.value.load(std::memory_order_acquire);
+        const std::size_t tail = tail_.value.load(std::memory_order_acquire);
         return tail - head;
     }
 

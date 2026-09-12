@@ -23,8 +23,14 @@ option(TELINHA_BUILD_TOOLS "Build the command line tools" ON)
 option(TELINHA_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 option(TELINHA_ENABLE_LTO "Enable link time optimization in optimized builds" ON)
 option(TELINHA_ENABLE_WGC "Build the Windows Graphics Capture backend" ON)
+option(TELINHA_ENABLE_WEBRTC "Build the libwebrtc transport backend" ${WIN32})
 set(TELINHA_SANITIZER "none" CACHE STRING "One of none, address, undefined, thread")
 set_property(CACHE TELINHA_SANITIZER PROPERTY STRINGS none address undefined thread)
+
+if(MSVC AND TELINHA_ENABLE_WEBRTC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded" CACHE STRING
+        "The pinned libwebrtc links the static release CRT, so the whole tree must match" FORCE)
+endif()
 
 include(cmake/TelinhaCompilerOptions.cmake)
 

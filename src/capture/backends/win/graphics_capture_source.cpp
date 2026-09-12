@@ -412,6 +412,7 @@ private:
         out.metadata.content_changed = true;
         out.metadata.cursor_changed = false;
         out.metadata.full_surface_dirty = true;
+        out.metadata.dirty_metadata_available = false;
 
         out.dirty_rects = dirty_.dirty_rects();
         out.move_rects = dirty_.move_rects();

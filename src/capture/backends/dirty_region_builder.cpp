@@ -194,9 +194,7 @@ void DirtyRegionBuilder::finish() noexcept
     if (full_surface_) {
         ++statistics_.full_surface_frames;
         move_count_ = 0;
-        if (!metadata_absent_) {
-            (void)emitted_.push(surface_rect());
-        }
+        (void)emitted_.push(surface_rect());
         statistics_.emitted_rects += emitted_.count();
         statistics_.emitted_area += static_cast<std::uint64_t>(area);
         return;

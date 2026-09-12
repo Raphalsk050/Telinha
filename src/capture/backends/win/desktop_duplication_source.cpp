@@ -374,6 +374,7 @@ void DesktopDuplicationSource::publish(CapturedFrame& out, const DXGI_OUTDUPL_FR
     out.metadata.cursor_changed =
         cursor_.shape_changed_since_last_frame() || info.LastMouseUpdateTime.QuadPart != 0;
     out.metadata.full_surface_dirty = content_changed && dirty_.full_surface();
+    out.metadata.dirty_metadata_available = !content_changed || !dirty_.metadata_absent();
 
     if (content_changed) {
         out.dirty_rects = dirty_.dirty_rects();

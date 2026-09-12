@@ -30,6 +30,9 @@ include(cmake/TelinhaCompilerOptions.cmake)
 
 add_subdirectory(src/core)
 add_subdirectory(src/capture)
+add_subdirectory(src/audio)
+add_subdirectory(src/encode)
+add_subdirectory(src/transport)
 
 if(TELINHA_BUILD_TESTS)
     enable_testing()

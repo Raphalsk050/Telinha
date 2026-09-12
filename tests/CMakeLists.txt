@@ -6,7 +6,13 @@ telinha_apply_target_defaults(telinha_test_framework)
 
 function(telinha_add_test target)
     add_executable(${target} ${ARGN})
-    target_link_libraries(${target} PRIVATE Telinha::TestFramework Telinha::Core Telinha::Capture)
+    target_link_libraries(${target} PRIVATE
+        Telinha::TestFramework
+        Telinha::Core
+        Telinha::Capture
+        Telinha::Audio
+        Telinha::Encode
+        Telinha::Transport)
     telinha_apply_target_defaults(${target})
     add_test(NAME ${target} COMMAND ${target})
     set_tests_properties(${target} PROPERTIES TIMEOUT 300)

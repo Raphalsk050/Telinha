@@ -65,9 +65,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        preset: [msvc-debug, msvc-release]
+        preset: [msvc-debug, msvc-debug-webrtc, msvc-release]
     steps:
       - uses: actions/checkout@v4
+
+      - name: Cache the pinned libwebrtc package
+        uses: actions/cache@v4
+        with:
+          path: .deps
+          key: libwebrtc-${{ runner.os }}-${{ hashFiles('src/transport/cmake/TelinhaWebRTC.cmake') }}
 
       - name: Show toolchain
         shell: pwsh
@@ -89,6 +95,12 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Cache the pinned libwebrtc package
+        uses: actions/cache@v4
+        with:
+          path: .deps
+          key: libwebrtc-${{ runner.os }}-${{ hashFiles('src/transport/cmake/TelinhaWebRTC.cmake') }}
 
       - name: Configure
         run: cmake --preset msvc-release

@@ -31,3 +31,6 @@ compile_commands.json
 *.raw
 *.nv12
 *.bgra
+
+# Fetched dependency packages
+.deps/

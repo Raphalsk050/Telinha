@@ -13,7 +13,8 @@
       "cacheVariables": {
         "TELINHA_BUILD_TESTS": "ON",
         "TELINHA_BUILD_BENCHMARKS": "ON",
-        "TELINHA_WARNINGS_AS_ERRORS": "ON"
+        "TELINHA_WARNINGS_AS_ERRORS": "ON",
+        "FETCHCONTENT_BASE_DIR": "${sourceDir}/.deps"
       }
     },
     {
@@ -92,7 +93,22 @@
       "inherits": "base",
       "displayName": "MSVC x64 debug",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "TELINHA_ENABLE_WEBRTC": "OFF"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "msvc-debug-webrtc",
+      "inherits": "base",
+      "displayName": "MSVC x64 debug with the libwebrtc transport",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "TELINHA_ENABLE_WEBRTC": "ON"
       },
       "condition": {
         "type": "equals",
@@ -138,6 +154,11 @@
     {
       "name": "msvc-debug",
       "configurePreset": "msvc-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "msvc-debug-webrtc",
+      "configurePreset": "msvc-debug-webrtc",
       "configuration": "Debug"
     },
     {
@@ -187,6 +208,12 @@
       "name": "msvc-debug",
       "inherits": "common",
       "configurePreset": "msvc-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "msvc-debug-webrtc",
+      "inherits": "common",
+      "configurePreset": "msvc-debug-webrtc",
       "configuration": "Debug"
     },
     {

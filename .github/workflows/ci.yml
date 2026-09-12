@@ -69,6 +69,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Show toolchain
+        shell: pwsh
+        run: |
+          cmake --version
+          & "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -products * -all -format value -property displayName
+
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
 
@@ -77,39 +83,6 @@ jobs:
 
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
-
-  benchmarks:
-    name: benchmarks
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build
-
-      - name: Configure
-        run: cmake --preset linux-release
-
-      - name: Build
-        run: cmake --build --preset linux-release
-
-      - name: Run benchmarks
-        shell: bash
-        run: |
-          shopt -s nullglob
-          found=0
-          for binary in build/linux-release/bench/*/telinha_*bench*; do
-            if [ -x "$binary" ]; then
-              echo "== $binary"
-              "$binary"
-              found=1
-            fi
-          done
-          if [ "$found" = "0" ]; then
-            echo "no benchmark executables built yet"
-          fi
 
   format:
     name: format

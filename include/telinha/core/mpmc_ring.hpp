@@ -91,8 +91,8 @@ public:
 
     [[nodiscard]] std::size_t size_approx() const noexcept
     {
-        const std::size_t tail = enqueue_pos_.value.load(std::memory_order_acquire);
         const std::size_t head = dequeue_pos_.value.load(std::memory_order_acquire);
+        const std::size_t tail = enqueue_pos_.value.load(std::memory_order_acquire);
         return tail - head;
     }
 

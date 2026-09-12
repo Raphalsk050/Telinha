@@ -5,6 +5,15 @@
 #include "telinha/core/config.hpp"
 
 namespace tl::capture {
+enum class SurfaceRotation : std::uint8_t {
+    None = 0,
+    Clockwise90,
+    Clockwise180,
+    Clockwise270,
+};
+
+const char* to_string(SurfaceRotation rotation) noexcept;
+
 enum class CaptureTargetKind : std::uint8_t {
     None = 0,
     Monitor,
@@ -52,6 +61,7 @@ struct CaptureTargetInfo {
     std::uint32_t height = 0;
     std::uint32_t refresh_millihertz = 0;
     std::uint32_t process_id = 0;
+    SurfaceRotation rotation = SurfaceRotation::None;
     bool primary = false;
     char name[kTargetNameCapacity] = {};
 };

@@ -17,6 +17,7 @@ struct CaptureStats {
     std::uint64_t frames_dropped = 0;
     std::uint64_t frames_cursor_only = 0;
     std::uint64_t frames_full_dirty = 0;
+    std::uint64_t frames_without_dirty_metadata = 0;
     std::uint64_t frames_coalesced = 0;
     std::uint64_t device_lost_recoveries = 0;
 
@@ -35,6 +36,7 @@ struct CaptureStats {
         frames_dropped = 0;
         frames_cursor_only = 0;
         frames_full_dirty = 0;
+        frames_without_dirty_metadata = 0;
         frames_coalesced = 0;
         device_lost_recoveries = 0;
         dirty_rects_total = 0;
@@ -47,6 +49,13 @@ struct CaptureStats {
         return tiles_total == 0
                    ? 0.0
                    : static_cast<double>(dirty_tiles_total) / static_cast<double>(tiles_total);
+    }
+
+    [[nodiscard]] double dirty_metadata_coverage() const noexcept
+    {
+        return frames_acquired == 0 ? 0.0
+                                    : 1.0 - static_cast<double>(frames_without_dirty_metadata) /
+                                                static_cast<double>(frames_acquired);
     }
 
     [[nodiscard]] double coalesce_ratio() const noexcept

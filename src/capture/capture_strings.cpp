@@ -17,6 +17,17 @@ const char* to_string(PixelFormat format) noexcept
     return "Unrecognized";
 }
 
+const char* to_string(SurfaceRotation rotation) noexcept
+{
+    switch (rotation) {
+        case SurfaceRotation::None: return "None";
+        case SurfaceRotation::Clockwise90: return "Clockwise90";
+        case SurfaceRotation::Clockwise180: return "Clockwise180";
+        case SurfaceRotation::Clockwise270: return "Clockwise270";
+    }
+    return "Unrecognized";
+}
+
 const char* to_string(CaptureTargetKind kind) noexcept
 {
     switch (kind) {

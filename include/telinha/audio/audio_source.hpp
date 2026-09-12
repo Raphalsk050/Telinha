@@ -17,10 +17,17 @@ enum class AudioCaptureScope : std::uint8_t {
 
 const char* to_string(AudioCaptureScope scope) noexcept;
 
+enum class ProcessLoopbackMode : std::uint8_t {
+    IncludeProcessTree = 0,
+    ExcludeProcessTree,
+};
+
+const char* to_string(ProcessLoopbackMode mode) noexcept;
+
 struct AudioCaptureTarget {
     AudioCaptureScope scope = AudioCaptureScope::None;
     std::uint32_t process_id = 0;
-    bool include_process_tree = true;
+    ProcessLoopbackMode process_loopback_mode = ProcessLoopbackMode::IncludeProcessTree;
 
     [[nodiscard]] constexpr bool valid() const noexcept
     {
@@ -30,13 +37,22 @@ struct AudioCaptureTarget {
 
     [[nodiscard]] static constexpr AudioCaptureTarget system_loopback() noexcept
     {
-        return AudioCaptureTarget{AudioCaptureScope::SystemLoopback, 0, false};
+        return AudioCaptureTarget{AudioCaptureScope::SystemLoopback, 0,
+                                  ProcessLoopbackMode::IncludeProcessTree};
     }
 
     [[nodiscard]] static constexpr AudioCaptureTarget process_loopback(
-        std::uint32_t pid, bool include_tree = true) noexcept
+        std::uint32_t pid,
+        ProcessLoopbackMode mode = ProcessLoopbackMode::IncludeProcessTree) noexcept
     {
-        return AudioCaptureTarget{AudioCaptureScope::ProcessLoopback, pid, include_tree};
+        return AudioCaptureTarget{AudioCaptureScope::ProcessLoopback, pid, mode};
+    }
+
+    [[nodiscard]] static constexpr AudioCaptureTarget everything_except_process(
+        std::uint32_t pid) noexcept
+    {
+        return AudioCaptureTarget{AudioCaptureScope::ProcessLoopback, pid,
+                                  ProcessLoopbackMode::ExcludeProcessTree};
     }
 };
 

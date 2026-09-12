@@ -1,4 +1,3 @@
-#include <codecapi.h>
 #include <d3d11.h>
 #include <mfapi.h>
 #include <mferror.h>
@@ -390,14 +389,11 @@ private:
 
     Outcome configure_types()
     {
-        ComPtr<ICodecAPI> codec_api;
-        const HRESULT has_codec_api = transform_->QueryInterface(
-            IID_ICodecAPI, reinterpret_cast<void**>(codec_api.GetAddressOf()));
-        if (SUCCEEDED(has_codec_api) && config_.low_latency) {
-            VARIANT value = {};
-            value.vt = VT_BOOL;
-            value.boolVal = VARIANT_TRUE;
-            codec_api->SetValue(&CODECAPI_AVLowLatencyMode, &value);
+        if (config_.low_latency) {
+            ComPtr<IMFAttributes> attributes;
+            if (SUCCEEDED(transform_->GetAttributes(&attributes))) {
+                attributes->SetUINT32(MF_LOW_LATENCY, TRUE);
+            }
         }
 
         ComPtr<IMFMediaType> input_type;

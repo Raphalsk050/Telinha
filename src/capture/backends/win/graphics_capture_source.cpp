@@ -12,6 +12,7 @@
 #include "d3d11_capture_device.hpp"
 #include "target_enumeration.hpp"
 #include "telinha/core/arena.hpp"
+#include "telinha/core/clock.hpp"
 
 #if defined(_MSC_VER)
 #pragma warning(push)
@@ -346,7 +347,7 @@ private:
 
         const winrt::Windows::Graphics::SizeInt32 size = frame.ContentSize();
         const Nanoseconds present_ns =
-            static_cast<Nanoseconds>(frame.SystemRelativeTime().count()) * 100ull;
+            hundred_ns_to_ns(static_cast<std::uint64_t>(frame.SystemRelativeTime().count()));
 
         if (size.Width != content_size_.Width || size.Height != content_size_.Height) {
             frame.Close();

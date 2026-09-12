@@ -11,6 +11,7 @@
 
 #include "../audio_capture_stream.hpp"
 #include "telinha/audio/audio_source.hpp"
+#include "telinha/core/clock.hpp"
 #include "telinha/core/log.hpp"
 #include "wasapi_support.hpp"
 
@@ -426,7 +427,7 @@ Outcome WasapiAudioSource::finish_client_setup(bool event_driven) noexcept
     REFERENCE_TIME default_period = 0;
     REFERENCE_TIME minimum_period = 0;
     if (SUCCEEDED(client_->GetDevicePeriod(&default_period, &minimum_period))) {
-        device_period_ns_ = static_cast<Nanoseconds>(default_period) * 100ull;
+        device_period_ns_ = hundred_ns_to_ns(static_cast<std::uint64_t>(default_period));
     }
     if (device_period_ns_ == 0) {
         device_period_ns_ = 10 * kNanosecondsPerMillisecond;
@@ -549,7 +550,7 @@ void WasapiAudioSource::drain_packets(Nanoseconds& next_expected_ns, bool& produ
         const bool timestamp_valid = (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) == 0;
         const Nanoseconds capture_time_ns = now_ns();
         const Nanoseconds device_time_ns =
-            timestamp_valid ? qpc_position * 100ull : capture_time_ns;
+            timestamp_valid ? hundred_ns_to_ns(qpc_position) : capture_time_ns;
 
         if (frames != 0) {
             const std::byte* samples = silent ? nullptr : reinterpret_cast<const std::byte*>(data);

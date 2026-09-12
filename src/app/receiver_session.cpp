@@ -19,6 +19,12 @@ void sleep_ns(Nanoseconds duration) noexcept
     std::this_thread::sleep_for(std::chrono::nanoseconds(duration));
 }
 
+void say_step(const char* text) noexcept
+{
+    std::printf("  %s\n", text);
+    std::fflush(stdout);
+}
+
 transport::IceServer to_ice_server(const IceServerConfig& config) noexcept
 {
     transport::IceServer server;
@@ -38,6 +44,7 @@ Outcome ReceiverSession::initialize(const ReceiverOptions& options)
 {
     options_ = options;
 
+    say_step("reservando memoria");
     TL_TRY(video_queue_.reserve(options_.video_slot_bytes));
     TL_TRY(audio_queue_.reserve(options_.audio_slot_bytes));
     TL_TRY(jitter_.reserve(options_.jitter));
@@ -50,6 +57,7 @@ Outcome ReceiverSession::initialize(const ReceiverOptions& options)
         return fail(Status::OutOfMemory, "ReceiverSession::initialize");
     }
 
+    say_step("preparando a janela");
     Result<std::unique_ptr<receive::VideoRenderer>> renderer =
         receive::create_video_renderer(options_.renderer);
     if (!renderer.ok()) {
@@ -68,6 +76,8 @@ Outcome ReceiverSession::initialize(const ReceiverOptions& options)
             audio_renderer_ = std::move(audio).value();
         }
     }
+
+    say_step("preparando a rede");
 
     transport::IceServer servers[kMaxIceServers];
     for (std::uint32_t index = 0; index < options_.network.ice_server_count; ++index) {
@@ -94,6 +104,7 @@ Outcome ReceiverSession::initialize(const ReceiverOptions& options)
     }
     transport_ = std::move(media).value();
 
+    say_step("pronto");
     return ok();
 }
 

@@ -263,6 +263,9 @@ Outcome SenderSession::open_transport()
     config.enable_forward_error_correction = options_.network.enable_forward_error_correction;
     config.enable_retransmission = options_.network.enable_retransmission;
 
+    std::printf("  preparando a rede\n");
+    std::fflush(stdout);
+
     Result<std::unique_ptr<transport::MediaTransport>> created =
         transport::create_media_transport(config);
     if (!created.ok()) {

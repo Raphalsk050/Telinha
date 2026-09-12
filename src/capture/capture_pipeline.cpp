@@ -7,6 +7,11 @@ namespace {
 constexpr std::size_t kPipelineArenaBytes = 1u << 20;
 }
 
+std::uint32_t CapturePipeline::tile_span(std::uint32_t extent) const noexcept
+{
+    return (extent + options_.tile_size - 1) / options_.tile_size;
+}
+
 CapturePipeline::~CapturePipeline()
 {
     stop();
@@ -38,8 +43,8 @@ Outcome CapturePipeline::initialize(std::unique_ptr<CaptureSource> source,
                     "CapturePipeline::initialize: source reported an empty surface");
     }
 
-    if (!tiles_.initialize(storage_.arena(), source_info.width, source_info.height,
-                           options_.tile_size)) {
+    tiles_marker_ = storage_.arena().mark();
+    if (!rebuild_tiles(source_info.width, source_info.height).ok()) {
         source_.reset();
         return fail(Status::OutOfMemory, "CapturePipeline::initialize: tile map allocation failed");
     }
@@ -50,6 +55,41 @@ Outcome CapturePipeline::initialize(std::unique_ptr<CaptureSource> source,
     TL_LOG_INFO("capture pipeline ready: %ux%u, %u tiles, backend %s", source_info.width,
                 source_info.height, tiles_.tile_count(), to_string(source_info.backend));
     return ok();
+}
+
+Outcome CapturePipeline::rebuild_tiles(std::uint32_t width, std::uint32_t height)
+{
+    storage_.arena().release(tiles_marker_);
+    tiles_ = TileDirtyMap{};
+    if (!tiles_.initialize(storage_.arena(), width, height, options_.tile_size)) {
+        return fail(Status::OutOfMemory, "CapturePipeline::rebuild_tiles: allocation failed");
+    }
+    return ok();
+}
+
+Outcome CapturePipeline::apply_surface_extent(std::uint32_t width, std::uint32_t height)
+{
+    if (width == 0 || height == 0) {
+        return fail(Status::Unavailable, "CapturePipeline: source reported an empty surface");
+    }
+    if (tiles_.tiles_x() == tile_span(width) && tiles_.tiles_y() == tile_span(height)) {
+        return ok();
+    }
+
+    TL_TRY(rebuild_tiles(width, height));
+    ++stats_.surface_reconfigurations;
+    TL_LOG_INFO("capture surface reconfigured: %ux%u, %u tiles", width, height,
+                tiles_.tile_count());
+    return ok();
+}
+
+Outcome CapturePipeline::reconfigure()
+{
+    if (source_ == nullptr) {
+        return fail(Status::Unavailable, "CapturePipeline::reconfigure: not initialized");
+    }
+    const CaptureSourceInfo source_info = source_->info();
+    return apply_surface_extent(source_info.width, source_info.height);
 }
 
 Outcome CapturePipeline::start()
@@ -98,6 +138,12 @@ Outcome CapturePipeline::capture_next(ClassifiedFrame& out, std::uint32_t timeou
         if (acquired.status() == Status::Timeout) {
             ++stats_.frames_timed_out;
         }
+        if (acquired.status() == Status::ConfigurationChanged) {
+            const Outcome reconfigured = reconfigure();
+            if (!reconfigured.ok()) {
+                return reconfigured;
+            }
+        }
         return acquired;
     }
 
@@ -119,13 +165,16 @@ Outcome CapturePipeline::capture_next(ClassifiedFrame& out, std::uint32_t timeou
         ++stats_.frames_cursor_only;
     }
 
+    TL_TRY(apply_surface_extent(frame.surface.width, frame.surface.height));
+
+    if (!frame.metadata.dirty_metadata_available) {
+        ++stats_.frames_without_dirty_metadata;
+    }
+
     const Nanoseconds classify_begin = now_ns();
     tiles_.clear();
-    if (frame.metadata.full_surface_dirty) {
+    if (frame.metadata.full_surface_dirty || !frame.metadata.dirty_metadata_available) {
         ++stats_.frames_full_dirty;
-        if (frame.dirty_rects.count() == 0) {
-            ++stats_.frames_without_dirty_metadata;
-        }
         tiles_.mark_all();
     } else {
         tiles_.mark(frame.dirty_rects);

@@ -22,7 +22,8 @@ int format_capture_report(const CaptureStats& stats, Nanoseconds budget_ns, char
         "acquire  ms   p50 %.3f  p95 %.3f  p99 %.3f  p99.9 %.3f  1%% low %.3f  max %.3f\n"
         "classify ms   p50 %.3f  p99 %.3f  max %.3f\n"
         "interval ms   p50 %.3f  p99 %.3f  1%% low %.3f\n"
-        "tiles         dirty ratio %.4f  rects/frame %.2f\n"
+        "tiles         dirty ratio %.4f  rects/frame %.2f  metadata coverage %.4f\n"
+        "surface       reconfigurations %llu\n"
         "budget   ms   %.3f  acquire+classify p99 %.3f  %s\n",
         static_cast<unsigned long long>(stats.frames_acquired),
         static_cast<unsigned long long>(stats.frames_timed_out),
@@ -39,7 +40,9 @@ int format_capture_report(const CaptureStats& stats, Nanoseconds budget_ns, char
         stats.frames_acquired == 0 ? 0.0
                                    : static_cast<double>(stats.dirty_rects_total) /
                                          static_cast<double>(stats.frames_acquired),
-        ns_to_ms(budget_ns), ns_to_ms(acquire.p99_ns + classify.p99_ns),
+        stats.dirty_metadata_coverage(),
+        static_cast<unsigned long long>(stats.surface_reconfigurations), ns_to_ms(budget_ns),
+        ns_to_ms(acquire.p99_ns + classify.p99_ns),
         (acquire.p99_ns + classify.p99_ns) <= budget_ns ? "within budget" : "OVER BUDGET");
 }
 

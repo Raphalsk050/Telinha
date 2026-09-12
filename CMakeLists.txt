@@ -38,7 +38,7 @@ add_subdirectory(src/core)
 add_subdirectory(src/capture)
 add_subdirectory(src/transport)
 
-foreach(module audio encode receive app)
+foreach(module audio encode receive diag app)
     if(EXISTS "${PROJECT_SOURCE_DIR}/src/${module}/CMakeLists.txt")
         add_subdirectory(src/${module})
     endif()

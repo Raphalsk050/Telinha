@@ -5,6 +5,7 @@
 #include <codecapi.h>
 #include <d3d11_4.h>
 #include <dxgi.h>
+#include <icodecapi.h>
 #include <mferror.h>
 #include <mftransform.h>
 
@@ -871,10 +872,7 @@ Outcome MediaFoundationEncoder::submit(const capture::ClassifiedFrame& frame)
     (void)sample->SetSampleDuration(frame_duration_hns_);
 
     if (keyframe_pending_) {
-        (void)sample->SetUINT32(MFSampleExtension_ForceKeyFrame, TRUE);
         (void)set_codec_ui32(codec_api_.Get(), CODECAPI_AVEncVideoForceKeyFrame, 1);
-    } else {
-        (void)sample->DeleteItem(MFSampleExtension_ForceKeyFrame);
     }
 
     TL_TRY(process_input(sample));

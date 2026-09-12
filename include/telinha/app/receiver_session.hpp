@@ -77,6 +77,7 @@ private:
     std::unique_ptr<transport::SessionBlob> remote_blob_;
     ReceiverCounters counters_;
     std::uint64_t keyframe_requests_ = 0;
+    Nanoseconds last_keyframe_request_ns_ = 0;
     bool keyframe_requests_supported_ = true;
     bool keyframe_warned_ = false;
     std::uint64_t decode_submits_ = 0;

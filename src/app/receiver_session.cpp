@@ -19,6 +19,8 @@ void sleep_ns(Nanoseconds duration) noexcept
     std::this_thread::sleep_for(std::chrono::nanoseconds(duration));
 }
 
+constexpr Nanoseconds kKeyframeRequestGap = 500ull * kNanosecondsPerMillisecond;
+
 void say_step(const char* text) noexcept
 {
     std::printf("  %s\n", text);
@@ -278,6 +280,12 @@ void ReceiverSession::ask_for_keyframe(const char* reason) noexcept
     if (!keyframe_requests_supported_) {
         return;
     }
+
+    const Nanoseconds now = now_ns();
+    if (last_keyframe_request_ns_ != 0 && now - last_keyframe_request_ns_ < kKeyframeRequestGap) {
+        return;
+    }
+    last_keyframe_request_ns_ = now;
 
     const Outcome requested = transport_->request_keyframe();
     if (requested.ok()) {

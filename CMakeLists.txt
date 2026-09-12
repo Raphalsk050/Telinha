@@ -30,9 +30,13 @@ include(cmake/TelinhaCompilerOptions.cmake)
 
 add_subdirectory(src/core)
 add_subdirectory(src/capture)
-add_subdirectory(src/audio)
-add_subdirectory(src/encode)
 add_subdirectory(src/transport)
+
+foreach(module audio encode)
+    if(EXISTS "${PROJECT_SOURCE_DIR}/src/${module}/CMakeLists.txt")
+        add_subdirectory(src/${module})
+    endif()
+endforeach()
 
 if(TELINHA_BUILD_TESTS)
     enable_testing()

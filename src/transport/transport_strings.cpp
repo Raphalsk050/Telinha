@@ -25,6 +25,27 @@ const char* to_string(ConnectionState state) noexcept
     return "Unrecognized";
 }
 
+const char* to_string(WireVideoCodec codec) noexcept
+{
+    switch (codec) {
+        case WireVideoCodec::Unknown: return "Unknown";
+        case WireVideoCodec::H264: return "H264";
+        case WireVideoCodec::Vp8: return "Vp8";
+        case WireVideoCodec::Vp9: return "Vp9";
+        case WireVideoCodec::Av1: return "Av1";
+    }
+    return "Unrecognized";
+}
+
+const char* to_string(WireFrameKind kind) noexcept
+{
+    switch (kind) {
+        case WireFrameKind::Delta: return "Delta";
+        case WireFrameKind::Key: return "Key";
+    }
+    return "Unrecognized";
+}
+
 const char* to_string(CandidatePolicy policy) noexcept
 {
     switch (policy) {

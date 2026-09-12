@@ -10,8 +10,6 @@ function(telinha_add_test target)
         Telinha::TestFramework
         Telinha::Core
         Telinha::Capture
-        Telinha::Audio
-        Telinha::Encode
         Telinha::Transport)
     telinha_apply_target_defaults(${target})
     add_test(NAME ${target} COMMAND ${target})

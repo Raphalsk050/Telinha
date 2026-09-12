@@ -11,6 +11,8 @@ constexpr std::size_t kHeaderBytes = kSessionBlobHeaderBytes;
 static_assert(kHeaderBytes == sizeof(kMagic) + 1 + 1 + 2 + 4);
 constexpr std::size_t kChecksumBytes = 4;
 
+constexpr std::size_t kPrefixLength = sizeof(kSessionCodePrefix) - 1;
+
 constexpr char kAlphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 [[nodiscard]] std::uint8_t decode_symbol(char symbol) noexcept
@@ -135,7 +137,7 @@ Span<const char> SessionBlob::candidate(std::size_t index) const noexcept
 std::size_t SessionBlob::encoded_bounds() const noexcept
 {
     const std::size_t binary = binary_size(*this);
-    return (binary + 2) / 3 * 4;
+    return kPrefixLength + (binary + 2) / 3 * 4;
 }
 
 Result<std::size_t> encode_session_blob(const SessionBlob& blob, Span<char> out) noexcept
@@ -173,12 +175,13 @@ Result<std::size_t> encode_session_blob(const SessionBlob& blob, Span<char> out)
     write_u32(scratch + cursor, crc32(scratch, cursor));
     cursor += kChecksumBytes;
 
-    const std::size_t needed = (cursor + 2) / 3 * 4;
+    const std::size_t needed = kPrefixLength + (cursor + 2) / 3 * 4;
     if (out.size() < needed) {
         return Error{Status::OutOfRange, "encode_session_blob: the output buffer is too small"};
     }
 
-    std::size_t written = 0;
+    std::memcpy(out.data(), kSessionCodePrefix, kPrefixLength);
+    std::size_t written = kPrefixLength;
     for (std::size_t index = 0; index < cursor; index += 3) {
         const std::size_t remaining = cursor - index;
         const std::uint32_t triple =
@@ -203,11 +206,20 @@ Outcome decode_session_blob(Span<const char> text, SessionBlob& out) noexcept
 {
     std::uint8_t* const scratch = out.scratch_;
 
+    std::size_t start = 0;
+    while (start < text.size() && is_skippable(text[start])) {
+        ++start;
+    }
+    if (text.size() - start >= kPrefixLength &&
+        std::memcmp(text.data() + start, kSessionCodePrefix, kPrefixLength) == 0) {
+        start += kPrefixLength;
+    }
+
     std::size_t produced = 0;
     std::uint32_t accumulator = 0;
     int accumulated_bits = 0;
 
-    for (std::size_t index = 0; index < text.size(); ++index) {
+    for (std::size_t index = start; index < text.size(); ++index) {
         const char symbol = text[index];
         if (is_skippable(symbol)) {
             continue;

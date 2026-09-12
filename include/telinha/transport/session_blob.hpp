@@ -13,6 +13,7 @@ inline constexpr std::size_t kMaxSessionDescriptionBytes = 16u * 1024u;
 inline constexpr std::size_t kMaxSessionCandidates = 64;
 inline constexpr std::size_t kMaxSessionCandidateBytes = 448;
 inline constexpr std::size_t kSessionBlobHeaderBytes = 12;
+inline constexpr char kSessionCodePrefix[] = "TELINHA1.";
 inline constexpr std::size_t kSessionBlobScratchBytes =
     kSessionBlobHeaderBytes + kMaxSessionDescriptionBytes +
     kMaxSessionCandidates * (kMaxSessionCandidateBytes + 2) + 4;

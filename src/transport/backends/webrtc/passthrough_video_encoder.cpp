@@ -55,9 +55,9 @@ PassthroughVideoEncoder::PassthroughVideoEncoder(WireVideoCodec codec, EncoderFe
     : feedback_(&feedback), codec_(codec)
 {}
 
-void PassthroughVideoEncoder::SetFecControllerOverride(webrtc::FecControllerOverride* override)
+void PassthroughVideoEncoder::SetFecControllerOverride(webrtc::FecControllerOverride* controller)
 {
-    (void) override;
+    (void)controller;
 }
 
 int PassthroughVideoEncoder::InitEncode(const webrtc::VideoCodec* codec_settings,

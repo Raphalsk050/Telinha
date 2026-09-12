@@ -28,7 +28,7 @@ class PassthroughVideoEncoder final : public webrtc::VideoEncoder {
 public:
     PassthroughVideoEncoder(WireVideoCodec codec, EncoderFeedback& feedback);
 
-    void SetFecControllerOverride(webrtc::FecControllerOverride* override) override;
+    void SetFecControllerOverride(webrtc::FecControllerOverride* controller) override;
     int InitEncode(const webrtc::VideoCodec* codec_settings, const Settings& settings) override;
     int32_t RegisterEncodeCompleteCallback(webrtc::EncodedImageCallback* callback) override;
     int32_t Release() override;

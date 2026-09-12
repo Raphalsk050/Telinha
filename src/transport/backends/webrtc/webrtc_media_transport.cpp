@@ -295,10 +295,8 @@ Outcome WebrtcMediaTransport::build_peer_connection()
     configuration.rtcp_mux_policy =
         webrtc::PeerConnectionInterface::RtcpMuxPolicy::kRtcpMuxPolicyRequire;
     configuration.continual_gathering_policy =
-        webrtc::PeerConnectionInterface::ContinualGatheringPolicy::GATHER_CONTINUALLY;
-    configuration.type = config_.candidate_policy == CandidatePolicy::All
-                             ? webrtc::PeerConnectionInterface::IceTransportsType::kAll
-                             : webrtc::PeerConnectionInterface::IceTransportsType::kAll;
+        webrtc::PeerConnectionInterface::ContinualGatheringPolicy::GATHER_ONCE;
+    configuration.type = webrtc::PeerConnectionInterface::IceTransportsType::kAll;
 
     if (config_.candidate_policy != CandidatePolicy::HostOnly) {
         Span<const IceServer> servers = config_.ice_servers;

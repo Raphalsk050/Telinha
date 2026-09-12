@@ -7,7 +7,9 @@ if(WIN32)
     list(APPEND TELINHA_ENCODE_SOURCES
         backends/d3d_frame_converter.cpp
         backends/nvenc_library.cpp
-        backends/nvenc_encoder.cpp)
+        backends/nvenc_encoder.cpp
+        backends/mf_platform.cpp
+        backends/mf_video_encoder.cpp)
 endif()
 
 add_library(telinha_encode STATIC ${TELINHA_ENCODE_SOURCES})
@@ -29,7 +31,8 @@ if(WIN32)
     target_include_directories(telinha_encode PRIVATE
         ${PROJECT_SOURCE_DIR}/third_party/nv-codec-headers)
     target_compile_definitions(telinha_encode PRIVATE TELINHA_HAS_ENCODE_BACKENDS=1)
-    target_link_libraries(telinha_encode PRIVATE d3d11 dxgi dxguid)
+    target_link_libraries(telinha_encode PRIVATE
+        d3d11 dxgi dxguid mfplat mfuuid strmiids ole32 oleaut32)
 endif()
 
 telinha_apply_target_defaults(telinha_encode)

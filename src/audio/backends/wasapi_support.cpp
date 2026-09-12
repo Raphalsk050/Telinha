@@ -58,7 +58,9 @@ struct ProcessIdentity {
         do {
             if (entry.th32ProcessID == static_cast<DWORD>(process_id)) {
                 identity.parent_id = static_cast<std::uint32_t>(entry.th32ParentProcessID);
-                std::wcsncpy(identity.image, entry.szExeFile, MAX_PATH - 1);
+                static_assert(sizeof(identity.image) == sizeof(entry.szExeFile));
+                std::memcpy(identity.image, entry.szExeFile, sizeof(identity.image));
+                identity.image[MAX_PATH - 1] = L'\0';
                 identity.found = true;
                 break;
             }
@@ -155,19 +157,19 @@ void fill_waveformat(const AudioFormat& format, WAVEFORMATEXTENSIBLE& wave) noex
 
 std::uint32_t windows_build_number() noexcept
 {
-    using RtlGetVersionFn = LONG(WINAPI*)(PRTL_OSVERSIONINFOW);
+    using RtlGetVersionFn = LONG(WINAPI*)(OSVERSIONINFOW*);
 
     static const std::uint32_t build = [] {
         const HMODULE ntdll = ::GetModuleHandleW(L"ntdll.dll");
         if (ntdll == nullptr) {
             return std::uint32_t{0};
         }
-        const auto get_version = reinterpret_cast<RtlGetVersionFn>(
-            reinterpret_cast<void*>(::GetProcAddress(ntdll, "RtlGetVersion")));
+        const auto get_version =
+            reinterpret_cast<RtlGetVersionFn>(::GetProcAddress(ntdll, "RtlGetVersion"));
         if (get_version == nullptr) {
             return std::uint32_t{0};
         }
-        RTL_OSVERSIONINFOW info{};
+        OSVERSIONINFOW info{};
         info.dwOSVersionInfoSize = sizeof(info);
         if (get_version(&info) != 0) {
             return std::uint32_t{0};
@@ -199,7 +201,7 @@ std::uint32_t resolve_process_tree_root(std::uint32_t process_id) noexcept
         if (!parent.found) {
             break;
         }
-        if (::_wcsicmp(parent.image, identity.image) != 0) {
+        if (::CompareStringOrdinal(parent.image, -1, identity.image, -1, TRUE) != CSTR_EQUAL) {
             break;
         }
 

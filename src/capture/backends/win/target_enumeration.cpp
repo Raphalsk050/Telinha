@@ -108,6 +108,36 @@ void emit(EnumerationSink& sink, const CaptureTargetInfo& info) noexcept
     return rotation_from_dxgi(description.Rotation);
 }
 
+inline constexpr std::uint32_t kClassNameCapacity = 64;
+
+BOOL CALLBACK core_window_visitor(HWND child, LPARAM context) noexcept
+{
+    wchar_t class_name[kClassNameCapacity] = {};
+    if (GetClassNameW(child, class_name, static_cast<int>(kClassNameCapacity)) == 0) {
+        return TRUE;
+    }
+    if (lstrcmpiW(class_name, L"Windows.UI.Core.CoreWindow") != 0) {
+        return TRUE;
+    }
+    *reinterpret_cast<HWND*>(context) = child;
+    return FALSE;
+}
+
+[[nodiscard]] HWND audio_owner_window(HWND window) noexcept
+{
+    wchar_t class_name[kClassNameCapacity] = {};
+    if (GetClassNameW(window, class_name, static_cast<int>(kClassNameCapacity)) == 0) {
+        return window;
+    }
+    if (lstrcmpiW(class_name, L"ApplicationFrameWindow") != 0) {
+        return window;
+    }
+
+    HWND core_window = nullptr;
+    EnumChildWindows(window, &core_window_visitor, reinterpret_cast<LPARAM>(&core_window));
+    return core_window != nullptr ? core_window : window;
+}
+
 BOOL CALLBACK monitor_visitor(HMONITOR monitor, HDC, LPRECT, LPARAM context) noexcept
 {
     EnumerationSink& sink = *reinterpret_cast<EnumerationSink*>(context);
@@ -236,7 +266,7 @@ Outcome describe_window(HWND window, CaptureTargetInfo& out) noexcept
     out.height = static_cast<std::uint32_t>(bounds.bottom - bounds.top);
 
     DWORD process_id = 0;
-    GetWindowThreadProcessId(window, &process_id);
+    GetWindowThreadProcessId(audio_owner_window(window), &process_id);
     out.process_id = process_id;
 
     wchar_t title[kTargetNameCapacity] = {};

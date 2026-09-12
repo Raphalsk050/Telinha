@@ -10,4 +10,11 @@ endif()
 
 telinha_apply_target_defaults(telinha)
 
-install(TARGETS telinha RUNTIME DESTINATION .)
+install(TARGETS telinha RUNTIME DESTINATION . COMPONENT runtime)
+
+if(MSVC)
+    install(FILES $<TARGET_PDB_FILE:telinha>
+            DESTINATION .
+            COMPONENT symbols
+            OPTIONAL)
+endif()

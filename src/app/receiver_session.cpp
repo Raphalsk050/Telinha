@@ -476,6 +476,19 @@ Outcome ReceiverSession::run()
             break;
         }
 
+        const auto state =
+            static_cast<transport::ConnectionState>(state_.load(std::memory_order_relaxed));
+        if (state == transport::ConnectionState::Failed ||
+            state == transport::ConnectionState::Closed) {
+            std::printf(
+                "\nA conexao caiu e nao volta sozinha.\n"
+                "Os enderecos foram combinados uma vez so, no inicio, entao trocar de cabo para "
+                "Wi-Fi ou de rede derruba de vez.\n"
+                "Abram o Telinha de novo nos dois lados e troquem um codigo novo.\n\n");
+            std::fflush(stdout);
+            break;
+        }
+
         const Nanoseconds local_now = now_ns();
 
         drain_audio(local_now);

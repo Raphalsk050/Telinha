@@ -64,6 +64,7 @@ struct FrameMetadata {
     bool content_changed = false;
     bool cursor_changed = false;
     bool full_surface_dirty = false;
+    bool dirty_metadata_available = false;
 };
 
 struct CapturedFrame {

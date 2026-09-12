@@ -986,7 +986,6 @@ Outcome MediaFoundationEncoder::poll(transport::EncodedVideoFrame& out, std::uin
     out.frame_index = pending_frame_index_[pending_head_];
     out.width = encode_width_;
     out.height = encode_height_;
-    out.average_qp = 0;
     out.codec = to_wire_codec(config_.codec);
     out.kind = key ? transport::WireFrameKind::Key : transport::WireFrameKind::Delta;
     out.temporal_index = 0;

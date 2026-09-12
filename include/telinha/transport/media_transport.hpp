@@ -134,8 +134,6 @@ public:
 
     virtual void on_packet_loss_detected(double loss_ratio) noexcept { (void)loss_ratio; }
 
-    virtual void on_long_term_reference_acknowledged(std::uint32_t index) noexcept { (void)index; }
-
     virtual void on_remote_video(const EncodedVideoFrame& frame) noexcept { (void)frame; }
 
     virtual void on_remote_audio(const PcmAudioBlock& block) noexcept { (void)block; }
@@ -145,6 +143,8 @@ public:
     virtual void on_local_candidate(Span<const char> candidate) noexcept = 0;
 
     virtual void on_round_trip_time(Nanoseconds round_trip_ns) noexcept { (void)round_trip_ns; }
+
+    virtual void on_gathering_complete() noexcept {}
 
 protected:
     TransportObserver() = default;
@@ -166,6 +166,11 @@ public:
 
     [[nodiscard]] virtual Outcome send_video(const EncodedVideoFrame& frame) = 0;
     [[nodiscard]] virtual Outcome send_audio(const PcmAudioBlock& block) = 0;
+
+    [[nodiscard]] virtual Outcome request_keyframe()
+    {
+        return fail(Status::NotImplemented, "MediaTransport::request_keyframe");
+    }
 
     [[nodiscard]] virtual TransportStats stats() const noexcept = 0;
 

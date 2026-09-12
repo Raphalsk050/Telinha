@@ -14,6 +14,19 @@ constexpr char kTokenPrefix[] = "VExT";
 constexpr std::size_t kTokenPrefixLength = sizeof(kTokenPrefix) - 1;
 constexpr int kClipboardAttempts = 3;
 
+std::FILE* open_file(const char* path, const char* mode) noexcept
+{
+#if defined(_MSC_VER)
+    std::FILE* file = nullptr;
+    if (fopen_s(&file, path, mode) != 0) {
+        return nullptr;
+    }
+    return file;
+#else
+    return std::fopen(path, mode);
+#endif
+}
+
 bool looks_like_token(const char* text, std::size_t length) noexcept
 {
     return length > kTokenPrefixLength && std::memcmp(text, kTokenPrefix, kTokenPrefixLength) == 0;
@@ -174,7 +187,7 @@ Outcome publish_token(const SignalingOptions& options, const char* label, const 
                       std::size_t length) noexcept
 {
     if (options.out_path[0] != '\0') {
-        std::FILE* file = std::fopen(options.out_path, "wb");
+        std::FILE* file = open_file(options.out_path, "wb");
         if (file == nullptr) {
             return fail(Status::PermissionDenied, "publish_token: fopen");
         }
@@ -215,7 +228,7 @@ Outcome consume_token(const SignalingOptions& options, const char* label, char* 
     length = 0;
 
     if (options.in_path[0] != '\0') {
-        std::FILE* file = std::fopen(options.in_path, "rb");
+        std::FILE* file = open_file(options.in_path, "rb");
         if (file == nullptr) {
             return fail(Status::NotFound, "consume_token: fopen");
         }

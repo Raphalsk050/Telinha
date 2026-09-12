@@ -58,6 +58,7 @@ void DirtyRegionBuilder::resize(std::uint32_t surface_width, std::uint32_t surfa
     staged_area_ = 0;
     move_count_ = 0;
     full_surface_ = true;
+    metadata_absent_ = false;
     frame_open_ = false;
     emitted_.clear();
 }
@@ -73,6 +74,7 @@ void DirtyRegionBuilder::begin_frame() noexcept
     staged_area_ = 0;
     move_count_ = 0;
     full_surface_ = false;
+    metadata_absent_ = false;
     frame_open_ = true;
     emitted_.clear();
 }
@@ -82,6 +84,13 @@ void DirtyRegionBuilder::force_full_surface() noexcept
     full_surface_ = true;
     staged_count_ = 0;
     staged_area_ = 0;
+}
+
+void DirtyRegionBuilder::force_full_surface_without_metadata() noexcept
+{
+    force_full_surface();
+    metadata_absent_ = true;
+    ++statistics_.frames_without_metadata;
 }
 
 void DirtyRegionBuilder::stage(Rect candidate) noexcept
@@ -185,7 +194,9 @@ void DirtyRegionBuilder::finish() noexcept
     if (full_surface_) {
         ++statistics_.full_surface_frames;
         move_count_ = 0;
-        (void)emitted_.push(surface_rect());
+        if (!metadata_absent_) {
+            (void)emitted_.push(surface_rect());
+        }
         statistics_.emitted_rects += emitted_.count();
         statistics_.emitted_area += static_cast<std::uint64_t>(area);
         return;

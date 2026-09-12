@@ -389,7 +389,7 @@ private:
         frame.Close();
 
         dirty_.begin_frame();
-        dirty_.force_full_surface();
+        dirty_.force_full_surface_without_metadata();
         dirty_.finish();
 
         last_texture_ = destination;

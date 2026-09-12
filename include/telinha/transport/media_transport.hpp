@@ -134,8 +134,6 @@ public:
 
     virtual void on_packet_loss_detected(double loss_ratio) noexcept { (void)loss_ratio; }
 
-    virtual void on_long_term_reference_acknowledged(std::uint32_t index) noexcept { (void)index; }
-
     virtual void on_remote_video(const EncodedVideoFrame& frame) noexcept { (void)frame; }
 
     virtual void on_remote_audio(const PcmAudioBlock& block) noexcept { (void)block; }

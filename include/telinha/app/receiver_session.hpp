@@ -60,6 +60,7 @@ private:
     void feed_decoder(Nanoseconds local_now_ns);
     void present_next();
     void report(Nanoseconds local_now_ns);
+    void ask_for_keyframe(const char* reason) noexcept;
 
     ReceiverOptions options_;
     std::unique_ptr<transport::MediaTransport> transport_;
@@ -74,6 +75,9 @@ private:
     std::unique_ptr<char[]> token_;
     std::unique_ptr<transport::SessionBlob> remote_blob_;
     ReceiverCounters counters_;
+    std::uint64_t keyframe_requests_ = 0;
+    bool keyframe_requests_supported_ = true;
+    bool keyframe_warned_ = false;
     std::uint64_t decode_submits_ = 0;
     std::uint64_t decode_failures_ = 0;
     std::uint64_t audio_submit_failures_ = 0;

@@ -263,6 +263,38 @@ Outcome ReceiverSession::await_connection()
     return fail(Status::Unavailable, "await_connection: interrompido");
 }
 
+void ReceiverSession::ask_for_keyframe(const char* reason) noexcept
+{
+    if (!keyframe_requests_supported_) {
+        return;
+    }
+
+    const Outcome requested = transport_->request_keyframe();
+    if (requested.ok()) {
+        ++keyframe_requests_;
+        TL_LOG_INFO("receptor: keyframe pedido (%s)", reason);
+        return;
+    }
+
+    if (requested.status() == Status::NotImplemented ||
+        requested.status() == Status::NotSupported) {
+        keyframe_requests_supported_ = false;
+        TL_LOG_WARN(
+            "receptor: este transporte nao pede keyframe (%s), dependendo do keyframe periodico "
+            "do emissor",
+            to_string(requested.status()));
+        return;
+    }
+
+    if (!keyframe_warned_) {
+        keyframe_warned_ = true;
+        TL_LOG_WARN(
+            "receptor: pedido de keyframe recusado (%s), tentando de novo no proximo "
+            "buraco",
+            to_string(requested.status()));
+    }
+}
+
 Outcome ReceiverSession::ensure_decoder(const receive::VideoPacketHeader& header)
 {
     if (decoder_) {
@@ -471,10 +503,7 @@ Outcome ReceiverSession::run()
 
     TL_LOG_INFO("receptor: conectado, aguardando video");
 
-    const Outcome asked = transport_->request_keyframe();
-    if (!asked.ok() && asked.status() != Status::NotImplemented) {
-        TL_LOG_WARN("receptor: pedido de keyframe recusado (%s)", to_string(asked.status()));
-    }
+    ask_for_keyframe("inicio da sessao");
 
     while (!stop_.load(std::memory_order_relaxed)) {
         bool close_requested = false;
@@ -509,12 +538,7 @@ Outcome ReceiverSession::run()
         report(local_now);
 
         if (jitter_.take_keyframe_request()) {
-            TL_LOG_WARN("receptor: buraco no video, pedindo keyframe");
-            const Outcome requested = transport_->request_keyframe();
-            if (!requested.ok() && requested.status() != Status::NotImplemented) {
-                TL_LOG_WARN("receptor: pedido de keyframe recusado (%s)",
-                            to_string(requested.status()));
-            }
+            ask_for_keyframe("buraco no video");
         }
 
         Logger::instance().drain_to_stderr();

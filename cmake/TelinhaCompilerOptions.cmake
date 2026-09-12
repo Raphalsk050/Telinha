@@ -16,6 +16,7 @@ if(MSVC)
         /GR-
         /EHsc
         /volatile:iso
+        /wd4324
         $<$<CONFIG:Debug>:/Od>
         $<$<CONFIG:Debug>:/Zi>
         $<$<NOT:$<CONFIG:Debug>>:/O2>

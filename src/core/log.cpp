@@ -85,7 +85,9 @@ void Logger::write_v(LogLevel level, const char* format, std::va_list args) noex
 
     const int written = std::vsnprintf(record.message, kLogMessageCapacity, format, args);
     if (written < 0) {
-        std::strncpy(record.message, "<format error>", kLogMessageCapacity - 1);
+        static constexpr char kFormatError[] = "<format error>";
+        static_assert(sizeof(kFormatError) <= kLogMessageCapacity);
+        std::memcpy(record.message, kFormatError, sizeof(kFormatError));
     }
     record.message[kLogMessageCapacity - 1] = '\0';
 

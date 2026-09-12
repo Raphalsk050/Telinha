@@ -25,6 +25,7 @@ public:
 
     void on_description(Span<const char> text) noexcept;
     void on_candidate(Span<const char> text) noexcept;
+    void on_gathering_complete() noexcept;
 
     [[nodiscard]] bool has_description() const noexcept;
     [[nodiscard]] bool gathering_complete() const noexcept;

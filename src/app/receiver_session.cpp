@@ -192,6 +192,11 @@ void ReceiverSession::on_local_candidate(Span<const char> candidate) noexcept
     signaling_.on_candidate(candidate);
 }
 
+void ReceiverSession::on_gathering_complete() noexcept
+{
+    signaling_.on_gathering_complete();
+}
+
 void ReceiverSession::on_round_trip_time(Nanoseconds round_trip_ns) noexcept
 {
     counters_.round_trip_ns.store(round_trip_ns, std::memory_order_relaxed);
@@ -466,6 +471,11 @@ Outcome ReceiverSession::run()
 
     TL_LOG_INFO("receptor: conectado, aguardando video");
 
+    const Outcome asked = transport_->request_keyframe();
+    if (!asked.ok() && asked.status() != Status::NotImplemented) {
+        TL_LOG_WARN("receptor: pedido de keyframe recusado (%s)", to_string(asked.status()));
+    }
+
     while (!stop_.load(std::memory_order_relaxed)) {
         bool close_requested = false;
         const Outcome pumped = renderer_->pump(close_requested);
@@ -499,7 +509,12 @@ Outcome ReceiverSession::run()
         report(local_now);
 
         if (jitter_.take_keyframe_request()) {
-            TL_LOG_WARN("receptor: buraco no video, esperando keyframe");
+            TL_LOG_WARN("receptor: buraco no video, pedindo keyframe");
+            const Outcome requested = transport_->request_keyframe();
+            if (!requested.ok() && requested.status() != Status::NotImplemented) {
+                TL_LOG_WARN("receptor: pedido de keyframe recusado (%s)",
+                            to_string(requested.status()));
+            }
         }
 
         Logger::instance().drain_to_stderr();

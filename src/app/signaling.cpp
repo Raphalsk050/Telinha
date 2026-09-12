@@ -126,6 +126,12 @@ void SignalingCollector::on_candidate(Span<const char> text) noexcept
     }
 }
 
+void SignalingCollector::on_gathering_complete() noexcept
+{
+    const std::lock_guard<std::mutex> guard(mutex_);
+    gathering_complete_ = true;
+}
+
 bool SignalingCollector::has_description() const noexcept
 {
     const std::lock_guard<std::mutex> guard(mutex_);

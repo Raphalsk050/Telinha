@@ -46,6 +46,7 @@ public:
     void on_remote_audio(const transport::PcmAudioBlock& block) noexcept override;
     void on_local_description(Span<const char> description) noexcept override;
     void on_local_candidate(Span<const char> candidate) noexcept override;
+    void on_gathering_complete() noexcept override;
     void on_round_trip_time(Nanoseconds round_trip_ns) noexcept override;
 
 private:

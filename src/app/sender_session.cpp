@@ -92,6 +92,11 @@ void SenderSession::on_local_candidate(Span<const char> candidate) noexcept
     signaling_.on_candidate(candidate);
 }
 
+void SenderSession::on_gathering_complete() noexcept
+{
+    signaling_.on_gathering_complete();
+}
+
 void SenderSession::on_round_trip_time(Nanoseconds round_trip_ns) noexcept
 {
     (void)round_trip_ns;

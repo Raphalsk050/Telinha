@@ -1,10 +1,12 @@
 #include "backends/webrtc/passthrough_video_encoder.hpp"
 
+#include <optional>
 #include <string>
 #include <utility>
 
 #include "api/video/video_frame.h"
 #include "api/video/video_frame_type.h"
+#include "api/video_codecs/h264_profile_level_id.h"
 #include "api/video_codecs/video_codec.h"
 #include "backends/webrtc/encoded_video_buffer.hpp"
 #include "modules/video_coding/include/video_codec_interface.h"
@@ -45,8 +47,14 @@ webrtc::SdpVideoFormat sdp_format_for(WireVideoCodec codec, const char* h264_pro
     if (codec == WireVideoCodec::H264) {
         parameters["level-asymmetry-allowed"] = "1";
         parameters["packetization-mode"] = "1";
-        parameters["profile-level-id"] =
-            h264_profile_level_id != nullptr ? h264_profile_level_id : "42e01f";
+        if (h264_profile_level_id != nullptr && h264_profile_level_id[0] != '\0') {
+            parameters["profile-level-id"] = h264_profile_level_id;
+        } else {
+            const std::optional<std::string> generated =
+                webrtc::H264ProfileLevelIdToString(webrtc::H264ProfileLevelId(
+                    webrtc::H264Profile::kProfileHigh, webrtc::H264Level::kLevel5_2));
+            parameters["profile-level-id"] = generated.value_or(std::string("640c34"));
+        }
     }
     return webrtc::SdpVideoFormat(codec_name(codec), std::move(parameters));
 }

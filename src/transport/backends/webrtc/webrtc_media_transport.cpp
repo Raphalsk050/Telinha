@@ -270,7 +270,7 @@ Outcome WebrtcMediaTransport::initialize()
         worker_thread_->BlockingCall([] { return webrtc::make_ref_counted<PushAudioDevice>(); });
     audio_device_->set_remote_audio_sink(this);
 
-    webrtc::SdpVideoFormat format = backend::sdp_format_for(codec_, "42e01f");
+    webrtc::SdpVideoFormat format = backend::sdp_format_for(codec_, nullptr);
 
     factory_ = webrtc::CreatePeerConnectionFactory(
         network_thread_.get(), worker_thread_.get(), signaling_thread_.get(), audio_device_,

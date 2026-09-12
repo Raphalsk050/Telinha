@@ -34,11 +34,26 @@ endif()
 
 include(cmake/TelinhaCompilerOptions.cmake)
 
-add_subdirectory(src/core)
-add_subdirectory(src/capture)
-add_subdirectory(src/transport)
+set(TELINHA_CORE_MODULES core capture transport)
+set(TELINHA_OPTIONAL_MODULES audio encode receive diag app)
 
-foreach(module audio encode receive diag app)
+file(GLOB TELINHA_MODULE_FILES "${PROJECT_SOURCE_DIR}/src/*/CMakeLists.txt")
+foreach(module_file ${TELINHA_MODULE_FILES})
+    get_filename_component(module_dir "${module_file}" DIRECTORY)
+    get_filename_component(module "${module_dir}" NAME)
+    if(NOT module IN_LIST TELINHA_CORE_MODULES AND NOT module IN_LIST TELINHA_OPTIONAL_MODULES)
+        message(FATAL_ERROR
+            "src/${module} has a CMakeLists.txt but is in neither TELINHA_CORE_MODULES nor "
+            "TELINHA_OPTIONAL_MODULES, so nothing would build it and no CI job would cover it. "
+            "Add ${module} to TELINHA_OPTIONAL_MODULES in the top level CMakeLists.txt.")
+    endif()
+endforeach()
+
+foreach(module ${TELINHA_CORE_MODULES})
+    add_subdirectory(src/${module})
+endforeach()
+
+foreach(module ${TELINHA_OPTIONAL_MODULES})
     if(EXISTS "${PROJECT_SOURCE_DIR}/src/${module}/CMakeLists.txt")
         add_subdirectory(src/${module})
     endif()

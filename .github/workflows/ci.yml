@@ -84,6 +84,38 @@ jobs:
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
 
+  package:
+    name: windows package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake --preset msvc-release
+
+      - name: Build
+        run: cmake --build --preset msvc-release
+
+      - name: Stage artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path staging | Out-Null
+          $binaries = Get-ChildItem -Path build/msvc-release -Recurse -Include *.exe, *.pdb -File |
+            Where-Object { $_.FullName -notmatch 'CMakeFiles' }
+          if ($binaries) {
+            $binaries | Copy-Item -Destination staging
+            Get-ChildItem staging | Select-Object Name, Length
+          } else {
+            Write-Host "no executables produced yet"
+            New-Item -ItemType File -Path staging/EMPTY | Out-Null
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: telinha-windows-x64
+          path: staging/
+          if-no-files-found: error
+
   format:
     name: format
     runs-on: ubuntu-24.04

@@ -45,6 +45,7 @@ class PacketQueue {
 
 public:
     static constexpr std::size_t slot_count = SlotCount;
+    static constexpr std::uint32_t slot_mask = static_cast<std::uint32_t>(SlotCount - 1);
 
     PacketQueue() noexcept = default;
 
@@ -66,6 +67,12 @@ public:
         void* memory =
             ::operator new(stride * SlotCount, std::align_val_t{kCacheLineSize}, std::nothrow);
         if (memory == nullptr) {
+            return fail(Status::OutOfMemory, "PacketQueue::reserve");
+        }
+
+        headers_ = new (std::nothrow) Header[SlotCount];
+        if (headers_ == nullptr) {
+            ::operator delete(memory, std::align_val_t{kCacheLineSize});
             return fail(Status::OutOfMemory, "PacketQueue::reserve");
         }
 
@@ -92,17 +99,26 @@ public:
             return nullptr;
         }
         slot = index;
-        return storage_ + static_cast<std::size_t>(index) * stride_;
+        return storage_ + static_cast<std::size_t>(index & slot_mask) * stride_;
     }
 
     void commit(const Header& header) noexcept
     {
-        const bool pushed = ready_.push(header);
+        headers_[header.slot & slot_mask] = header;
+        const bool pushed = ready_.push(header.slot);
         TL_ASSERT(pushed);
         (void)pushed;
     }
 
-    [[nodiscard]] bool pop(Header& out) noexcept { return ready_.pop(out); }
+    [[nodiscard]] bool pop(Header& out) noexcept
+    {
+        std::uint32_t slot = 0;
+        if (!ready_.pop(slot)) {
+            return false;
+        }
+        out = headers_[slot & slot_mask];
+        return true;
+    }
 
     void recycle(std::uint32_t slot) noexcept
     {
@@ -113,7 +129,7 @@ public:
 
     [[nodiscard]] const std::byte* slot_data(std::uint32_t slot) const noexcept
     {
-        return storage_ + static_cast<std::size_t>(slot) * stride_;
+        return storage_ + static_cast<std::size_t>(slot & slot_mask) * stride_;
     }
 
     [[nodiscard]] std::size_t slot_stride() const noexcept { return stride_; }
@@ -136,12 +152,15 @@ private:
             ::operator delete(storage_, std::align_val_t{kCacheLineSize});
             storage_ = nullptr;
         }
+        delete[] headers_;
+        headers_ = nullptr;
         stride_ = 0;
     }
 
     std::byte* storage_ = nullptr;
     std::size_t stride_ = 0;
-    SpscRing<Header, SlotCount> ready_;
+    Header* headers_ = nullptr;
+    SpscRing<std::uint32_t, SlotCount> ready_;
     SpscRing<std::uint32_t, SlotCount> free_;
     std::atomic<std::uint64_t> oversized_{0};
     std::atomic<std::uint64_t> starved_{0};

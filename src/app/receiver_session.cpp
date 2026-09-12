@@ -69,8 +69,8 @@ Outcome ReceiverSession::initialize(const ReceiverOptions& options)
     transport::TransportConfig config;
     config.role = transport::TransportRole::Receiver;
     config.candidate_policy = options_.network.candidate_policy;
-    config.ice_servers = Span<const transport::IceServer>(servers,
-                                                          options_.network.ice_server_count);
+    config.ice_servers =
+        Span<const transport::IceServer>(servers, options_.network.ice_server_count);
     config.local_port_min = options_.network.local_port_min;
     config.local_port_max = options_.network.local_port_max;
     config.start_bitrate_bps = options_.network.start_bitrate_bps;
@@ -79,8 +79,8 @@ Outcome ReceiverSession::initialize(const ReceiverOptions& options)
     config.enable_forward_error_correction = options_.network.enable_forward_error_correction;
     config.enable_retransmission = options_.network.enable_retransmission;
 
-    Result<std::unique_ptr<transport::MediaTransport>> media = transport::create_media_transport(
-        config);
+    Result<std::unique_ptr<transport::MediaTransport>> media =
+        transport::create_media_transport(config);
     if (!media.ok()) {
         return Outcome{media.error()};
     }
@@ -384,8 +384,8 @@ void ReceiverSession::feed_decoder(Nanoseconds local_now_ns)
             frame.width = header.width;
             frame.height = header.height;
             frame.codec = header.codec;
-            frame.kind = header.keyframe ? transport::WireFrameKind::Key
-                                         : transport::WireFrameKind::Delta;
+            frame.kind =
+                header.keyframe ? transport::WireFrameKind::Key : transport::WireFrameKind::Delta;
             frame.temporal_index = header.temporal_index;
 
             const Outcome submitted = decoder_->submit(frame);
@@ -465,8 +465,7 @@ Outcome ReceiverSession::run()
 
     const Outcome negotiated = negotiate();
     if (!negotiated.ok()) {
-        if (negotiated.status() == Status::Unavailable ||
-            negotiated.status() == Status::Timeout) {
+        if (negotiated.status() == Status::Unavailable || negotiated.status() == Status::Timeout) {
             std::printf(
                 "\nNao foi possivel abrir o caminho direto ate a outra maquina.\n"
                 "Quando as duas pontas estao atras de NAT simetrico, o furo direto nao acontece "

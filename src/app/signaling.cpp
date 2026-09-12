@@ -64,8 +64,8 @@ std::size_t base64_encode(const char* data, std::size_t length, char* out,
 
     const std::size_t remaining = length - position;
     if (remaining == 1) {
-        const std::uint32_t triple = static_cast<std::uint32_t>(
-            static_cast<std::uint8_t>(data[position]) << 16);
+        const std::uint32_t triple =
+            static_cast<std::uint32_t>(static_cast<std::uint8_t>(data[position]) << 16);
         out[written++] = kAlphabet[(triple >> 18) & 0x3F];
         out[written++] = kAlphabet[(triple >> 12) & 0x3F];
         out[written++] = '=';
@@ -180,8 +180,8 @@ Outcome encode_signaling_token(const SignalingPayload& payload, char* out, std::
         return fail(Status::InvalidArgument, "encode_signaling_token: sem descricao");
     }
 
-    static thread_local char plain[kDescriptionCapacity + kMaxCandidates * kCandidateTextCapacity +
-                                   kMaxCandidates + 8];
+    static thread_local char
+        plain[kDescriptionCapacity + kMaxCandidates * kCandidateTextCapacity + kMaxCandidates + 8];
     std::size_t written = 0;
 
     plain[written++] = kDescriptionMarker[0];
@@ -215,7 +215,8 @@ Outcome decode_signaling_token(Span<const char> token, SignalingPayload& out) no
 
     const char* data = token.data();
     std::size_t length = token.size();
-    while (length > 0 && (data[0] == ' ' || data[0] == '\n' || data[0] == '\r' || data[0] == '\t')) {
+    while (length > 0 &&
+           (data[0] == ' ' || data[0] == '\n' || data[0] == '\r' || data[0] == '\t')) {
         ++data;
         --length;
     }
@@ -228,8 +229,8 @@ Outcome decode_signaling_token(Span<const char> token, SignalingPayload& out) no
         return fail(Status::InvalidArgument, "decode_signaling_token: prefixo");
     }
 
-    static thread_local char plain[kDescriptionCapacity + kMaxCandidates * kCandidateTextCapacity +
-                                   kMaxCandidates + 8];
+    static thread_local char
+        plain[kDescriptionCapacity + kMaxCandidates * kCandidateTextCapacity + kMaxCandidates + 8];
     const std::size_t decoded =
         base64_decode(data + kPrefixLength, length - kPrefixLength, plain, sizeof(plain));
     if (decoded == 0) {

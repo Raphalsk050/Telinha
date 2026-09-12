@@ -46,7 +46,8 @@ struct IceServerConfig {
 struct NetworkOptions {
     IceServerConfig ice_servers[kMaxIceServers];
     std::uint32_t ice_server_count = 0;
-    transport::CandidatePolicy candidate_policy = transport::CandidatePolicy::HostAndServerReflexive;
+    transport::CandidatePolicy candidate_policy =
+        transport::CandidatePolicy::HostAndServerReflexive;
     std::uint16_t local_port_min = 0;
     std::uint16_t local_port_max = 0;
     std::uint32_t start_bitrate_bps = 8u * 1000u * 1000u;

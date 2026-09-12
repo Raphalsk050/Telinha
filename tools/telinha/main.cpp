@@ -84,29 +84,29 @@ int run_probe() noexcept
     std::printf("  Desktop Duplication : %s\n",
                 availability(tl::capture::backend_available(
                     tl::capture::CaptureBackend::DesktopDuplication)));
-    std::printf("  Graphics Capture    : %s\n",
-                availability(
-                    tl::capture::backend_available(tl::capture::CaptureBackend::GraphicsCapture)));
-    std::printf("  Sintetico           : %s\n",
-                availability(tl::capture::backend_available(tl::capture::CaptureBackend::Synthetic)));
+    std::printf(
+        "  Graphics Capture    : %s\n",
+        availability(tl::capture::backend_available(tl::capture::CaptureBackend::GraphicsCapture)));
+    std::printf(
+        "  Sintetico           : %s\n",
+        availability(tl::capture::backend_available(tl::capture::CaptureBackend::Synthetic)));
 
     std::printf("\nDecodificacao de video\n");
     std::printf("  Media Foundation    : %s\n",
                 availability(tl::receive::decoder_backend_available(
                     tl::receive::VideoDecoderBackend::MediaFoundation,
                     tl::transport::WireVideoCodec::H264)));
-    std::printf("  Software            : %s\n",
-                availability(tl::receive::decoder_backend_available(
-                    tl::receive::VideoDecoderBackend::Software,
-                    tl::transport::WireVideoCodec::H264)));
+    std::printf("  Software            : %s\n", availability(tl::receive::decoder_backend_available(
+                                                    tl::receive::VideoDecoderBackend::Software,
+                                                    tl::transport::WireVideoCodec::H264)));
 
     std::printf("\nApresentacao\n");
     std::printf("  Direct3D 11         : %s\n",
-                availability(
-                    tl::receive::renderer_backend_available(tl::receive::RendererBackend::Direct3D11)));
+                availability(tl::receive::renderer_backend_available(
+                    tl::receive::RendererBackend::Direct3D11)));
     std::printf("  Sem janela          : %s\n",
-                availability(
-                    tl::receive::renderer_backend_available(tl::receive::RendererBackend::Headless)));
+                availability(tl::receive::renderer_backend_available(
+                    tl::receive::RendererBackend::Headless)));
     std::printf("  WASAPI              : %s\n",
                 availability(tl::receive::audio_renderer_backend_available(
                     tl::receive::AudioRendererBackend::Wasapi)));
@@ -166,8 +166,8 @@ int main(int argc, char** argv)
     static tl::app::AppOptions options;
     char error[tl::app::kErrorCapacity] = {};
 
-    const tl::Outcome parsed = tl::app::parse_command_line(argc, argv, options, error,
-                                                           static_cast<int>(sizeof(error)));
+    const tl::Outcome parsed =
+        tl::app::parse_command_line(argc, argv, options, error, static_cast<int>(sizeof(error)));
     if (!parsed.ok()) {
         std::fprintf(stderr, "telinha: %s\n\n", error);
         tl::app::print_usage();

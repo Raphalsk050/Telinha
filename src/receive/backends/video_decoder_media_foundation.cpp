@@ -391,7 +391,9 @@ private:
     Outcome configure_types()
     {
         ComPtr<ICodecAPI> codec_api;
-        if (SUCCEEDED(transform_.As(&codec_api)) && config_.low_latency) {
+        const HRESULT has_codec_api = transform_->QueryInterface(
+            IID_ICodecAPI, reinterpret_cast<void**>(codec_api.GetAddressOf()));
+        if (SUCCEEDED(has_codec_api) && config_.low_latency) {
             VARIANT value = {};
             value.vt = VT_BOOL;
             value.boolVal = VARIANT_TRUE;

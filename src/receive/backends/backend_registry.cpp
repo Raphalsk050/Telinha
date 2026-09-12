@@ -16,7 +16,8 @@ Result<std::unique_ptr<VideoRenderer>> create_video_renderer(const VideoRenderer
 {
     RendererBackend backend = config.backend;
     if (backend == RendererBackend::Automatic) {
-        backend = TL_PLATFORM_WINDOWS != 0 ? RendererBackend::Direct3D11 : RendererBackend::Headless;
+        backend =
+            TL_PLATFORM_WINDOWS != 0 ? RendererBackend::Direct3D11 : RendererBackend::Headless;
     }
 
     switch (backend) {
@@ -63,7 +64,8 @@ Result<std::unique_ptr<AudioRenderer>> create_audio_renderer(const AudioRenderer
     return Error{Status::InvalidArgument, "create_audio_renderer"};
 }
 
-bool decoder_backend_available(VideoDecoderBackend backend, transport::WireVideoCodec codec) noexcept
+bool decoder_backend_available(VideoDecoderBackend backend,
+                               transport::WireVideoCodec codec) noexcept
 {
     if (codec != transport::WireVideoCodec::H264) {
         return false;

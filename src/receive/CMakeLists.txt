@@ -23,7 +23,7 @@ target_link_libraries(telinha_receive PUBLIC Telinha::Core Telinha::Capture Teli
 
 if(WIN32)
     target_link_libraries(telinha_receive PRIVATE
-        d3d11 dxgi dxguid d3dcompiler mf mfplat mfuuid mfreadwrite ole32 user32 avrt)
+        d3d11 dxgi dxguid d3dcompiler mf mfplat mfuuid mfreadwrite strmiids ole32 user32 avrt)
 endif()
 
 telinha_apply_target_defaults(telinha_receive)

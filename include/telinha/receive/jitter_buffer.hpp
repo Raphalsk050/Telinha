@@ -70,7 +70,8 @@ public:
 
     [[nodiscard]] Outcome reserve(const JitterConfig& config);
 
-    [[nodiscard]] bool insert(const VideoPacketHeader& header, std::uint32_t& evicted_slot) noexcept;
+    [[nodiscard]] bool insert(const VideoPacketHeader& header,
+                              std::uint32_t& evicted_slot) noexcept;
 
     [[nodiscard]] JitterPull pull(Nanoseconds local_now_ns, const ClockOffsetEstimator& offset,
                                   VideoPacketHeader& out) noexcept;

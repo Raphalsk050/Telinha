@@ -63,7 +63,8 @@ void VideoJitterBuffer::pop_front() noexcept
     --size_;
 }
 
-bool VideoJitterBuffer::insert(const VideoPacketHeader& header, std::uint32_t& evicted_slot) noexcept
+bool VideoJitterBuffer::insert(const VideoPacketHeader& header,
+                               std::uint32_t& evicted_slot) noexcept
 {
     evicted_slot = kInvalidSlot;
     ++stats_.inserted;
@@ -128,8 +129,7 @@ JitterPull VideoJitterBuffer::pull(Nanoseconds local_now_ns, const ClockOffsetEs
         return JitterPull::Discard;
     }
 
-    const Nanoseconds deadline =
-        offset.ready() ? playout_ns(front, offset) : local_now_ns;
+    const Nanoseconds deadline = offset.ready() ? playout_ns(front, offset) : local_now_ns;
 
     if (started_ && front.frame_index != next_index_) {
         const Nanoseconds reorder_deadline = front.arrival_time_ns + config_.reorder_wait_ns;

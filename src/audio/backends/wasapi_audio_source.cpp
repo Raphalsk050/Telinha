@@ -74,6 +74,9 @@ public:
     ULONG STDMETHODCALLTYPE Release() override
     {
         const long remaining = references_.fetch_sub(1, std::memory_order_acq_rel) - 1;
+        if (remaining == 0) {
+            delete this;
+        }
         return static_cast<ULONG>(remaining);
     }
 
@@ -138,7 +141,11 @@ public:
 
     ULONG STDMETHODCALLTYPE Release() override
     {
-        return static_cast<ULONG>(references_.fetch_sub(1, std::memory_order_acq_rel) - 1);
+        const long remaining = references_.fetch_sub(1, std::memory_order_acq_rel) - 1;
+        if (remaining == 0) {
+            delete this;
+        }
+        return static_cast<ULONG>(remaining);
     }
 
     HRESULT STDMETHODCALLTYPE OnDefaultDeviceChanged(EDataFlow flow, ERole role, LPCWSTR) override

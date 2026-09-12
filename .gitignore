@@ -1,0 +1,33 @@
+# Build output
+build/
+out/
+cmake-build-*/
+install/
+
+# CMake
+CMakeUserPresets.json
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+
+# MSVC / Visual Studio
+.vs/
+*.user
+*.aps
+*.pdb
+*.idb
+*.ilk
+*.exp
+*.obj
+*.suo
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# Capture dumps produced by the probe tools
+*.raw
+*.nv12
+*.bgra

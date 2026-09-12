@@ -1,4 +1,4 @@
-foreach(tool capture_probe)
+foreach(tool capture_probe telinha)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${tool}/CMakeLists.txt")
         add_subdirectory(${tool})
     endif()

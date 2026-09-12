@@ -59,7 +59,6 @@ private:
     ComPtr<ID3D11Texture2D> last_texture_;
     TextureHandle leased_handle_;
     std::uint64_t frame_index_ = 0;
-    std::uint64_t frames_without_metadata_ = 0;
     bool leased_ = false;
     bool leased_from_ring_ = false;
     bool started_ = false;

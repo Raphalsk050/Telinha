@@ -305,8 +305,7 @@ void DesktopDuplicationSource::collect_dirty_metadata(const DXGI_OUTDUPL_FRAME_I
     dirty_.begin_frame();
 
     if (info.TotalMetadataBufferSize == 0 || info.TotalMetadataBufferSize > metadata_capacity_) {
-        ++frames_without_metadata_;
-        dirty_.force_full_surface();
+        dirty_.force_full_surface_without_metadata();
         dirty_.finish();
         return;
     }
@@ -315,8 +314,7 @@ void DesktopDuplicationSource::collect_dirty_metadata(const DXGI_OUTDUPL_FRAME_I
     HRESULT hr = duplication_->GetFrameMoveRects(
         metadata_capacity_, reinterpret_cast<DXGI_OUTDUPL_MOVE_RECT*>(metadata_), &move_bytes);
     if (FAILED(hr)) {
-        ++frames_without_metadata_;
-        dirty_.force_full_surface();
+        dirty_.force_full_surface_without_metadata();
         dirty_.finish();
         return;
     }
@@ -326,8 +324,7 @@ void DesktopDuplicationSource::collect_dirty_metadata(const DXGI_OUTDUPL_FRAME_I
                                           reinterpret_cast<RECT*>(metadata_ + move_bytes),
                                           &dirty_bytes);
     if (FAILED(hr)) {
-        ++frames_without_metadata_;
-        dirty_.force_full_surface();
+        dirty_.force_full_surface_without_metadata();
         dirty_.finish();
         return;
     }

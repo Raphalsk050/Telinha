@@ -201,7 +201,8 @@ public:
 
 private:
     [[nodiscard]] Outcome open_endpoint_loopback() noexcept;
-    [[nodiscard]] Outcome open_process_loopback(std::uint32_t process_id) noexcept;
+    [[nodiscard]] Outcome open_process_loopback(std::uint32_t process_id,
+                                                ProcessLoopbackMode mode) noexcept;
     [[nodiscard]] Outcome finish_client_setup(bool event_driven) noexcept;
     void release_endpoint() noexcept;
     void capture_loop() noexcept;
@@ -264,11 +265,16 @@ Outcome WasapiAudioSource::open(const AudioCaptureTarget& target,
         return fail_hresult(created, "wasapi: MMDeviceEnumerator");
     }
 
+    const bool excluding = target.scope == AudioCaptureScope::ProcessLoopback &&
+                           target.process_loopback_mode == ProcessLoopbackMode::ExcludeProcessTree;
+
     if (target.scope == AudioCaptureScope::ProcessLoopback && info_.process_loopback_supported) {
         const std::uint32_t root = resolve_process_tree_root(target.process_id);
-        const Outcome activated = open_process_loopback(root);
+        const Outcome activated = open_process_loopback(root, target.process_loopback_mode);
         if (activated.ok()) {
-            info_.target = AudioCaptureTarget::process_loopback(root, true);
+            info_.target = AudioCaptureTarget::process_loopback(root, target.process_loopback_mode);
+        } else if (excluding) {
+            return activated;
         } else {
             TL_LOG_WARN(
                 "wasapi: process loopback for pid %u failed with %s, falling back to the "
@@ -280,6 +286,11 @@ Outcome WasapiAudioSource::open(const AudioCaptureTarget& target,
             TL_TRY(open_endpoint_loopback());
         }
     } else {
+        if (excluding) {
+            return fail(Status::NotSupported,
+                        "wasapi: excluding a process tree needs process loopback",
+                        static_cast<std::int32_t>(windows_build_number()));
+        }
         if (target.scope == AudioCaptureScope::ProcessLoopback) {
             TL_LOG_WARN("wasapi: build %u has no process loopback, falling back to the system mix",
                         windows_build_number());
@@ -342,13 +353,16 @@ Outcome WasapiAudioSource::open_endpoint_loopback() noexcept
     return finish_client_setup(false);
 }
 
-Outcome WasapiAudioSource::open_process_loopback(std::uint32_t process_id) noexcept
+Outcome WasapiAudioSource::open_process_loopback(std::uint32_t process_id,
+                                                 ProcessLoopbackMode mode) noexcept
 {
     AUDIOCLIENT_ACTIVATION_PARAMS parameters{};
     parameters.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
     parameters.ProcessLoopbackParams.TargetProcessId = static_cast<DWORD>(process_id);
     parameters.ProcessLoopbackParams.ProcessLoopbackMode =
-        PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE;
+        mode == ProcessLoopbackMode::ExcludeProcessTree
+            ? PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE
+            : PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE;
 
     PROPVARIANT variant{};
     variant.vt = VT_BLOB;

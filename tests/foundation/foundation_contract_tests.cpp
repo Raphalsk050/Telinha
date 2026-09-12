@@ -250,10 +250,10 @@ TEST_CASE("latency_histogram", "percentiles track a known distribution")
 
     const LatencyHistogram::Report report = histogram.report();
     const double tolerance = 0.01;
-    CHECK(report.p50_ns >= 500'000 * (1.0 - tolerance));
-    CHECK(report.p50_ns <= 500'000 * (1.0 + tolerance));
-    CHECK(report.p99_ns >= 990'000 * (1.0 - tolerance));
-    CHECK(report.p99_ns <= 990'000 * (1.0 + tolerance));
+    CHECK(static_cast<double>(report.p50_ns) >= 500'000 * (1.0 - tolerance));
+    CHECK(static_cast<double>(report.p50_ns) <= 500'000 * (1.0 + tolerance));
+    CHECK(static_cast<double>(report.p99_ns) >= 990'000 * (1.0 - tolerance));
+    CHECK(static_cast<double>(report.p99_ns) <= 990'000 * (1.0 + tolerance));
     CHECK(report.low_one_percent_ns >= 995'000 * (1.0 - tolerance));
     CHECK(report.low_one_percent_ns <= 1'000'000 * (1.0 + tolerance));
     CHECK(report.mean_ns > 500'000.0 * (1.0 - tolerance));
@@ -272,7 +272,7 @@ TEST_CASE("latency_histogram", "one percent low reflects a spike the mean hides"
     const LatencyHistogram::Report report = histogram.report();
     CHECK(report.mean_ns < 9.0 * 1'000'000.0);
     CHECK(report.low_one_percent_ns > 39.0 * 1'000'000.0);
-    CHECK(report.p50_ns < 9'000'000);
+    CHECK(report.p50_ns < std::uint64_t{9'000'000});
 }
 
 TEST_CASE("rect", "structure of arrays keeps bounds and area")

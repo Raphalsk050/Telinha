@@ -20,6 +20,7 @@
 #include "api/peer_connection_interface.h"
 #include "api/rtc_error.h"
 #include "api/rtp_parameters.h"
+#include "api/rtp_receiver_interface.h"
 #include "api/rtp_sender_interface.h"
 #include "api/rtp_transceiver_interface.h"
 #include "api/scoped_refptr.h"
@@ -106,6 +107,8 @@ public:
 
     [[nodiscard]] Outcome send_video(const EncodedVideoFrame& frame) override;
     [[nodiscard]] Outcome send_audio(const PcmAudioBlock& block) override;
+
+    [[nodiscard]] Outcome request_keyframe() override;
 
     [[nodiscard]] TransportStats stats() const noexcept override;
 
@@ -211,6 +214,7 @@ private:
     webrtc::scoped_refptr<webrtc::AudioSourceInterface> audio_source_;
     webrtc::scoped_refptr<webrtc::AudioTrackInterface> audio_track_;
     webrtc::scoped_refptr<webrtc::RtpSenderInterface> video_sender_;
+    webrtc::scoped_refptr<webrtc::RtpReceiverInterface> video_receiver_;
     webrtc::scoped_refptr<StatsObserver> stats_observer_;
 
     std::atomic<bool> running_{false};
@@ -407,6 +411,7 @@ Outcome WebrtcMediaTransport::attach_media()
         if (!video.ok()) {
             return fail(Status::Unavailable, "start: the video transceiver was refused");
         }
+        video_receiver_ = video.value()->receiver();
         webrtc::RTCErrorOr<webrtc::scoped_refptr<webrtc::RtpTransceiverInterface>> audio =
             peer_connection_->AddTransceiver(webrtc::MediaType::AUDIO, audio_init);
         if (!audio.ok()) {
@@ -443,6 +448,7 @@ void WebrtcMediaTransport::stop() noexcept
     }
 
     video_sender_ = nullptr;
+    video_receiver_ = nullptr;
     video_track_ = nullptr;
     audio_track_ = nullptr;
     audio_source_ = nullptr;
@@ -705,6 +711,30 @@ Outcome WebrtcMediaTransport::send_audio(const PcmAudioBlock& block)
     return audio_device_->submit(block);
 }
 
+Outcome WebrtcMediaTransport::request_keyframe()
+{
+    if (!running_.load(std::memory_order_acquire)) {
+        return fail(Status::Unavailable, "request_keyframe: the transport is not running");
+    }
+    if (video_receiver_ == nullptr) {
+        return fail(Status::NotSupported, "request_keyframe: this transport was built to send");
+    }
+
+    webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface> track = video_receiver_->track();
+    if (track == nullptr || track->kind() != webrtc::MediaStreamTrackInterface::kVideoKind) {
+        return fail(Status::Unavailable, "request_keyframe: the receiving track is not video");
+    }
+
+    webrtc::VideoTrackInterface& video_track = static_cast<webrtc::VideoTrackInterface&>(*track);
+    webrtc::VideoTrackSourceInterface* source = video_track.GetSource();
+    if (source == nullptr) {
+        return fail(Status::Unavailable, "request_keyframe: the receiving track has no source");
+    }
+
+    source->GenerateKeyFrame();
+    return ok();
+}
+
 TransportStats WebrtcMediaTransport::stats() const noexcept
 {
     TransportStats snapshot;
@@ -764,6 +794,12 @@ void WebrtcMediaTransport::OnIceGatheringChange(
 {
     if (state == webrtc::PeerConnectionInterface::IceGatheringState::kIceGatheringGathering) {
         publish_state(ConnectionState::Gathering);
+        return;
+    }
+
+    if (state == webrtc::PeerConnectionInterface::IceGatheringState::kIceGatheringComplete &&
+        observer_ != nullptr) {
+        observer_->on_gathering_complete();
     }
 }
 

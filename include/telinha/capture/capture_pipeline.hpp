@@ -32,6 +32,8 @@ public:
 
     [[nodiscard]] Outcome capture_next(ClassifiedFrame& out, std::uint32_t timeout_ms);
 
+    [[nodiscard]] Outcome reconfigure();
+
     void release() noexcept;
 
     [[nodiscard]] const CaptureStats& stats() const noexcept { return stats_; }
@@ -43,10 +45,15 @@ public:
     }
 
 private:
+    [[nodiscard]] Outcome rebuild_tiles(std::uint32_t width, std::uint32_t height);
+    [[nodiscard]] Outcome apply_surface_extent(std::uint32_t width, std::uint32_t height);
+    [[nodiscard]] std::uint32_t tile_span(std::uint32_t extent) const noexcept;
+
     std::unique_ptr<CaptureSource> source_;
     CaptureOptions options_;
     ArenaStorage storage_;
     TileDirtyMap tiles_;
+    LinearArena::Marker tiles_marker_{};
     CapturedFrame current_frame_;
     CaptureStats stats_;
     Nanoseconds last_present_ns_ = 0;

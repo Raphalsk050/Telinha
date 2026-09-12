@@ -20,6 +20,7 @@ struct CaptureStats {
     std::uint64_t frames_without_dirty_metadata = 0;
     std::uint64_t frames_coalesced = 0;
     std::uint64_t device_lost_recoveries = 0;
+    std::uint64_t surface_reconfigurations = 0;
 
     std::uint64_t dirty_rects_total = 0;
     std::uint64_t dirty_tiles_total = 0;
@@ -39,6 +40,7 @@ struct CaptureStats {
         frames_without_dirty_metadata = 0;
         frames_coalesced = 0;
         device_lost_recoveries = 0;
+        surface_reconfigurations = 0;
         dirty_rects_total = 0;
         dirty_tiles_total = 0;
         tiles_total = 0;

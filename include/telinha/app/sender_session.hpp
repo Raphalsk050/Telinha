@@ -69,6 +69,8 @@ private:
     std::unique_ptr<audio::AudioSource> audio_source_;
     std::unique_ptr<transport::MediaTransport> transport_;
     SignalingCollector signaling_;
+    std::unique_ptr<char[]> token_;
+    std::unique_ptr<transport::SessionBlob> remote_blob_;
     SenderCounters counters_;
 
     std::unique_ptr<std::int16_t[]> audio_scratch_;

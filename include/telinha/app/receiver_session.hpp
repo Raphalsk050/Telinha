@@ -50,7 +50,6 @@ public:
 
 private:
     [[nodiscard]] Outcome negotiate();
-    [[nodiscard]] Outcome apply_remote(const SignalingPayload& payload);
     [[nodiscard]] Outcome publish_local(const char* label);
     [[nodiscard]] Outcome await_connection();
     [[nodiscard]] Outcome ensure_decoder(const receive::VideoPacketHeader& header);
@@ -71,6 +70,8 @@ private:
     receive::VideoJitterBuffer jitter_;
     receive::ClockOffsetEstimator offset_;
     SignalingCollector signaling_;
+    std::unique_ptr<char[]> token_;
+    std::unique_ptr<transport::SessionBlob> remote_blob_;
     ReceiverCounters counters_;
     std::uint64_t decode_submits_ = 0;
     std::uint64_t decode_failures_ = 0;

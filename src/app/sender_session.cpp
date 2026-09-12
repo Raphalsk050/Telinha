@@ -193,7 +193,8 @@ Outcome SenderSession::open_audio()
             TL_LOG_ERROR("emissor: --audio process precisa de --audio-pid com o processo alvo");
             return fail(Status::InvalidArgument, "open_audio");
         }
-        target = audio::AudioCaptureTarget::process_loopback(pid);
+        target = audio::AudioCaptureTarget::process_loopback(
+            pid, audio::ProcessLoopbackMode::IncludeProcessTree);
     } else {
         target = audio::AudioCaptureTarget::system_loopback();
     }
@@ -270,6 +271,14 @@ Outcome SenderSession::initialize(const SenderOptions& options)
 {
     options_ = options;
 
+    TL_TRY(signaling_.reserve(transport::TransportRole::Sender));
+
+    token_.reset(new (std::nothrow) char[kTokenCapacity]);
+    remote_blob_.reset(new (std::nothrow) transport::SessionBlob());
+    if (!token_ || !remote_blob_) {
+        return fail(Status::OutOfMemory, "SenderSession::initialize");
+    }
+
     TL_TRY(open_capture());
     TL_TRY(open_encoder(pipeline_.info()));
     TL_TRY(open_audio());
@@ -291,33 +300,21 @@ Outcome SenderSession::negotiate()
         return fail(Status::Timeout, "negotiate: sem descricao local");
     }
 
-    SignalingPayload local;
-    signaling_.snapshot(local);
-    if (local.candidate_count == 0) {
+    if (signaling_.candidate_count() == 0) {
         TL_LOG_WARN("emissor: nenhum candidato reunido, a conexao provavelmente vai falhar");
     }
 
-    static thread_local char token[kTokenCapacity];
     std::size_t length = 0;
-    TL_TRY(encode_signaling_token(local, token, sizeof(token), length));
-    TL_TRY(publish_token(options_.signaling, "convite para quem vai assistir", token, length));
+    TL_TRY(signaling_.encode(token_.get(), kTokenCapacity, length));
+    TL_TRY(
+        publish_token(options_.signaling, "convite para quem vai assistir", token_.get(), length));
 
     length = 0;
-    TL_TRY(consume_token(options_.signaling, "resposta de quem vai assistir", token, sizeof(token),
-                         length));
+    TL_TRY(consume_token(options_.signaling, "resposta de quem vai assistir", token_.get(),
+                         kTokenCapacity, length));
 
-    SignalingPayload remote;
-    TL_TRY(decode_signaling_token(Span<const char>(token, length), remote));
-    TL_TRY(transport_->set_remote_description(
-        Span<const char>(remote.description, remote.description_length)));
-
-    for (std::uint32_t index = 0; index < remote.candidate_count; ++index) {
-        const Outcome added = transport_->add_remote_candidate(
-            Span<const char>(remote.candidates[index], remote.candidate_length[index]));
-        if (!added.ok()) {
-            TL_LOG_WARN("emissor: candidato remoto recusado (%s)", to_string(added.status()));
-        }
-    }
+    TL_TRY(transport::decode_session_blob(Span<const char>(token_.get(), length), *remote_blob_));
+    TL_TRY(apply_remote_blob(*transport_, *remote_blob_));
 
     return await_connection();
 }

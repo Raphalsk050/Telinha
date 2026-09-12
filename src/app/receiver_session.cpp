@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <new>
 #include <thread>
 
 #include "telinha/core/log.hpp"
@@ -41,6 +42,13 @@ Outcome ReceiverSession::initialize(const ReceiverOptions& options)
     TL_TRY(audio_queue_.reserve(options_.audio_slot_bytes));
     TL_TRY(jitter_.reserve(options_.jitter));
     TL_TRY(offset_.reserve(options_.clock));
+    TL_TRY(signaling_.reserve(transport::TransportRole::Receiver));
+
+    token_.reset(new (std::nothrow) char[kTokenCapacity]);
+    remote_blob_.reset(new (std::nothrow) transport::SessionBlob());
+    if (!token_ || !remote_blob_) {
+        return fail(Status::OutOfMemory, "ReceiverSession::initialize");
+    }
 
     Result<std::unique_ptr<receive::VideoRenderer>> renderer =
         receive::create_video_renderer(options_.renderer);
@@ -189,21 +197,6 @@ void ReceiverSession::on_round_trip_time(Nanoseconds round_trip_ns) noexcept
     counters_.round_trip_ns.store(round_trip_ns, std::memory_order_relaxed);
 }
 
-Outcome ReceiverSession::apply_remote(const SignalingPayload& payload)
-{
-    TL_TRY(transport_->set_remote_description(
-        Span<const char>(payload.description, payload.description_length)));
-
-    for (std::uint32_t index = 0; index < payload.candidate_count; ++index) {
-        const Outcome added = transport_->add_remote_candidate(
-            Span<const char>(payload.candidates[index], payload.candidate_length[index]));
-        if (!added.ok()) {
-            TL_LOG_WARN("receptor: candidato remoto recusado (%s)", to_string(added.status()));
-        }
-    }
-    return ok();
-}
-
 Outcome ReceiverSession::publish_local(const char* label)
 {
     TL_TRY(transport_->create_local_description());
@@ -218,32 +211,27 @@ Outcome ReceiverSession::publish_local(const char* label)
         return fail(Status::Timeout, "publish_local: sem descricao local");
     }
 
-    SignalingPayload payload;
-    signaling_.snapshot(payload);
-    if (payload.candidate_count == 0) {
+    if (signaling_.candidate_count() == 0) {
         TL_LOG_WARN("receptor: nenhum candidato reunido, a conexao provavelmente vai falhar");
     }
-    if (payload.candidates_dropped != 0) {
+    if (signaling_.candidates_dropped() != 0) {
         TL_LOG_WARN("receptor: %u candidatos descartados por falta de espaco",
-                    payload.candidates_dropped);
+                    signaling_.candidates_dropped());
     }
 
-    static thread_local char token[kTokenCapacity];
     std::size_t length = 0;
-    TL_TRY(encode_signaling_token(payload, token, sizeof(token), length));
-    return publish_token(options_.signaling, label, token, length);
+    TL_TRY(signaling_.encode(token_.get(), kTokenCapacity, length));
+    return publish_token(options_.signaling, label, token_.get(), length);
 }
 
 Outcome ReceiverSession::negotiate()
 {
-    static thread_local char token[kTokenCapacity];
     std::size_t length = 0;
-    TL_TRY(consume_token(options_.signaling, "convite de quem compartilha", token, sizeof(token),
-                         length));
+    TL_TRY(consume_token(options_.signaling, "convite de quem compartilha", token_.get(),
+                         kTokenCapacity, length));
 
-    SignalingPayload remote;
-    TL_TRY(decode_signaling_token(Span<const char>(token, length), remote));
-    TL_TRY(apply_remote(remote));
+    TL_TRY(transport::decode_session_blob(Span<const char>(token_.get(), length), *remote_blob_));
+    TL_TRY(apply_remote_blob(*transport_, *remote_blob_));
     TL_TRY(publish_local("resposta para quem compartilha"));
     return await_connection();
 }

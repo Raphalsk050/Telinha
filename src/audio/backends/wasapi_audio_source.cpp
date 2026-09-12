@@ -274,6 +274,7 @@ Outcome WasapiAudioSource::open(const AudioCaptureTarget& target,
         if (activated.ok()) {
             info_.target = AudioCaptureTarget::process_loopback(root, target.process_loopback_mode);
         } else if (excluding) {
+            release_endpoint();
             return activated;
         } else {
             TL_LOG_WARN(

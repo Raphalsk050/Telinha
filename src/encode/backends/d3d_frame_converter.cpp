@@ -24,6 +24,22 @@ using Microsoft::WRL::ComPtr;
     return D3D11_VIDEO_PROCESSOR_ROTATION_IDENTITY;
 }
 
+[[nodiscard]] bool rotation_swaps_extent(capture::SurfaceRotation rotation) noexcept
+{
+    return rotation == capture::SurfaceRotation::Clockwise90 ||
+           rotation == capture::SurfaceRotation::Clockwise270;
+}
+
+[[nodiscard]] DXGI_COLOR_SPACE_TYPE input_color_space(DXGI_FORMAT format) noexcept
+{
+    switch (format) {
+        case DXGI_FORMAT_R16G16B16A16_FLOAT: return DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
+        case DXGI_FORMAT_R10G10B10A2_UNORM: return DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+        default: break;
+    }
+    return DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+}
+
 }  // namespace
 
 D3dFrameConverter::~D3dFrameConverter()
@@ -98,25 +114,42 @@ void D3dFrameConverter::shutdown() noexcept
     context_.Reset();
     device_.Reset();
 
+    for (std::uint32_t i = 0; i < kMaxInputViews; ++i) {
+        input_sources_[i].Reset();
+        input_views_[i].Reset();
+    }
+
     output_width_ = 0;
     output_height_ = 0;
     surface_count_ = 0;
     next_surface_ = 0;
+    input_view_count_ = 0;
     enumerated_width_ = 0;
     enumerated_height_ = 0;
+    enumerated_format_ = DXGI_FORMAT_UNKNOWN;
+    destination_width_ = 0;
+    destination_height_ = 0;
 }
 
 Outcome D3dFrameConverter::ensure_enumerator(std::uint32_t source_width,
-                                             std::uint32_t source_height) noexcept
+                                             std::uint32_t source_height,
+                                             DXGI_FORMAT source_format) noexcept
 {
     if (processor_ != nullptr && enumerated_width_ == source_width &&
-        enumerated_height_ == source_height) {
+        enumerated_height_ == source_height && enumerated_format_ == source_format) {
         return ok();
     }
 
     for (std::uint32_t i = 0; i < kMaxOutputSurfaces; ++i) {
         output_views_[i].Reset();
     }
+    for (std::uint32_t i = 0; i < kMaxInputViews; ++i) {
+        input_sources_[i].Reset();
+        input_views_[i].Reset();
+    }
+    input_view_count_ = 0;
+    destination_width_ = 0;
+    destination_height_ = 0;
     processor_.Reset();
     enumerator_.Reset();
 
@@ -150,7 +183,7 @@ Outcome D3dFrameConverter::ensure_enumerator(std::uint32_t source_width,
     ComPtr<ID3D11VideoContext1> video_context1;
     if (video_context_.As(&video_context1) >= 0) {
         video_context1->VideoProcessorSetStreamColorSpace1(processor_.Get(), 0,
-                                                           DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+                                                           input_color_space(source_format));
         video_context1->VideoProcessorSetOutputColorSpace1(
             processor_.Get(), DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709);
     } else {
@@ -169,11 +202,86 @@ Outcome D3dFrameConverter::ensure_enumerator(std::uint32_t source_width,
 
     const RECT output_rect{0, 0, static_cast<LONG>(output_width_),
                            static_cast<LONG>(output_height_)};
-    video_context_->VideoProcessorSetStreamDestRect(processor_.Get(), 0, TRUE, &output_rect);
     video_context_->VideoProcessorSetOutputTargetRect(processor_.Get(), TRUE, &output_rect);
+
+    D3D11_VIDEO_COLOR background{};
+    background.RGBA.A = 1.0f;
+    video_context_->VideoProcessorSetOutputBackgroundColor(processor_.Get(), FALSE, &background);
 
     enumerated_width_ = source_width;
     enumerated_height_ = source_height;
+    enumerated_format_ = source_format;
+    return ok();
+}
+
+void D3dFrameConverter::apply_destination(std::uint32_t content_width,
+                                          std::uint32_t content_height) noexcept
+{
+    if (content_width == 0 || content_height == 0) {
+        return;
+    }
+    if (destination_width_ == content_width && destination_height_ == content_height) {
+        return;
+    }
+
+    const auto wide = static_cast<std::uint64_t>(content_width) * output_height_;
+    const auto tall = static_cast<std::uint64_t>(content_height) * output_width_;
+
+    std::uint32_t width = output_width_;
+    std::uint32_t height = output_height_;
+    if (wide > tall) {
+        height = static_cast<std::uint32_t>(tall / content_width);
+    } else if (tall > wide) {
+        width = static_cast<std::uint32_t>(wide / content_height);
+    }
+
+    width = width < 2 ? 2 : (width & ~1u);
+    height = height < 2 ? 2 : (height & ~1u);
+
+    const auto left = static_cast<LONG>(((output_width_ - width) / 2) & ~1u);
+    const auto top = static_cast<LONG>(((output_height_ - height) / 2) & ~1u);
+
+    const RECT destination{left, top, left + static_cast<LONG>(width),
+                           top + static_cast<LONG>(height)};
+    video_context_->VideoProcessorSetStreamDestRect(processor_.Get(), 0, TRUE, &destination);
+
+    destination_width_ = content_width;
+    destination_height_ = content_height;
+}
+
+Outcome D3dFrameConverter::ensure_input_view(ID3D11Texture2D* source,
+                                             ID3D11VideoProcessorInputView*& out) noexcept
+{
+    for (std::uint32_t i = 0; i < input_view_count_; ++i) {
+        if (input_sources_[i].Get() == source) {
+            out = input_views_[i].Get();
+            return ok();
+        }
+    }
+
+    if (input_view_count_ == kMaxInputViews) {
+        for (std::uint32_t i = 0; i < kMaxInputViews; ++i) {
+            input_sources_[i].Reset();
+            input_views_[i].Reset();
+        }
+        input_view_count_ = 0;
+    }
+
+    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC view_desc{};
+    view_desc.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+    view_desc.Texture2D.MipSlice = 0;
+    view_desc.Texture2D.ArraySlice = 0;
+
+    const std::uint32_t slot = input_view_count_;
+    const HRESULT hr = video_device_->CreateVideoProcessorInputView(
+        source, enumerator_.Get(), &view_desc, input_views_[slot].ReleaseAndGetAddressOf());
+    if (hr < 0) {
+        return from_hresult(hr, "D3dFrameConverter: input view creation failed");
+    }
+
+    input_sources_[slot] = source;
+    ++input_view_count_;
+    out = input_views_[slot].Get();
     return ok();
 }
 
@@ -191,7 +299,7 @@ Outcome D3dFrameConverter::convert(ID3D11Texture2D* source, capture::SurfaceRota
 
     D3D11_TEXTURE2D_DESC source_desc{};
     source->GetDesc(&source_desc);
-    TL_TRY(ensure_enumerator(source_desc.Width, source_desc.Height));
+    TL_TRY(ensure_enumerator(source_desc.Width, source_desc.Height, source_desc.Format));
 
     const std::uint32_t slot = next_surface_;
     next_surface_ = (next_surface_ + 1) % surface_count_;
@@ -207,17 +315,8 @@ Outcome D3dFrameConverter::convert(ID3D11Texture2D* source, capture::SurfaceRota
         }
     }
 
-    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC input_desc{};
-    input_desc.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
-    input_desc.Texture2D.MipSlice = 0;
-    input_desc.Texture2D.ArraySlice = 0;
-
-    ComPtr<ID3D11VideoProcessorInputView> input_view;
-    HRESULT hr = video_device_->CreateVideoProcessorInputView(
-        source, enumerator_.Get(), &input_desc, input_view.GetAddressOf());
-    if (hr < 0) {
-        return from_hresult(hr, "D3dFrameConverter: input view creation failed");
-    }
+    ID3D11VideoProcessorInputView* input_view = nullptr;
+    TL_TRY(ensure_input_view(source, input_view));
 
     const D3D11_VIDEO_PROCESSOR_ROTATION processor_rotation = to_processor_rotation(rotation);
     video_context_->VideoProcessorSetStreamRotation(
@@ -228,14 +327,18 @@ Outcome D3dFrameConverter::convert(ID3D11Texture2D* source, capture::SurfaceRota
                            static_cast<LONG>(source_desc.Height)};
     video_context_->VideoProcessorSetStreamSourceRect(processor_.Get(), 0, TRUE, &source_rect);
 
+    const bool swapped = rotation_swaps_extent(rotation);
+    apply_destination(swapped ? source_desc.Height : source_desc.Width,
+                      swapped ? source_desc.Width : source_desc.Height);
+
     D3D11_VIDEO_PROCESSOR_STREAM stream{};
     stream.Enable = TRUE;
     stream.OutputIndex = 0;
     stream.InputFrameOrField = 0;
-    stream.pInputSurface = input_view.Get();
+    stream.pInputSurface = input_view;
 
-    hr = video_context_->VideoProcessorBlt(processor_.Get(), output_views_[slot].Get(), 0, 1,
-                                           &stream);
+    const HRESULT hr = video_context_->VideoProcessorBlt(processor_.Get(),
+                                                         output_views_[slot].Get(), 0, 1, &stream);
     if (hr < 0) {
         return from_hresult(hr, "D3dFrameConverter: VideoProcessorBlt failed");
     }

@@ -45,9 +45,15 @@ public:
 
 private:
     static constexpr std::uint32_t kMaxOutputSurfaces = 8;
+    static constexpr std::uint32_t kMaxInputViews = 8;
 
-    [[nodiscard]] Outcome ensure_enumerator(std::uint32_t source_width,
-                                            std::uint32_t source_height) noexcept;
+    [[nodiscard]] Outcome ensure_enumerator(std::uint32_t source_width, std::uint32_t source_height,
+                                            DXGI_FORMAT source_format) noexcept;
+
+    [[nodiscard]] Outcome ensure_input_view(ID3D11Texture2D* source,
+                                            ID3D11VideoProcessorInputView*& out) noexcept;
+
+    void apply_destination(std::uint32_t content_width, std::uint32_t content_height) noexcept;
 
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;
@@ -62,8 +68,15 @@ private:
     std::uint32_t output_height_ = 0;
     std::uint32_t surface_count_ = 0;
     std::uint32_t next_surface_ = 0;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> input_sources_[kMaxInputViews];
+    Microsoft::WRL::ComPtr<ID3D11VideoProcessorInputView> input_views_[kMaxInputViews];
+    std::uint32_t input_view_count_ = 0;
+
     std::uint32_t enumerated_width_ = 0;
     std::uint32_t enumerated_height_ = 0;
+    DXGI_FORMAT enumerated_format_ = DXGI_FORMAT_UNKNOWN;
+    std::uint32_t destination_width_ = 0;
+    std::uint32_t destination_height_ = 0;
 };
 
 }  // namespace tl::encode

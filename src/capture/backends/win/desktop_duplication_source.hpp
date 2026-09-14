@@ -31,8 +31,17 @@ private:
     void destroy_duplication() noexcept;
     [[nodiscard]] Outcome adopt_duplication_layout(bool& layout_changed) noexcept;
     [[nodiscard]] Outcome pull_frame(CapturedFrame& out, std::uint32_t timeout_ms) noexcept;
-    void collect_dirty_metadata(const DXGI_OUTDUPL_FRAME_INFO& info) noexcept;
+    [[nodiscard]] Outcome update_desktop(ID3D11Texture2D* image) noexcept;
+    [[nodiscard]] Outcome emit_frame(CapturedFrame& out, const DXGI_OUTDUPL_FRAME_INFO& info,
+                                     ID3D11Texture2D* source, bool content_changed,
+                                     const CursorPlacement& placement) noexcept;
+    void collect_dirty_metadata(const DXGI_OUTDUPL_FRAME_INFO& info, const Rect& previous_cursor,
+                                const Rect& next_cursor) noexcept;
     void collect_cursor(const DXGI_OUTDUPL_FRAME_INFO& info) noexcept;
+    void ensure_compositor() noexcept;
+    [[nodiscard]] bool compositing() const noexcept;
+    [[nodiscard]] CursorPlacement next_cursor_placement() const noexcept;
+    void forget_desktop() noexcept;
     void publish(CapturedFrame& out, const DXGI_OUTDUPL_FRAME_INFO& info, ID3D11Texture2D* texture,
                  bool content_changed) noexcept;
 
@@ -46,6 +55,7 @@ private:
     ArenaStorage storage_;
     DirtyRegionBuilder dirty_;
     CursorTracker cursor_;
+    D3D11CursorCompositor compositor_;
 
     std::byte* metadata_ = nullptr;
     std::uint32_t metadata_capacity_ = 0;
@@ -56,11 +66,19 @@ private:
     SurfaceRotation rotation_ = SurfaceRotation::None;
     std::uint32_t refresh_millihertz_ = 0;
 
-    ComPtr<ID3D11Texture2D> last_texture_;
+    ComPtr<ID3D11Texture2D> desktop_;
+    ComPtr<ID3D11ShaderResourceView> desktop_view_;
+    SurfaceLayout desktop_layout_;
+    ID3D11Device* desktop_device_ = nullptr;
     TextureHandle leased_handle_;
+    Rect drawn_cursor_;
+    std::uint64_t drawn_generation_ = 0;
+    std::uint64_t uploaded_generation_ = 0;
+    ID3D11Device* compositor_device_ = nullptr;
+    PixelFormat compositor_format_ = PixelFormat::Unknown;
     std::uint64_t frame_index_ = 0;
+    bool desktop_ready_ = false;
     bool leased_ = false;
-    bool leased_from_ring_ = false;
     bool started_ = false;
 };
 

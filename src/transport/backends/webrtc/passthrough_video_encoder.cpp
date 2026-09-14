@@ -139,6 +139,7 @@ int32_t PassthroughVideoEncoder::Encode(const webrtc::VideoFrame& frame,
     image.rotation_ = webrtc::kVideoRotation_0;
     image.SetSpatialIndex(payload.spatial_index());
     image.SetTemporalIndex(payload.temporal_index());
+    image.SetPlayoutDelay(webrtc::VideoPlayoutDelay::Minimal());
 
     webrtc::CodecSpecificInfo codec_specific;
     codec_specific.codecType = to_webrtc_codec(codec_);

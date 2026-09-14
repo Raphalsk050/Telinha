@@ -6,6 +6,7 @@
 #include <new>
 #include <thread>
 
+#include "telinha/app/machine_events.hpp"
 #include "telinha/core/log.hpp"
 
 namespace tl::app {
@@ -23,6 +24,10 @@ constexpr Nanoseconds kKeyframeRequestGap = 500ull * kNanosecondsPerMillisecond;
 
 void say_step(const char* text) noexcept
 {
+    if (machine_events_enabled()) {
+        MachineEvent("step").text("text", text);
+        return;
+    }
     std::printf("  %s\n", text);
     std::fflush(stdout);
 }
@@ -118,6 +123,9 @@ void ReceiverSession::on_connection_state_changed(transport::ConnectionState sta
 {
     state_.store(static_cast<std::uint32_t>(state), std::memory_order_relaxed);
     TL_LOG_INFO("receptor: conexao %s", to_string(state));
+    if (machine_events_enabled()) {
+        MachineEvent("state").text("state", to_string(state));
+    }
 }
 
 void ReceiverSession::on_target_bitrate_changed(std::uint32_t bits_per_second,
@@ -238,16 +246,17 @@ Outcome ReceiverSession::publish_local(const char* label)
 
     std::size_t length = 0;
     TL_TRY(signaling_.encode(token_.get(), kTokenCapacity, length));
-    return publish_token(options_.signaling, label, token_.get(), length);
+    return publish_token(options_.signaling, "answer", label, token_.get(), length);
 }
 
 Outcome ReceiverSession::negotiate()
 {
-    std::size_t length = 0;
-    TL_TRY(consume_token(options_.signaling, "convite de quem compartilha", token_.get(),
-                         kTokenCapacity, length));
-
-    TL_TRY(transport::decode_session_blob(Span<const char>(token_.get(), length), *remote_blob_));
+    TL_TRY(receive_remote_blob(options_.signaling, "invite", "convite de quem compartilha",
+                               transport::TransportRole::Sender, token_.get(), kTokenCapacity,
+                               *remote_blob_));
+    if (machine_events_enabled()) {
+        start_command_reader(stop_);
+    }
     TL_TRY(apply_remote_blob(*transport_, *remote_blob_));
     TL_TRY(publish_local("resposta para quem compartilha"));
     return await_connection();
@@ -418,7 +427,9 @@ void ReceiverSession::feed_decoder(Nanoseconds local_now_ns)
         }
 
         const Outcome ready = ensure_decoder(header);
-        if (ready.ok()) {
+        if (ready.ok() && awaiting_keyframe_ && !header.keyframe) {
+            counters_.video_dropped.fetch_add(1, std::memory_order_relaxed);
+        } else if (ready.ok()) {
             transport::EncodedVideoFrame frame;
             frame.bitstream =
                 Span<const std::byte>(video_queue_.slot_data(header.slot), header.byte_size);
@@ -434,8 +445,23 @@ void ReceiverSession::feed_decoder(Nanoseconds local_now_ns)
             const Outcome submitted = decoder_->submit(frame);
             if (submitted.ok()) {
                 ++decode_submits_;
+                awaiting_keyframe_ = false;
             } else {
                 ++decode_failures_;
+                ++decode_refusals_since_log_;
+                awaiting_keyframe_ = true;
+                ask_for_keyframe("decoder recusou um quadro");
+                if (last_decode_log_ns_ == 0 ||
+                    local_now_ns - last_decode_log_ns_ >= kNanosecondsPerSecond) {
+                    TL_LOG_WARN(
+                        "receptor: decoder recusou %llu quadros (%s, %s, 0x%08X), congelando ate o "
+                        "proximo keyframe",
+                        static_cast<unsigned long long>(decode_refusals_since_log_),
+                        to_string(submitted.status()), submitted.error().context,
+                        static_cast<unsigned>(submitted.error().platform_code));
+                    decode_refusals_since_log_ = 0;
+                    last_decode_log_ns_ = local_now_ns;
+                }
             }
         }
 
@@ -450,7 +476,14 @@ void ReceiverSession::present_next()
     }
 
     receive::DecodedVideoFrame frame;
-    if (!decoder_->poll(frame, 0).ok()) {
+    const Outcome polled = decoder_->poll(frame, 0);
+    if (!polled.ok()) {
+        if (polled.status() != Status::WouldBlock && !poll_warned_) {
+            poll_warned_ = true;
+            TL_LOG_WARN("receptor: decoder nao entregou quadro (%s, %s, 0x%08X)",
+                        to_string(polled.status()), polled.error().context,
+                        static_cast<unsigned>(polled.error().platform_code));
+        }
         return;
     }
 
@@ -477,6 +510,21 @@ void ReceiverSession::report(Nanoseconds local_now_ns)
     const receive::RendererStats& present = renderer_->stats();
     const LatencyHistogram::Report interval = present.present_interval_ns.report();
     const transport::TransportStats network = transport_->stats();
+
+    if (machine_events_enabled()) {
+        MachineEvent("stats")
+            .text("role", "receiver")
+            .integer("frames", counters_.video_frames.load(std::memory_order_relaxed))
+            .integer("presented", present.frames_presented)
+            .integer("audio_blocks", counters_.audio_blocks.load(std::memory_order_relaxed))
+            .number("delay_ms", ns_to_ms(jitter.current_delay_ns))
+            .number("present_interval_ms", ns_to_ms(interval.p50_ns))
+            .integer("dropped", counters_.video_dropped.load(std::memory_order_relaxed))
+            .integer("gaps", jitter.gaps)
+            .number("loss", network.loss_ratio())
+            .number("rtt_ms", ns_to_ms(counters_.round_trip_ns.load(std::memory_order_relaxed)));
+        return;
+    }
 
     std::printf(
         "recebidos %llu quadros e %llu blocos de audio | atraso de reproducao %.1f ms | fila "
@@ -509,12 +557,19 @@ Outcome ReceiverSession::run()
     const Outcome negotiated = negotiate();
     if (!negotiated.ok()) {
         if (negotiated.status() == Status::Unavailable || negotiated.status() == Status::Timeout) {
-            std::printf(
-                "\nNao foi possivel abrir o caminho direto ate a outra maquina.\n"
-                "Quando as duas pontas estao atras de NAT simetrico, o furo direto nao acontece "
-                "e so um servidor TURN resolve.\n"
-                "Tente de novo com --turn URL --turn-user USUARIO --turn-pass SENHA.\n\n");
-            std::fflush(stdout);
+            if (machine_events_enabled()) {
+                MachineEvent("error")
+                    .text("stage", "network")
+                    .text("status", to_string(negotiated.status()))
+                    .text("message", negotiated.error().context);
+            } else {
+                std::printf(
+                    "\nNao foi possivel abrir o caminho direto ate a outra maquina.\n"
+                    "Quando as duas pontas estao atras de NAT simetrico, o furo direto nao "
+                    "acontece e so um servidor TURN resolve.\n"
+                    "Tente de novo com --turn URL --turn-user USUARIO --turn-pass SENHA.\n\n");
+                std::fflush(stdout);
+            }
         }
         return negotiated;
     }
@@ -523,6 +578,7 @@ Outcome ReceiverSession::run()
 
     ask_for_keyframe("inicio da sessao");
 
+    bool fullscreen = renderer_->fullscreen();
     while (!stop_.load(std::memory_order_relaxed)) {
         bool close_requested = false;
         const Outcome pumped = renderer_->pump(close_requested);
@@ -533,16 +589,42 @@ Outcome ReceiverSession::run()
             break;
         }
 
+        MachineCommand command;
+        while (take_machine_command(command)) {
+            if (command.kind == MachineCommandKind::SetFullscreen) {
+                renderer_->set_fullscreen(command.enabled);
+            } else if (command.kind == MachineCommandKind::SetVolume) {
+                volume_percent_ = command.volume > receive::kMaxVolumePercent
+                                      ? receive::kMaxVolumePercent
+                                      : command.volume;
+                if (audio_renderer_) {
+                    audio_renderer_->set_volume(volume_percent_);
+                }
+                MachineEvent("volume").integer("volume", volume_percent_);
+            }
+        }
+        if (machine_events_enabled() && renderer_->fullscreen() != fullscreen) {
+            fullscreen = renderer_->fullscreen();
+            MachineEvent("fullscreen").flag("enabled", fullscreen);
+        }
+
         const auto state =
             static_cast<transport::ConnectionState>(state_.load(std::memory_order_relaxed));
         if (state == transport::ConnectionState::Failed ||
             state == transport::ConnectionState::Closed) {
-            std::printf(
-                "\nA conexao caiu e nao volta sozinha.\n"
-                "Os enderecos foram combinados uma vez so, no inicio, entao trocar de cabo para "
-                "Wi-Fi ou de rede derruba de vez.\n"
-                "Abram o Telinha de novo nos dois lados e troquem um codigo novo.\n\n");
-            std::fflush(stdout);
+            if (machine_events_enabled()) {
+                MachineEvent("error")
+                    .text("stage", "connection_lost")
+                    .text("status", to_string(state))
+                    .text("message", "a conexao caiu e nao volta sozinha");
+            } else {
+                std::printf(
+                    "\nA conexao caiu e nao volta sozinha.\n"
+                    "Os enderecos foram combinados uma vez so, no inicio, entao trocar de cabo "
+                    "para Wi-Fi ou de rede derruba de vez.\n"
+                    "Abram o Telinha de novo nos dois lados e troquem um codigo novo.\n\n");
+                std::fflush(stdout);
+            }
             break;
         }
 
@@ -556,6 +638,7 @@ Outcome ReceiverSession::run()
         report(local_now);
 
         if (jitter_.take_keyframe_request()) {
+            awaiting_keyframe_ = true;
             ask_for_keyframe("buraco no video");
         }
 

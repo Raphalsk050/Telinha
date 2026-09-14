@@ -75,6 +75,9 @@ public:
     [[nodiscard]] virtual VideoRendererInfo info() const noexcept = 0;
     [[nodiscard]] virtual const RendererStats& stats() const noexcept = 0;
 
+    virtual void set_fullscreen(bool enabled) noexcept { (void)enabled; }
+    [[nodiscard]] virtual bool fullscreen() const noexcept { return false; }
+
 protected:
     VideoRenderer() = default;
 };

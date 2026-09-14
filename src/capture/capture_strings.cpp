@@ -34,6 +34,7 @@ const char* to_string(CaptureTargetKind kind) noexcept
         case CaptureTargetKind::None: return "None";
         case CaptureTargetKind::Monitor: return "Monitor";
         case CaptureTargetKind::Window: return "Window";
+        case CaptureTargetKind::Device: return "Device";
     }
     return "Unrecognized";
 }
@@ -45,6 +46,7 @@ const char* to_string(CaptureBackend backend) noexcept
         case CaptureBackend::DesktopDuplication: return "DesktopDuplication";
         case CaptureBackend::GraphicsCapture: return "GraphicsCapture";
         case CaptureBackend::Synthetic: return "Synthetic";
+        case CaptureBackend::MediaFoundation: return "MediaFoundation";
     }
     return "Unrecognized";
 }

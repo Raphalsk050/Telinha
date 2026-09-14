@@ -54,9 +54,41 @@ float4 ps_main(VsOut input) : SV_TARGET
 struct WindowState {
     bool close_requested = false;
     bool size_changed = false;
+    bool fullscreen = false;
+    WINDOWPLACEMENT placement = {};
     std::uint32_t width = 0;
     std::uint32_t height = 0;
 };
+
+void set_window_fullscreen(HWND window, WindowState& state, bool enabled) noexcept
+{
+    if (window == nullptr || enabled == state.fullscreen) {
+        return;
+    }
+
+    if (enabled) {
+        MONITORINFO monitor = {};
+        monitor.cbSize = sizeof(monitor);
+        state.placement.length = sizeof(state.placement);
+        if (GetWindowPlacement(window, &state.placement) == FALSE ||
+            GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor) ==
+                FALSE) {
+            return;
+        }
+        SetWindowLongPtrW(window, GWL_STYLE, static_cast<LONG_PTR>(WS_POPUP | WS_VISIBLE));
+        SetWindowPos(window, HWND_TOP, monitor.rcMonitor.left, monitor.rcMonitor.top,
+                     monitor.rcMonitor.right - monitor.rcMonitor.left,
+                     monitor.rcMonitor.bottom - monitor.rcMonitor.top,
+                     SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+    } else {
+        SetWindowLongPtrW(window, GWL_STYLE,
+                          static_cast<LONG_PTR>(WS_OVERLAPPEDWINDOW | WS_VISIBLE));
+        SetWindowPlacement(window, &state.placement);
+        SetWindowPos(window, nullptr, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+    }
+    state.fullscreen = enabled;
+}
 
 LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
 {
@@ -83,8 +115,26 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
             }
             return 0;
         case WM_KEYDOWN:
-            if (state != nullptr && wparam == VK_ESCAPE) {
-                state->close_requested = true;
+            if (state != nullptr && wparam == VK_F11) {
+                set_window_fullscreen(window, *state, !state->fullscreen);
+            } else if (state != nullptr && wparam == VK_ESCAPE) {
+                set_window_fullscreen(window, *state, false);
+            }
+            return 0;
+        case WM_SYSKEYDOWN:
+            if (state != nullptr && wparam == VK_RETURN) {
+                set_window_fullscreen(window, *state, !state->fullscreen);
+                return 0;
+            }
+            break;
+        case WM_SYSCHAR:
+            if (wparam == VK_RETURN) {
+                return 0;
+            }
+            break;
+        case WM_LBUTTONDBLCLK:
+            if (state != nullptr) {
+                set_window_fullscreen(window, *state, !state->fullscreen);
             }
             return 0;
         default: break;
@@ -237,6 +287,13 @@ public:
 
     const RendererStats& stats() const noexcept override { return stats_; }
 
+    void set_fullscreen(bool enabled) noexcept override
+    {
+        set_window_fullscreen(window_, state_, enabled);
+    }
+
+    bool fullscreen() const noexcept override { return state_.fullscreen; }
+
 private:
     Outcome create_window()
     {
@@ -244,7 +301,7 @@ private:
 
         WNDCLASSEXW description = {};
         description.cbSize = sizeof(description);
-        description.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
+        description.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC | CS_DBLCLKS;
         description.lpfnWndProc = window_procedure;
         description.hInstance = instance;
         description.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -259,7 +316,7 @@ private:
 
         wchar_t title[kWindowTitleCapacity] = {};
         const char* source = config_.title[0] == '\0' ? "Telinha" : config_.title;
-        MultiByteToWideChar(CP_UTF8, 0, source, -1, title, kWindowTitleCapacity - 1);
+        MultiByteToWideChar(CP_UTF8, 0, source, -1, title, kWindowTitleCapacity);
 
         RECT bounds = {0, 0, static_cast<LONG>(config_.width), static_cast<LONG>(config_.height)};
         AdjustWindowRect(&bounds, WS_OVERLAPPEDWINDOW, FALSE);
@@ -275,7 +332,13 @@ private:
                         static_cast<std::int32_t>(GetLastError()));
         }
 
-        ShowWindow(window_, config_.start_fullscreen ? SW_SHOWMAXIMIZED : SW_SHOW);
+        ShowWindow(window_, SW_SHOW);
+        if (IsWindowVisible(window_) == FALSE) {
+            ShowWindow(window_, SW_SHOW);
+        }
+        if (config_.start_fullscreen) {
+            set_window_fullscreen(window_, state_, true);
+        }
         UpdateWindow(window_);
         return ok();
     }

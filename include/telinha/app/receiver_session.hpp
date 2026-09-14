@@ -80,10 +80,15 @@ private:
     Nanoseconds last_keyframe_request_ns_ = 0;
     bool keyframe_requests_supported_ = true;
     bool keyframe_warned_ = false;
+    bool poll_warned_ = false;
+    bool awaiting_keyframe_ = true;
+    std::uint64_t decode_refusals_since_log_ = 0;
+    Nanoseconds last_decode_log_ns_ = 0;
     std::uint64_t decode_submits_ = 0;
     std::uint64_t decode_failures_ = 0;
     std::uint64_t audio_submit_failures_ = 0;
     Nanoseconds last_report_ns_ = 0;
+    std::uint32_t volume_percent_ = receive::kDefaultVolumePercent;
     std::atomic<std::uint32_t> state_{0};
     std::atomic<bool> stop_{false};
 };

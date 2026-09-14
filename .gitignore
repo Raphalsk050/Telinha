@@ -34,3 +34,7 @@ compile_commands.json
 
 # Fetched dependency packages
 .deps/
+
+# Desktop app
+desktop/node_modules/
+desktop/dist/

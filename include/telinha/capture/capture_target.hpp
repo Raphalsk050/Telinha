@@ -18,6 +18,7 @@ enum class CaptureTargetKind : std::uint8_t {
     None = 0,
     Monitor,
     Window,
+    Device,
 };
 
 const char* to_string(CaptureTargetKind kind) noexcept;
@@ -39,6 +40,11 @@ struct CaptureTarget {
     [[nodiscard]] static constexpr CaptureTarget window(std::uint64_t handle) noexcept
     {
         return CaptureTarget{CaptureTargetKind::Window, handle};
+    }
+
+    [[nodiscard]] static constexpr CaptureTarget device(std::uint64_t handle) noexcept
+    {
+        return CaptureTarget{CaptureTargetKind::Device, handle};
     }
 
     friend constexpr bool operator==(const CaptureTarget& a, const CaptureTarget& b) noexcept
@@ -64,5 +70,6 @@ struct CaptureTargetInfo {
     SurfaceRotation rotation = SurfaceRotation::None;
     bool primary = false;
     char name[kTargetNameCapacity] = {};
+    std::uint8_t container_id[16] = {};
 };
 }  // namespace tl::capture

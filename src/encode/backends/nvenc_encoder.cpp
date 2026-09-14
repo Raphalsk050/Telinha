@@ -207,6 +207,7 @@ Outcome NvencEncoder::configure() noexcept
     }
 
     if (config_.codec == VideoCodec::H264) {
+        encode_config_.profileGUID = NV_ENC_H264_PROFILE_HIGH_GUID;
         NV_ENC_CONFIG_H264& h264 = encode_config_.encodeCodecConfig.h264Config;
         h264.idrPeriod = encode_config_.gopLength;
         h264.repeatSPSPPS = config_.repeat_parameter_sets ? 1u : 0u;

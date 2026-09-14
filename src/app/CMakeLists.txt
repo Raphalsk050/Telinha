@@ -1,6 +1,7 @@
 set(TELINHA_APP_SOURCES
     app_options.cpp
     clipboard.cpp
+    machine_events.cpp
     receiver_session.cpp
     signaling.cpp
     wizard.cpp)

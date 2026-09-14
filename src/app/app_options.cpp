@@ -74,8 +74,22 @@ const char* to_string(AudioScope scope) noexcept
         case AudioScope::None: return "None";
         case AudioScope::System: return "System";
         case AudioScope::Process: return "Process";
+        case AudioScope::Device: return "Device";
     }
     return "Unknown";
+}
+
+void set_window_title(ReceiverOptions& options, const char* text) noexcept
+{
+    std::size_t length = std::strlen(text);
+    if (length >= receive::kWindowTitleCapacity) {
+        length = receive::kWindowTitleCapacity - 1;
+        while (length > 0 && (static_cast<unsigned char>(text[length]) & 0xC0u) == 0x80u) {
+            --length;
+        }
+    }
+    std::memcpy(options.renderer.title, text, length);
+    options.renderer.title[length] = '\0';
 }
 
 void print_usage() noexcept
@@ -84,7 +98,7 @@ void print_usage() noexcept
         "telinha - compartilhamento de tela ponto a ponto\n"
         "\n"
         "  telinha                 modo guiado, pergunta tudo na tela\n"
-        "  telinha list [monitores|janelas]\n"
+        "  telinha list [monitores|janelas|placas]\n"
         "  telinha probe\n"
         "  telinha send [opcoes]\n"
         "  telinha recv [opcoes]\n"
@@ -92,6 +106,10 @@ void print_usage() noexcept
         "Alvo (send):\n"
         "  --monitor N            compartilha o monitor de indice N\n"
         "  --window N             compartilha a janela de indice N\n"
+        "  --monitor-handle H     compartilha o monitor com este handle, visto em list --json\n"
+        "  --window-handle H      compartilha a janela com este handle, visto em list --json\n"
+        "  --device N             compartilha a placa de captura de indice N\n"
+        "  --device-handle H      compartilha a placa de captura com este handle\n"
         "  --no-cursor            nao desenha o cursor\n"
         "\n"
         "Video (send):\n"
@@ -103,8 +121,11 @@ void print_usage() noexcept
         "Audio (send):\n"
         "  --audio system         audio de todo o sistema, padrao\n"
         "  --audio process        audio apenas do programa compartilhado\n"
+        "  --audio device         audio de uma entrada, como a da placa de captura\n"
         "  --audio none           sem audio\n"
+        "  --audio-device ID      entrada usada por --audio device, vista em list --json\n"
         "  --audio-pid N          processo explicito para --audio process\n"
+        "  --audio-exclude-pid N  com --audio system, tira o som deste processo e dos filhos\n"
         "\n"
         "Rede:\n"
         "  --stun URL             servidor STUN, repetivel\n"
@@ -123,6 +144,7 @@ void print_usage() noexcept
         "Janela (recv):\n"
         "  --width N              largura inicial, padrao 1280\n"
         "  --height N             altura inicial, padrao 720\n"
+        "  --title TEXTO          titulo da janela, padrao Telinha\n"
         "  --fullscreen           abre em tela cheia\n"
         "  --headless             nao abre janela, so mede\n"
         "  --no-audio             nao reproduz o audio recebido\n"
@@ -131,6 +153,8 @@ void print_usage() noexcept
         "\n"
         "Geral:\n"
         "  --log NIVEL            trace, debug, info, warn, error\n"
+        "  --json                 eventos em JSON por linha, usado pelo app visual\n"
+        "  --multi                com --json no send, transmite para varios espectadores\n"
         "  --help                 mostra esta ajuda\n");
 }
 
@@ -183,6 +207,8 @@ Outcome parse_command_line(int argc, const char* const* argv, AppOptions& out, c
                 out.list_kind = capture::CaptureTargetKind::Monitor;
             } else if (equals(argument, "janelas") || equals(argument, "windows")) {
                 out.list_kind = capture::CaptureTargetKind::Window;
+            } else if (equals(argument, "placas") || equals(argument, "devices")) {
+                out.list_kind = capture::CaptureTargetKind::Device;
             } else {
                 set_error(error, error_capacity, "alvo desconhecido para list: %s", argument);
                 return fail(Status::InvalidArgument, "parse_command_line");
@@ -212,6 +238,14 @@ Outcome parse_command_line(int argc, const char* const* argv, AppOptions& out, c
             out.receiver.render_audio = false;
             continue;
         }
+        if (equals(argument, "--json")) {
+            out.machine_output = true;
+            continue;
+        }
+        if (equals(argument, "--multi")) {
+            out.sender.multi_peer = true;
+            continue;
+        }
 
         if (!has_value) {
             set_error(error, error_capacity, "falta o valor de %s", argument);
@@ -235,6 +269,28 @@ Outcome parse_command_line(int argc, const char* const* argv, AppOptions& out, c
             }
             out.sender.target_kind = capture::CaptureTargetKind::Window;
             out.sender.target_index = static_cast<std::int32_t>(number);
+        } else if (equals(argument, "--device")) {
+            if (!parse_u32(value, number)) {
+                set_error(error, error_capacity, "indice invalido: %s", value);
+                return fail(Status::InvalidArgument, "parse_command_line");
+            }
+            out.sender.target_kind = capture::CaptureTargetKind::Device;
+            out.sender.target_index = static_cast<std::int32_t>(number);
+        } else if (equals(argument, "--monitor-handle") || equals(argument, "--window-handle") ||
+                   equals(argument, "--device-handle")) {
+            char* end = nullptr;
+            const std::uint64_t handle = std::strtoull(value, &end, 0);
+            if (end == value || *end != '\0' || handle == 0) {
+                set_error(error, error_capacity, "handle invalido: %s", value);
+                return fail(Status::InvalidArgument, "parse_command_line");
+            }
+            if (equals(argument, "--monitor-handle")) {
+                out.sender.target = capture::CaptureTarget::monitor(handle);
+            } else if (equals(argument, "--window-handle")) {
+                out.sender.target = capture::CaptureTarget::window(handle);
+            } else {
+                out.sender.target = capture::CaptureTarget::device(handle);
+            }
         } else if (equals(argument, "--fps")) {
             if (!parse_u32(value, number) || number == 0 || number > 240) {
                 set_error(error, error_capacity, "fps invalido: %s", value);
@@ -264,6 +320,8 @@ Outcome parse_command_line(int argc, const char* const* argv, AppOptions& out, c
                 out.sender.audio_scope = AudioScope::System;
             } else if (equals(value, "process") || equals(value, "processo")) {
                 out.sender.audio_scope = AudioScope::Process;
+            } else if (equals(value, "device") || equals(value, "placa")) {
+                out.sender.audio_scope = AudioScope::Device;
             } else if (equals(value, "none") || equals(value, "nenhum")) {
                 out.sender.audio_scope = AudioScope::None;
             } else {
@@ -276,6 +334,18 @@ Outcome parse_command_line(int argc, const char* const* argv, AppOptions& out, c
                 return fail(Status::InvalidArgument, "parse_command_line");
             }
             out.sender.audio_process_id = number;
+        } else if (equals(argument, "--audio-exclude-pid")) {
+            if (!parse_u32(value, number)) {
+                set_error(error, error_capacity, "pid invalido: %s", value);
+                return fail(Status::InvalidArgument, "parse_command_line");
+            }
+            out.sender.audio_exclude_process_id = number;
+        } else if (equals(argument, "--audio-device")) {
+            if (value[0] == '\0' ||
+                !copy_text(out.sender.audio_device_id, audio::kAudioDeviceIdCapacity, value)) {
+                set_error(error, error_capacity, "entrada de audio invalida: %s", value);
+                return fail(Status::InvalidArgument, "parse_command_line");
+            }
         } else if (equals(argument, "--stun")) {
             if (network.ice_server_count >= kMaxIceServers) {
                 set_error(error, error_capacity, "servidores ICE demais: %s", value);
@@ -364,6 +434,9 @@ Outcome parse_command_line(int argc, const char* const* argv, AppOptions& out, c
                 return fail(Status::InvalidArgument, "parse_command_line");
             }
             out.receiver.renderer.height = number;
+        } else if (equals(argument, "--title")) {
+            set_window_title(out.receiver, value);
+            out.title_argument = index;
         } else if (equals(argument, "--jitter-ms")) {
             if (!parse_u32(value, number)) {
                 set_error(error, error_capacity, "atraso invalido: %s", value);
@@ -409,6 +482,15 @@ Outcome parse_command_line(int argc, const char* const* argv, AppOptions& out, c
     if (out.receiver.jitter.max_delay_ns < out.receiver.jitter.min_delay_ns) {
         set_error(error, error_capacity, "faixa de atraso incoerente%s", "");
         return fail(Status::InvalidArgument, "parse_command_line");
+    }
+    if (out.mode == AppMode::Send && out.sender.multi_peer && !out.machine_output) {
+        set_error(error, error_capacity, "--multi exige --json%s", "");
+        return fail(Status::InvalidArgument, "parse_command_line");
+    }
+
+    if (out.machine_output) {
+        out.sender.stats_interval_ns = kNanosecondsPerSecond;
+        out.receiver.stats_interval_ns = kNanosecondsPerSecond;
     }
 
     return ok();

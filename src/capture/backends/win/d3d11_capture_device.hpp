@@ -1,8 +1,11 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 
 #include "../texture_ring_policy.hpp"
+#include "telinha/capture/captured_frame.hpp"
 #include "telinha/core/arena.hpp"
 #include "telinha/core/result.hpp"
 #include "win_capture_common.hpp"
@@ -65,6 +68,55 @@ private:
     ID3D11Device* device_ = nullptr;
     ID3D11Texture2D** textures_ = nullptr;
     TextureRingPolicy policy_;
+};
+
+struct CursorPlacement {
+    Rect area;
+    Rect visible;
+    SurfaceRotation rotation = SurfaceRotation::None;
+};
+
+class D3D11CursorCompositor {
+public:
+    static constexpr std::uint32_t kMaxExtent = 256;
+
+    D3D11CursorCompositor() noexcept = default;
+    ~D3D11CursorCompositor() { destroy(); }
+
+    D3D11CursorCompositor(const D3D11CursorCompositor&) = delete;
+    D3D11CursorCompositor& operator=(const D3D11CursorCompositor&) = delete;
+
+    [[nodiscard]] Outcome prepare(ID3D11Device* device, PixelFormat format) noexcept;
+    void destroy() noexcept;
+
+    [[nodiscard]] Outcome upload_shape(CursorShapeKind kind, std::uint32_t width,
+                                       std::uint32_t reported_height, std::uint32_t pitch,
+                                       Span<const std::byte> source) noexcept;
+
+    [[nodiscard]] Outcome draw(ID3D11Texture2D* target, ID3D11ShaderResourceView* background,
+                               const CursorPlacement& placement) noexcept;
+
+    [[nodiscard]] bool ready() const noexcept
+    {
+        return pixel_shader_ != nullptr && format_ != PixelFormat::Unknown;
+    }
+    [[nodiscard]] bool has_shape() const noexcept { return shape_width_ != 0; }
+
+private:
+    [[nodiscard]] Outcome create_pipeline(ID3D11Device* device) noexcept;
+
+    ComPtr<ID3D11Device> device_;
+    ComPtr<ID3D11DeviceContext> context_;
+    ComPtr<ID3D11VertexShader> vertex_shader_;
+    ComPtr<ID3D11PixelShader> pixel_shader_;
+    ComPtr<ID3D11Buffer> constants_;
+    ComPtr<ID3D11Texture2D> shape_;
+    ComPtr<ID3D11ShaderResourceView> shape_view_;
+    std::unique_ptr<std::byte[]> scratch_;
+    PixelFormat format_ = PixelFormat::Unknown;
+    std::uint32_t shape_width_ = 0;
+    std::uint32_t shape_height_ = 0;
+    std::uint32_t blend_mode_ = 0;
 };
 
 }  // namespace tl::capture::win

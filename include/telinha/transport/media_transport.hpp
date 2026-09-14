@@ -164,6 +164,14 @@ public:
     [[nodiscard]] virtual Outcome set_remote_description(Span<const char> description) = 0;
     [[nodiscard]] virtual Outcome add_remote_candidate(Span<const char> candidate) = 0;
 
+    // The local SDP with every gathered candidate, closed by end-of-candidates.
+    [[nodiscard]] virtual Outcome local_session_description(Span<char> out, std::size_t& length)
+    {
+        (void)out;
+        length = 0;
+        return fail(Status::NotImplemented, "MediaTransport::local_session_description");
+    }
+
     [[nodiscard]] virtual Outcome send_video(const EncodedVideoFrame& frame) = 0;
     [[nodiscard]] virtual Outcome send_audio(const PcmAudioBlock& block) = 0;
 

@@ -8,6 +8,7 @@
 
 #include <cstring>
 #include <new>
+#include <utility>
 
 #include "telinha/core/clock.hpp"
 #include "telinha/core/log.hpp"
@@ -20,7 +21,23 @@ using Microsoft::WRL::ComPtr;
 
 constexpr std::uint32_t kInputPoolSize = 8;
 constexpr std::uint32_t kDefaultInputBytes = 2u * 1024u * 1024u;
+constexpr std::uint32_t kMaxOutputsPerDrain = 16;
+constexpr std::uint32_t kInputRetries = 10;
+constexpr DWORD kInputRetryWaitMs = 2;
 constexpr Nanoseconds kHundredNanoseconds = 100;
+
+struct InputStamp {
+    LONGLONG sample_time = -1;
+    std::uint64_t frame_index = 0;
+    Nanoseconds remote_time_ns = 0;
+    bool keyframe = false;
+};
+
+[[nodiscard]] ULONG reference_count(IUnknown* object) noexcept
+{
+    object->AddRef();
+    return object->Release();
+}
 
 class MediaFoundationDecoder final : public VideoDecoder {
 public:
@@ -79,6 +96,7 @@ public:
     void stop() noexcept override
     {
         release();
+        ready_.Reset();
         started_ = false;
 
         if (transform_) {
@@ -120,9 +138,9 @@ public:
             return fail(Status::OutOfRange, "MediaFoundationDecoder::submit: pacote grande demais");
         }
 
-        const std::uint32_t slot = next_input_ % kInputPoolSize;
-        ++next_input_;
+        TL_TRY(drain_outputs());
 
+        const std::uint32_t slot = input_slot();
         IMFMediaBuffer* buffer = input_buffers_[slot].Get();
         BYTE* destination = nullptr;
         DWORD capacity = 0;
@@ -135,17 +153,27 @@ public:
         buffer->Unlock();
         buffer->SetCurrentLength(static_cast<DWORD>(bytes));
 
+        const bool keyframe = frame.kind == transport::WireFrameKind::Key;
+        const auto sample_time = static_cast<LONGLONG>(frame.capture_time_ns / kHundredNanoseconds);
         IMFSample* sample = input_samples_[slot].Get();
-        sample->SetSampleTime(static_cast<LONGLONG>(frame.capture_time_ns / kHundredNanoseconds));
+        sample->SetSampleTime(sample_time);
         sample->SetSampleDuration(static_cast<LONGLONG>(frame_duration_ns_ / kHundredNanoseconds));
-        sample->SetUINT32(MFSampleExtension_CleanPoint,
-                          frame.kind == transport::WireFrameKind::Key ? 1u : 0u);
+        sample->SetUINT32(MFSampleExtension_CleanPoint, keyframe ? 1u : 0u);
 
-        pending_index_ = frame.frame_index;
-        pending_keyframe_ = frame.kind == transport::WireFrameKind::Key;
-        pending_remote_ns_ = frame.capture_time_ns;
+        InputStamp& stamp = stamps_[next_stamp_ % kInputPoolSize];
+        ++next_stamp_;
+        stamp.sample_time = sample_time;
+        stamp.frame_index = frame.frame_index;
+        stamp.remote_time_ns = frame.capture_time_ns;
+        stamp.keyframe = keyframe;
 
         result = transform_->ProcessInput(0, sample, 0);
+        for (std::uint32_t attempt = 0; result == MF_E_NOTACCEPTING && attempt < kInputRetries;
+             ++attempt) {
+            ::Sleep(kInputRetryWaitMs);
+            TL_TRY(drain_outputs());
+            result = transform_->ProcessInput(0, sample, 0);
+        }
         if (result == MF_E_NOTACCEPTING) {
             return fail(Status::Full, "MediaFoundationDecoder::submit: nao aceita");
         }
@@ -168,59 +196,19 @@ public:
             return fail(Status::Full, "MediaFoundationDecoder::poll: quadro nao liberado");
         }
 
-        MFT_OUTPUT_DATA_BUFFER output = {};
-        DWORD status = 0;
-
-        ComPtr<IMFSample> allocated;
-        if (!provides_samples_) {
-            TL_TRY(allocate_output_sample(allocated));
-            output.pSample = allocated.Get();
-        }
-
-        const HRESULT result = transform_->ProcessOutput(0, 1, &output, &status);
-
-        if (output.pEvents != nullptr) {
-            output.pEvents->Release();
-            output.pEvents = nullptr;
-        }
-
-        if (result == MF_E_TRANSFORM_NEED_MORE_INPUT) {
+        TL_TRY(drain_outputs());
+        if (!ready_) {
             return fail(Status::WouldBlock, "MediaFoundationDecoder::poll");
         }
-        if (result == MF_E_TRANSFORM_STREAM_CHANGE) {
-            const Outcome renegotiated = configure_output_type();
-            if (!renegotiated.ok()) {
-                return renegotiated;
-            }
-            if (manager_) {
-                share_texture_.Reset();
-                TL_TRY(create_share_texture());
-            }
-            return fail(Status::WouldBlock, "MediaFoundationDecoder::poll: formato mudou");
-        }
-        if (FAILED(result)) {
-            return fail(Status::PlatformError, "MediaFoundationDecoder::poll: ProcessOutput",
-                        result);
-        }
 
-        ComPtr<IMFSample> sample;
-        sample.Attach(output.pSample);
-        if (!sample) {
-            return fail(Status::WouldBlock, "MediaFoundationDecoder::poll: sem amostra");
-        }
+        const ComPtr<IMFSample> sample = std::move(ready_);
 
         ComPtr<IMFMediaBuffer> buffer;
         if (FAILED(sample->GetBufferByIndex(0, &buffer))) {
             return fail(Status::PlatformError, "MediaFoundationDecoder::poll: GetBufferByIndex");
         }
 
-        out.width = config_.width;
-        out.height = config_.height;
-        out.format = capture::PixelFormat::NV12;
-        out.frame_index = pending_index_;
-        out.remote_time_ns = pending_remote_ns_;
-        out.keyframe = pending_keyframe_;
-        out.decode_end_ns = now_ns();
+        describe(sample.Get(), out);
 
         ComPtr<IMFDXGIBuffer> dxgi_buffer;
         if (share_texture_ && SUCCEEDED(buffer.As(&dxgi_buffer))) {
@@ -228,8 +216,9 @@ public:
             UINT subresource = 0;
             if (SUCCEEDED(dxgi_buffer->GetResource(IID_PPV_ARGS(&texture))) &&
                 SUCCEEDED(dxgi_buffer->GetSubresourceIndex(&subresource))) {
+                const D3D11_BOX visible = {0, 0, 0, config_.width, config_.height, 1};
                 context_->CopySubresourceRegion(share_texture_.Get(), 0, 0, 0, 0, texture.Get(),
-                                                subresource, nullptr);
+                                                subresource, &visible);
                 out.memory = FrameMemory::GpuTexture;
                 out.gpu_texture = share_texture_.Get();
                 out.gpu_subresource = 0;
@@ -292,6 +281,7 @@ public:
     void flush() noexcept override
     {
         release();
+        ready_.Reset();
         if (transform_) {
             transform_->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0);
         }
@@ -312,6 +302,104 @@ public:
     }
 
 private:
+    [[nodiscard]] std::uint32_t input_slot() noexcept
+    {
+        std::uint32_t chosen = next_input_ % kInputPoolSize;
+        for (std::uint32_t probe = 0; probe < kInputPoolSize; ++probe) {
+            const std::uint32_t candidate = (next_input_ + probe) % kInputPoolSize;
+            if (reference_count(input_samples_[candidate].Get()) <= 1 &&
+                reference_count(input_buffers_[candidate].Get()) <= 2) {
+                chosen = candidate;
+                break;
+            }
+        }
+        next_input_ = chosen + 1;
+        return chosen;
+    }
+
+    Outcome pull_output() noexcept
+    {
+        MFT_OUTPUT_DATA_BUFFER output = {};
+        DWORD status = 0;
+
+        ComPtr<IMFSample> allocated;
+        if (!provides_samples_) {
+            TL_TRY(allocate_output_sample(allocated));
+            output.pSample = allocated.Get();
+        }
+
+        const HRESULT result = transform_->ProcessOutput(0, 1, &output, &status);
+
+        if (output.pEvents != nullptr) {
+            output.pEvents->Release();
+            output.pEvents = nullptr;
+        }
+
+        ComPtr<IMFSample> sample;
+        if (provides_samples_) {
+            sample.Attach(output.pSample);
+        } else {
+            sample = allocated;
+        }
+
+        if (result == MF_E_TRANSFORM_NEED_MORE_INPUT) {
+            return fail(Status::WouldBlock, "MediaFoundationDecoder: sem quadro pronto");
+        }
+        if (result == MF_E_TRANSFORM_STREAM_CHANGE) {
+            TL_TRY(configure_output_type());
+            if (manager_) {
+                share_texture_.Reset();
+                TL_TRY(create_share_texture());
+            }
+            return fail(Status::ConfigurationChanged, "MediaFoundationDecoder: formato mudou");
+        }
+        if (FAILED(result)) {
+            return fail(Status::PlatformError, "MediaFoundationDecoder: ProcessOutput", result);
+        }
+        if (!sample) {
+            return fail(Status::WouldBlock, "MediaFoundationDecoder: sem amostra");
+        }
+
+        ready_ = std::move(sample);
+        return ok();
+    }
+
+    Outcome drain_outputs() noexcept
+    {
+        for (std::uint32_t pulled = 0; pulled < kMaxOutputsPerDrain; ++pulled) {
+            const Outcome produced = pull_output();
+            if (produced.status() == Status::WouldBlock) {
+                return ok();
+            }
+            if (!produced.ok() && produced.status() != Status::ConfigurationChanged) {
+                return produced;
+            }
+        }
+        return ok();
+    }
+
+    void describe(IMFSample* sample, DecodedVideoFrame& out) const noexcept
+    {
+        out.width = config_.width;
+        out.height = config_.height;
+        out.format = capture::PixelFormat::NV12;
+        out.decode_end_ns = now_ns();
+
+        const InputStamp* match = &stamps_[(next_stamp_ + kInputPoolSize - 1) % kInputPoolSize];
+        LONGLONG sample_time = 0;
+        if (SUCCEEDED(sample->GetSampleTime(&sample_time))) {
+            for (const InputStamp& stamp : stamps_) {
+                if (stamp.sample_time == sample_time) {
+                    match = &stamp;
+                    break;
+                }
+            }
+        }
+        out.frame_index = match->frame_index;
+        out.remote_time_ns = match->remote_time_ns;
+        out.keyframe = match->keyframe;
+    }
+
     Outcome create_device_manager()
     {
         UINT token = 0;
@@ -447,7 +535,6 @@ private:
                 continue;
             }
 
-            MFSetAttributeSize(candidate.Get(), MF_MT_FRAME_SIZE, config_.width, config_.height);
             if (SUCCEEDED(transform_->SetOutputType(0, candidate.Get(), 0))) {
                 return ok();
             }
@@ -534,18 +621,18 @@ private:
 
     ComPtr<IMFSample> input_samples_[kInputPoolSize];
     ComPtr<IMFMediaBuffer> input_buffers_[kInputPoolSize];
+    InputStamp stamps_[kInputPoolSize];
 
+    ComPtr<IMFSample> ready_;
     ComPtr<IMFSample> held_sample_;
     ComPtr<IMFMediaBuffer> held_buffer_;
     ComPtr<IMF2DBuffer2> held_planar_;
 
     std::size_t input_capacity_ = 0;
     std::size_t output_bytes_ = 0;
-    std::uint64_t pending_index_ = 0;
-    Nanoseconds pending_remote_ns_ = 0;
     Nanoseconds frame_duration_ns_ = 0;
     std::uint32_t next_input_ = 0;
-    bool pending_keyframe_ = false;
+    std::uint32_t next_stamp_ = 0;
     bool provides_samples_ = false;
     bool com_initialized_ = false;
     bool mf_started_ = false;

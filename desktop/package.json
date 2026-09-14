@@ -1,0 +1,47 @@
+{
+  "name": "telinha-desktop",
+  "productName": "Telinha",
+  "version": "0.1.0",
+  "description": "App visual do Telinha para compartilhar e assistir telas sem terminal",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test \"test/**/*.test.js\"",
+    "e2e": "node scripts/e2e.js",
+    "dist": "electron-builder --win portable"
+  },
+  "build": {
+    "appId": "dev.telinha.desktop",
+    "productName": "Telinha",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "renderer/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../build/msvc-release/tools/telinha/Release/telinha.exe",
+        "to": "telinha.exe"
+      }
+    ],
+    "win": {
+      "target": "portable",
+      "signAndEditExecutable": false
+    },
+    "portable": {
+      "artifactName": "Telinha-${version}-portable.exe"
+    }
+  },
+  "devDependencies": {
+    "electron": "^44.3.0",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "mqtt": "^5.15.2"
+  }
+}

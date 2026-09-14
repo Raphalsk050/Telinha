@@ -1,6 +1,9 @@
 #include "desktop_duplication_source.hpp"
 
+#include <algorithm>
+
 #include "target_enumeration.hpp"
+#include "telinha/core/log.hpp"
 
 namespace tl::capture::win {
 namespace {
@@ -144,9 +147,12 @@ Outcome DesktopDuplicationSource::start() noexcept
     }
     ring_.set_layout(layout_);
 
+    if (options_.include_cursor) {
+        ensure_compositor();
+    }
+
     frame_index_ = 0;
     leased_ = false;
-    leased_from_ring_ = false;
     started_ = true;
     arena.update_high_water();
     return ok();
@@ -155,7 +161,12 @@ Outcome DesktopDuplicationSource::start() noexcept
 void DesktopDuplicationSource::stop() noexcept
 {
     release();
-    last_texture_.Reset();
+    forget_desktop();
+    drawn_cursor_ = Rect{};
+    compositor_.destroy();
+    compositor_device_ = nullptr;
+    compositor_format_ = PixelFormat::Unknown;
+    uploaded_generation_ = 0;
     destroy_duplication();
     ring_.destroy();
     device_.destroy();
@@ -239,11 +250,10 @@ Outcome DesktopDuplicationSource::adopt_duplication_layout(bool& layout_changed)
 
 void DesktopDuplicationSource::release() noexcept
 {
-    if (leased_ && leased_from_ring_) {
+    if (leased_) {
         ring_.give_back(leased_handle_);
     }
     leased_ = false;
-    leased_from_ring_ = false;
     leased_handle_ = TextureHandle{};
 }
 
@@ -262,12 +272,46 @@ CaptureSourceInfo DesktopDuplicationSource::info() const noexcept
     return out;
 }
 
+void DesktopDuplicationSource::forget_desktop() noexcept
+{
+    desktop_view_.Reset();
+    desktop_.Reset();
+    desktop_layout_ = SurfaceLayout{};
+    desktop_device_ = nullptr;
+    desktop_ready_ = false;
+}
+
+void DesktopDuplicationSource::ensure_compositor() noexcept
+{
+    if (compositor_device_ == device_.device() && compositor_format_ == layout_.format) {
+        return;
+    }
+    compositor_device_ = device_.device();
+    compositor_format_ = layout_.format;
+
+    const Outcome prepared = compositor_.prepare(device_.device(), layout_.format);
+    if (!prepared.ok()) {
+        TL_LOG_WARN("captura: o cursor nao vai aparecer na transmissao (%s, %s)",
+                    to_string(prepared.status()), prepared.error().context);
+    }
+    if (!compositor_.has_shape()) {
+        uploaded_generation_ = 0;
+    }
+}
+
+bool DesktopDuplicationSource::compositing() const noexcept
+{
+    return options_.include_cursor && compositor_.ready();
+}
+
 void DesktopDuplicationSource::collect_cursor(const DXGI_OUTDUPL_FRAME_INFO& info) noexcept
 {
     if (!options_.include_cursor) {
         cursor_.set_absent();
         return;
     }
+
+    ensure_compositor();
 
     if (info.LastMouseUpdateTime.QuadPart != 0) {
         cursor_.set_position(info.PointerPosition.Position.x, info.PointerPosition.Position.y,
@@ -294,13 +338,126 @@ void DesktopDuplicationSource::collect_cursor(const DXGI_OUTDUPL_FRAME_INFO& inf
         return;
     }
 
-    (void)cursor_.store_shape(kind, shape.Width, shape.Height, shape.Pitch,
-                              static_cast<std::uint32_t>(shape.HotSpot.x),
-                              static_cast<std::uint32_t>(shape.HotSpot.y),
-                              Span<const std::byte>(pointer_shape_, required));
+    const Span<const std::byte> bytes(pointer_shape_, required);
+    const Outcome stored = cursor_.store_shape(kind, shape.Width, shape.Height, shape.Pitch,
+                                               static_cast<std::uint32_t>(shape.HotSpot.x),
+                                               static_cast<std::uint32_t>(shape.HotSpot.y), bytes);
+    if (!stored.ok() || !compositor_.ready()) {
+        return;
+    }
+    if (compositor_.upload_shape(kind, shape.Width, shape.Height, shape.Pitch, bytes).ok()) {
+        uploaded_generation_ = cursor_.shape_generation();
+    }
 }
 
-void DesktopDuplicationSource::collect_dirty_metadata(const DXGI_OUTDUPL_FRAME_INFO& info) noexcept
+CursorPlacement DesktopDuplicationSource::next_cursor_placement() const noexcept
+{
+    CursorPlacement placement;
+    placement.rotation = rotation_;
+
+    const CursorState cursor = cursor_.state();
+    if (!compositing() || !compositor_.has_shape() ||
+        uploaded_generation_ != cursor.shape_generation || !cursor.visible ||
+        !cursor.position_valid) {
+        return placement;
+    }
+
+    const auto width = static_cast<std::int32_t>(cursor.width);
+    const auto height = static_cast<std::int32_t>(cursor.height);
+    const auto surface_width = static_cast<std::int32_t>(layout_.width);
+    const auto surface_height = static_cast<std::int32_t>(layout_.height);
+
+    // DXGI gives the top left of the shape with the hotspot already applied, in desktop
+    // orientation, while the duplicated image stays in scan out orientation.
+    switch (rotation_) {
+        case SurfaceRotation::Clockwise90:
+            placement.area = Rect{cursor.y, surface_height - cursor.x - width, cursor.y + height,
+                                  surface_height - cursor.x};
+            break;
+        case SurfaceRotation::Clockwise180:
+            placement.area =
+                Rect{surface_width - cursor.x - width, surface_height - cursor.y - height,
+                     surface_width - cursor.x, surface_height - cursor.y};
+            break;
+        case SurfaceRotation::Clockwise270:
+            placement.area = Rect{surface_width - cursor.y - height, cursor.x,
+                                  surface_width - cursor.y, cursor.x + width};
+            break;
+        case SurfaceRotation::None:
+            placement.area = Rect{cursor.x, cursor.y, cursor.x + width, cursor.y + height};
+            break;
+    }
+
+    const Rect visible{std::max(placement.area.left, 0), std::max(placement.area.top, 0),
+                       std::min(placement.area.right, surface_width),
+                       std::min(placement.area.bottom, surface_height)};
+    if (!visible.empty()) {
+        placement.visible = visible;
+    }
+    return placement;
+}
+
+Outcome DesktopDuplicationSource::update_desktop(ID3D11Texture2D* image) noexcept
+{
+    ID3D11Device* const device = device_.device();
+    if (!desktop_ || desktop_layout_ != layout_ || desktop_device_ != device) {
+        forget_desktop();
+
+        D3D11_TEXTURE2D_DESC description = {};
+        description.Width = layout_.width;
+        description.Height = layout_.height;
+        description.MipLevels = 1;
+        description.ArraySize = 1;
+        description.Format = dxgi_format_from_pixel_format(layout_.format);
+        description.SampleDesc.Count = 1;
+        description.Usage = D3D11_USAGE_DEFAULT;
+        description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+        HRESULT hr = device->CreateTexture2D(&description, nullptr, &desktop_);
+        if (FAILED(hr)) {
+            return outcome_from_hresult(hr, "captura: copia limpa da area de trabalho");
+        }
+        hr = device->CreateShaderResourceView(desktop_.Get(), nullptr, &desktop_view_);
+        if (FAILED(hr)) {
+            forget_desktop();
+            return outcome_from_hresult(hr, "captura: copia limpa da area de trabalho");
+        }
+        desktop_layout_ = layout_;
+        desktop_device_ = device;
+    }
+
+    device_.context()->CopyResource(desktop_.Get(), image);
+    desktop_ready_ = true;
+    return ok();
+}
+
+Outcome DesktopDuplicationSource::emit_frame(CapturedFrame& out,
+                                             const DXGI_OUTDUPL_FRAME_INFO& info,
+                                             ID3D11Texture2D* source, bool content_changed,
+                                             const CursorPlacement& placement) noexcept
+{
+    ID3D11Texture2D* destination = nullptr;
+    TextureHandle handle;
+    TL_TRY(ring_.acquire(destination, handle));
+
+    device_.context()->CopyResource(destination, source);
+
+    drawn_cursor_ = Rect{};
+    drawn_generation_ = cursor_.shape_generation();
+    if (!placement.visible.empty() &&
+        compositor_.draw(destination, desktop_view_.Get(), placement).ok()) {
+        drawn_cursor_ = placement.visible;
+    }
+
+    leased_handle_ = handle;
+    leased_ = true;
+    publish(out, info, destination, content_changed);
+    return ok();
+}
+
+void DesktopDuplicationSource::collect_dirty_metadata(const DXGI_OUTDUPL_FRAME_INFO& info,
+                                                      const Rect& previous_cursor,
+                                                      const Rect& next_cursor) noexcept
 {
     dirty_.begin_frame();
 
@@ -349,6 +506,12 @@ void DesktopDuplicationSource::collect_dirty_metadata(const DXGI_OUTDUPL_FRAME_I
         dirty_.force_full_surface();
     }
 
+    if (!previous_cursor.empty()) {
+        dirty_.add_dirty(previous_cursor);
+    }
+    if (!next_cursor.empty()) {
+        dirty_.add_dirty(next_cursor);
+    }
     dirty_.finish();
 }
 
@@ -375,11 +538,8 @@ void DesktopDuplicationSource::publish(CapturedFrame& out, const DXGI_OUTDUPL_FR
         cursor_.shape_changed_since_last_frame() || info.LastMouseUpdateTime.QuadPart != 0;
     out.metadata.full_surface_dirty = content_changed && dirty_.full_surface();
     out.metadata.dirty_metadata_available = !content_changed || !dirty_.metadata_absent();
-
-    if (content_changed) {
-        out.dirty_rects = dirty_.dirty_rects();
-        out.move_rects = dirty_.move_rects();
-    }
+    out.dirty_rects = dirty_.dirty_rects();
+    out.move_rects = dirty_.move_rects();
     out.cursor = cursor_.state();
 
     cursor_.end_frame();
@@ -403,52 +563,60 @@ Outcome DesktopDuplicationSource::pull_frame(CapturedFrame& out, std::uint32_t t
 
     collect_cursor(info);
 
-    const bool content_changed = info.LastPresentTime.QuadPart != 0;
-    if (!content_changed) {
-        if (last_texture_ == nullptr) {
-            return fail(Status::Timeout, "cursor update without a previous frame");
+    if (info.LastPresentTime.QuadPart == 0) {
+        if (!compositing() || !desktop_ready_ || desktop_device_ != device_.device()) {
+            return fail(Status::Timeout, "cursor: atualizacao sem imagem nova");
         }
-        publish(out, info, last_texture_.Get(), false);
-        leased_ = true;
-        leased_from_ring_ = false;
-        return ok();
+
+        const CursorPlacement placement = next_cursor_placement();
+        if (placement.visible == drawn_cursor_ &&
+            (drawn_cursor_.empty() || drawn_generation_ == cursor_.shape_generation())) {
+            return fail(Status::Timeout, "cursor: atualizacao sem mudanca visivel");
+        }
+
+        dirty_.begin_frame();
+        if (!drawn_cursor_.empty()) {
+            dirty_.add_dirty(drawn_cursor_);
+        }
+        if (!placement.visible.empty()) {
+            dirty_.add_dirty(placement.visible);
+        }
+        dirty_.finish();
+        return emit_frame(out, info, desktop_.Get(), false, placement);
     }
 
-    ComPtr<ID3D11Texture2D> desktop;
-    HRESULT cast = resource.As(&desktop);
+    ComPtr<ID3D11Texture2D> image;
+    const HRESULT cast = resource.As(&image);
     if (FAILED(cast)) {
         return outcome_from_hresult(cast, "desktop image is not a texture");
     }
 
-    D3D11_TEXTURE2D_DESC desktop_description = {};
-    desktop->GetDesc(&desktop_description);
+    D3D11_TEXTURE2D_DESC image_description = {};
+    image->GetDesc(&image_description);
 
     SurfaceLayout observed;
-    observed.width = desktop_description.Width;
-    observed.height = desktop_description.Height;
-    observed.format = pixel_format_from_dxgi(desktop_description.Format);
+    observed.width = image_description.Width;
+    observed.height = image_description.Height;
+    observed.format = pixel_format_from_dxgi(image_description.Format);
     if (observed != layout_) {
         layout_ = observed;
         ring_.set_layout(layout_);
         dirty_.resize(layout_.width, layout_.height);
-        last_texture_.Reset();
+        forget_desktop();
+        drawn_cursor_ = Rect{};
         return fail(Status::ConfigurationChanged, "duplicated surface layout changed");
     }
 
-    collect_dirty_metadata(info);
+    if (!compositing()) {
+        desktop_ready_ = false;
+        collect_dirty_metadata(info, drawn_cursor_, Rect{});
+        return emit_frame(out, info, image.Get(), true, CursorPlacement{});
+    }
 
-    ID3D11Texture2D* destination = nullptr;
-    TextureHandle handle;
-    TL_TRY(ring_.acquire(destination, handle));
-
-    device_.context()->CopyResource(destination, desktop.Get());
-
-    last_texture_ = destination;
-    leased_handle_ = handle;
-    leased_ = true;
-    leased_from_ring_ = true;
-    publish(out, info, destination, true);
-    return ok();
+    TL_TRY(update_desktop(image.Get()));
+    const CursorPlacement placement = next_cursor_placement();
+    collect_dirty_metadata(info, drawn_cursor_, placement.visible);
+    return emit_frame(out, info, desktop_.Get(), true, placement);
 }
 
 Outcome DesktopDuplicationSource::acquire(CapturedFrame& out, std::uint32_t timeout_ms) noexcept
@@ -470,7 +638,7 @@ Outcome DesktopDuplicationSource::acquire(CapturedFrame& out, std::uint32_t time
     }
 
     destroy_duplication();
-    last_texture_.Reset();
+    forget_desktop();
 
     const SurfaceLayout previous_layout = layout_;
     const SurfaceRotation previous_rotation = rotation_;
@@ -480,6 +648,7 @@ Outcome DesktopDuplicationSource::acquire(CapturedFrame& out, std::uint32_t time
     }
 
     if (layout_ != previous_layout || rotation_ != previous_rotation) {
+        drawn_cursor_ = Rect{};
         return fail(Status::ConfigurationChanged, "duplicated output changed mode");
     }
     return fail(Status::DeviceLost, "duplication recreated after access loss");

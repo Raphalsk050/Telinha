@@ -44,11 +44,18 @@ private:
     bool gathering_complete_ = false;
 };
 
-[[nodiscard]] Outcome publish_token(const SignalingOptions& options, const char* label,
-                                    const char* token, std::size_t length) noexcept;
+[[nodiscard]] Outcome publish_token(const SignalingOptions& options, const char* kind,
+                                    const char* label, const char* token,
+                                    std::size_t length) noexcept;
 
-[[nodiscard]] Outcome consume_token(const SignalingOptions& options, const char* label, char* out,
-                                    std::size_t capacity, std::size_t& length) noexcept;
+[[nodiscard]] Outcome consume_token(const SignalingOptions& options, const char* kind,
+                                    const char* label, char* out, std::size_t capacity,
+                                    std::size_t& length) noexcept;
+
+[[nodiscard]] Outcome receive_remote_blob(const SignalingOptions& options, const char* kind,
+                                          const char* label, transport::TransportRole expected,
+                                          char* scratch, std::size_t capacity,
+                                          transport::SessionBlob& blob) noexcept;
 
 [[nodiscard]] Outcome apply_remote_blob(transport::MediaTransport& media,
                                         const transport::SessionBlob& blob) noexcept;

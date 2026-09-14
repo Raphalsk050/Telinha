@@ -172,7 +172,10 @@ Outcome CapturePipeline::capture_next(ClassifiedFrame& out, std::uint32_t timeou
     }
 
     const Nanoseconds classify_begin = now_ns();
-    tiles_.clear();
+    if (!carry_dirty_) {
+        tiles_.clear();
+    }
+    carry_dirty_ = false;
     if (frame.metadata.full_surface_dirty || !frame.metadata.dirty_metadata_available) {
         ++stats_.frames_full_dirty;
         tiles_.mark_all();
@@ -202,6 +205,11 @@ void CapturePipeline::release() noexcept
         source_->release();
         frame_held_ = false;
     }
+}
+
+void CapturePipeline::keep_dirty() noexcept
+{
+    carry_dirty_ = true;
 }
 
 CaptureSourceInfo CapturePipeline::info() const noexcept

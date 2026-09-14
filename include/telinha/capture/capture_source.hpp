@@ -13,6 +13,7 @@ enum class CaptureBackend : std::uint8_t {
     DesktopDuplication,
     GraphicsCapture,
     Synthetic,
+    MediaFoundation,
 };
 
 const char* to_string(CaptureBackend backend) noexcept;

@@ -18,6 +18,7 @@ const char* to_string(AudioCaptureScope scope) noexcept
         case AudioCaptureScope::None: return "None";
         case AudioCaptureScope::SystemLoopback: return "SystemLoopback";
         case AudioCaptureScope::ProcessLoopback: return "ProcessLoopback";
+        case AudioCaptureScope::Device: return "Device";
     }
     return "Unrecognized";
 }

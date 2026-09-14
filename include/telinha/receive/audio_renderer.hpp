@@ -48,6 +48,9 @@ struct AudioRendererStats {
     }
 };
 
+inline constexpr std::uint32_t kDefaultVolumePercent = 100;
+inline constexpr std::uint32_t kMaxVolumePercent = 200;
+
 class AudioRenderer {
 public:
     virtual ~AudioRenderer() = default;
@@ -64,6 +67,8 @@ public:
 
     [[nodiscard]] virtual AudioRendererInfo info() const noexcept = 0;
     [[nodiscard]] virtual const AudioRendererStats& stats() const noexcept = 0;
+
+    virtual void set_volume(std::uint32_t percent) noexcept { (void)percent; }
 
 protected:
     AudioRenderer() = default;

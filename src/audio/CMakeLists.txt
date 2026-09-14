@@ -22,7 +22,7 @@ target_link_libraries(telinha_audio PUBLIC Telinha::Core)
 
 if(WIN32)
     target_compile_definitions(telinha_audio PRIVATE TELINHA_HAS_AUDIO_BACKENDS=1)
-    target_link_libraries(telinha_audio PRIVATE ole32 mmdevapi avrt)
+    target_link_libraries(telinha_audio PRIVATE ole32 mmdevapi avrt cfgmgr32)
 endif()
 
 telinha_apply_target_defaults(telinha_audio)

@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstring>
+#include <cwchar>
 #include <thread>
 
 #include "../audio_capture_stream.hpp"
@@ -14,6 +16,8 @@
 #include "telinha/core/clock.hpp"
 #include "telinha/core/log.hpp"
 #include "wasapi_support.hpp"
+
+#include <cfgmgr32.h>
 
 namespace tl::audio {
 namespace {
@@ -202,6 +206,7 @@ public:
 
 private:
     [[nodiscard]] Outcome open_endpoint_loopback() noexcept;
+    [[nodiscard]] Outcome open_capture_endpoint(const char* device_id) noexcept;
     [[nodiscard]] Outcome open_process_loopback(std::uint32_t process_id,
                                                 ProcessLoopbackMode mode) noexcept;
     [[nodiscard]] Outcome finish_client_setup(bool event_driven) noexcept;
@@ -269,7 +274,10 @@ Outcome WasapiAudioSource::open(const AudioCaptureTarget& target,
     const bool excluding = target.scope == AudioCaptureScope::ProcessLoopback &&
                            target.process_loopback_mode == ProcessLoopbackMode::ExcludeProcessTree;
 
-    if (target.scope == AudioCaptureScope::ProcessLoopback && info_.process_loopback_supported) {
+    if (target.scope == AudioCaptureScope::Device) {
+        TL_TRY(open_capture_endpoint(target.device_id));
+    } else if (target.scope == AudioCaptureScope::ProcessLoopback &&
+               info_.process_loopback_supported) {
         const std::uint32_t root = resolve_process_tree_root(target.process_id);
         const Outcome activated = open_process_loopback(root, target.process_loopback_mode);
         if (activated.ok()) {
@@ -353,6 +361,50 @@ Outcome WasapiAudioSource::open_endpoint_loopback() noexcept
     }
 
     return finish_client_setup(false);
+}
+
+Outcome WasapiAudioSource::open_capture_endpoint(const char* device_id) noexcept
+{
+    wchar_t wide[kAudioDeviceIdCapacity] = {};
+    if (::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, device_id, -1, wide,
+                              static_cast<int>(kAudioDeviceIdCapacity)) <= 0) {
+        return fail(Status::InvalidArgument, "wasapi: invalid capture endpoint id");
+    }
+
+    ComPtr<IMMDevice> device;
+    const HRESULT found = enumerator_->GetDevice(wide, device.put());
+    if (FAILED(found)) {
+        return fail_hresult(found, "wasapi: capture endpoint not found");
+    }
+
+    const HRESULT activated =
+        device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, client_.put_void());
+    if (FAILED(activated)) {
+        return fail_hresult(activated, "wasapi: IAudioClient activation for the capture endpoint");
+    }
+
+    device_format_ =
+        AudioFormat{transmit_format_.sample_rate, transmit_format_.channels, SampleFormat::Float32};
+
+    WAVEFORMATEXTENSIBLE wave{};
+    fill_waveformat(device_format_, wave);
+
+    REFERENCE_TIME requested = static_cast<REFERENCE_TIME>(options_.buffer_duration_us) * 10;
+    if (requested <= 0) {
+        requested = 100000;
+    }
+
+    const HRESULT initialized =
+        client_->Initialize(AUDCLNT_SHAREMODE_SHARED,
+                            AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
+                                AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+                            requested, 0, reinterpret_cast<const WAVEFORMATEX*>(&wave), nullptr);
+    if (FAILED(initialized)) {
+        return fail_hresult(initialized,
+                            "wasapi: IAudioClient::Initialize for the capture endpoint");
+    }
+
+    return finish_client_setup(true);
 }
 
 Outcome WasapiAudioSource::open_process_loopback(std::uint32_t process_id,
@@ -715,11 +767,138 @@ void WasapiAudioSource::release() noexcept
     }
 }
 
+const PROPERTYKEY kFriendlyNameKey = {
+    {0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}, 14};
+const PROPERTYKEY kContainerIdKey = {
+    {0x8c7ed206, 0x3f8a, 0x4827, {0xb3, 0xab, 0xae, 0x9e, 0x1f, 0xae, 0xfc, 0x6c}}, 2};
+const DEVPROPKEY kDeviceContainerIdKey = {
+    {0x8c7ed206, 0x3f8a, 0x4827, {0xb3, 0xab, 0xae, 0x9e, 0x1f, 0xae, 0xfc, 0x6c}}, 2};
+
+bool wide_to_utf8(const wchar_t* text, char* out, std::uint32_t capacity) noexcept
+{
+    if (text == nullptr || capacity == 0) {
+        return false;
+    }
+    if (::WideCharToMultiByte(CP_UTF8, 0, text, -1, out, static_cast<int>(capacity), nullptr,
+                              nullptr) <= 0) {
+        out[0] = '\0';
+        return false;
+    }
+    return true;
+}
+
+void container_from_device_node(const wchar_t* endpoint_id, std::uint8_t* out) noexcept
+{
+    wchar_t instance[MAX_DEVICE_ID_LEN] = L"SWD\\MMDEVAPI\\";
+    if (::wcscat_s(instance, endpoint_id) != 0) {
+        return;
+    }
+
+    DEVINST node = 0;
+    if (::CM_Locate_DevNodeW(&node, instance, CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS) {
+        return;
+    }
+
+    GUID container{};
+    ULONG size = static_cast<ULONG>(sizeof(container));
+    DEVPROPTYPE type = DEVPROP_TYPE_EMPTY;
+    if (::CM_Get_DevNode_PropertyW(node, &kDeviceContainerIdKey, &type,
+                                   reinterpret_cast<PBYTE>(&container), &size, 0) == CR_SUCCESS &&
+        type == DEVPROP_TYPE_GUID) {
+        std::memcpy(out, &container, sizeof(container));
+    }
+}
+
+bool describe_endpoint(IMMDevice* device, AudioEndpointInfo& out) noexcept
+{
+    LPWSTR id = nullptr;
+    if (FAILED(device->GetId(&id)) || id == nullptr) {
+        return false;
+    }
+
+    out = AudioEndpointInfo{};
+    const bool described = wide_to_utf8(id, out.id, kAudioDeviceIdCapacity);
+
+    bool contained = false;
+    ComPtr<IPropertyStore> store;
+    if (described && SUCCEEDED(device->OpenPropertyStore(STGM_READ, store.put()))) {
+        PROPVARIANT value;
+        PropVariantInit(&value);
+        if (SUCCEEDED(store->GetValue(kFriendlyNameKey, &value)) && value.vt == VT_LPWSTR) {
+            static_cast<void>(wide_to_utf8(value.pwszVal, out.name, kAudioDeviceNameCapacity));
+        }
+        PropVariantClear(&value);
+
+        if (SUCCEEDED(store->GetValue(kContainerIdKey, &value)) && value.vt == VT_CLSID &&
+            value.puuid != nullptr) {
+            std::memcpy(out.container_id, value.puuid, sizeof(out.container_id));
+            contained = true;
+        }
+        PropVariantClear(&value);
+    }
+    if (described && !contained) {
+        container_from_device_node(id, out.container_id);
+    }
+
+    ::CoTaskMemFree(id);
+    return described;
+}
+
 }  // namespace
 
 bool process_loopback_available() noexcept
 {
     return windows_build_number() >= kProcessLoopbackMinimumBuild;
+}
+
+Outcome enumerate_capture_endpoints(Span<AudioEndpointInfo> out, std::uint32_t& written,
+                                    std::uint32_t& available) noexcept
+{
+    written = 0;
+    available = 0;
+
+    const HRESULT com = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (FAILED(com) && com != RPC_E_CHANGED_MODE) {
+        return fail_hresult(com, "wasapi: CoInitializeEx");
+    }
+
+    Outcome result = ok();
+    {
+        ComPtr<IMMDeviceEnumerator> enumerator;
+        ComPtr<IMMDeviceCollection> collection;
+        UINT count = 0;
+        HRESULT hr = ::CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                        __uuidof(IMMDeviceEnumerator), enumerator.put_void());
+        if (SUCCEEDED(hr)) {
+            hr = enumerator->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, collection.put());
+        }
+        if (SUCCEEDED(hr)) {
+            hr = collection->GetCount(&count);
+        }
+        if (FAILED(hr)) {
+            result = fail_hresult(hr, "wasapi: EnumAudioEndpoints");
+            count = 0;
+        }
+
+        for (UINT index = 0; index < count; ++index) {
+            ComPtr<IMMDevice> device;
+            AudioEndpointInfo info;
+            if (FAILED(collection->Item(index, device.put())) ||
+                !describe_endpoint(device.get(), info)) {
+                continue;
+            }
+            ++available;
+            if (written < out.size()) {
+                out[written] = info;
+                ++written;
+            }
+        }
+    }
+
+    if (SUCCEEDED(com)) {
+        ::CoUninitialize();
+    }
+    return result;
 }
 
 Result<std::unique_ptr<AudioSource>> create_audio_source(const AudioCaptureTarget& target,

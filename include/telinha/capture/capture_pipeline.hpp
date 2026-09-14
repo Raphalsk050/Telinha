@@ -36,6 +36,8 @@ public:
 
     void release() noexcept;
 
+    void keep_dirty() noexcept;
+
     [[nodiscard]] const CaptureStats& stats() const noexcept { return stats_; }
     [[nodiscard]] CaptureStats& stats() noexcept { return stats_; }
     [[nodiscard]] CaptureSourceInfo info() const noexcept;
@@ -59,5 +61,6 @@ private:
     Nanoseconds last_present_ns_ = 0;
     bool frame_held_ = false;
     bool started_ = false;
+    bool carry_dirty_ = false;
 };
 }  // namespace tl::capture

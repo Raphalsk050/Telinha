@@ -85,8 +85,8 @@ int run_all(int argc, char** argv);
 
 #define CHECK_EQ(lhs, rhs)                                                                 \
     do {                                                                                   \
-        const auto tl_lhs_ = (lhs);                                                        \
-        const auto tl_rhs_ = (rhs);                                                        \
+        auto tl_lhs_ = (lhs);                                                              \
+        auto tl_rhs_ = (rhs);                                                              \
         if (!(tl_lhs_ == tl_rhs_)) {                                                       \
             ::tl::test::Registry::instance().record_failure(                               \
                 __FILE__, __LINE__, #lhs " == " #rhs,                                      \
@@ -96,8 +96,8 @@ int run_all(int argc, char** argv);
 
 #define REQUIRE_EQ(lhs, rhs)                                                               \
     do {                                                                                   \
-        const auto tl_lhs_ = (lhs);                                                        \
-        const auto tl_rhs_ = (rhs);                                                        \
+        auto tl_lhs_ = (lhs);                                                              \
+        auto tl_rhs_ = (rhs);                                                              \
         if (!(tl_lhs_ == tl_rhs_)) {                                                       \
             ::tl::test::Registry::instance().record_failure(                               \
                 __FILE__, __LINE__, #lhs " == " #rhs,                                      \

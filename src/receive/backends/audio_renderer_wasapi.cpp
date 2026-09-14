@@ -20,6 +20,19 @@ using Microsoft::WRL::ComPtr;
 constexpr Nanoseconds kHundredNanoseconds = 100;
 constexpr DWORD kRenderWaitMs = 200;
 
+void apply_gain(std::int16_t* samples, std::size_t count, std::uint32_t percent) noexcept
+{
+    if (percent == kDefaultVolumePercent) {
+        return;
+    }
+    const auto gain = static_cast<std::int32_t>(percent);
+    for (std::size_t index = 0; index < count; ++index) {
+        const std::int32_t scaled = static_cast<std::int32_t>(samples[index]) * gain / 100;
+        samples[index] =
+            static_cast<std::int16_t>(scaled > 32767 ? 32767 : (scaled < -32768 ? -32768 : scaled));
+    }
+}
+
 class SampleRing {
 public:
     ~SampleRing() { release(); }
@@ -213,6 +226,12 @@ public:
 
     const AudioRendererStats& stats() const noexcept override { return stats_; }
 
+    void set_volume(std::uint32_t percent) noexcept override
+    {
+        volume_percent_.store(percent > kMaxVolumePercent ? kMaxVolumePercent : percent,
+                              std::memory_order_relaxed);
+    }
+
 private:
     Outcome open_device()
     {
@@ -314,7 +333,30 @@ private:
             }
 
             const std::size_t wanted = static_cast<std::size_t>(frames) * channels;
-            const std::size_t filled = ring_.read(reinterpret_cast<std::int16_t*>(buffer), wanted);
+            const std::size_t budget =
+                static_cast<std::size_t>(config_.format.ns_to_frames(config_.target_buffer_ns)) *
+                channels;
+            const std::size_t queued = ring_.available();
+            if (queued > wanted + budget) {
+                std::size_t excess = (queued - wanted - budget) / channels * channels;
+                std::int16_t scratch[1024];
+                while (excess > 0) {
+                    const std::size_t chunk =
+                        excess < sizeof(scratch) / sizeof(scratch[0])
+                            ? excess
+                            : sizeof(scratch) / sizeof(scratch[0]) / channels * channels;
+                    const std::size_t skipped = ring_.read(scratch, chunk);
+                    if (skipped == 0) {
+                        break;
+                    }
+                    excess -= skipped < excess ? skipped : excess;
+                    stats_.frames_dropped += skipped / channels;
+                }
+            }
+
+            auto* const samples = reinterpret_cast<std::int16_t*>(buffer);
+            const std::size_t filled = ring_.read(samples, wanted);
+            apply_gain(samples, filled, volume_percent_.load(std::memory_order_relaxed));
 
             DWORD release_flags = 0;
             if (filled < wanted) {
@@ -349,6 +391,7 @@ private:
     UINT32 buffer_frames_ = 0;
     Nanoseconds device_period_ns_ = 0;
     std::atomic<bool> running_{false};
+    std::atomic<std::uint32_t> volume_percent_{kDefaultVolumePercent};
     bool com_initialized_ = false;
 };
 

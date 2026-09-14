@@ -3,6 +3,7 @@
 #include <dwmapi.h>
 
 #include "d3d11_capture_device.hpp"
+#include "media_foundation_source.hpp"
 
 namespace tl::capture::win {
 namespace {
@@ -297,6 +298,7 @@ Outcome enumerate_targets(CaptureTargetKind kind, Span<CaptureTargetInfo> out,
                 return fail(Status::Unavailable, "EnumWindows");
             }
             break;
+        case CaptureTargetKind::Device: return enumerate_capture_devices(out, written, available);
         case CaptureTargetKind::None: return fail(Status::InvalidArgument, "target kind");
     }
 

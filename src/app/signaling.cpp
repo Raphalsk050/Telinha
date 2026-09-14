@@ -5,13 +5,15 @@
 #include <new>
 
 #include "telinha/app/clipboard.hpp"
+#include "telinha/app/machine_events.hpp"
 #include "telinha/core/log.hpp"
 
 namespace tl::app {
 namespace {
 
-constexpr char kTokenPrefix[] = "VExT";
-constexpr std::size_t kTokenPrefixLength = sizeof(kTokenPrefix) - 1;
+constexpr char kMagicText[] = "VExT";
+constexpr std::size_t kMagicTextLength = sizeof(kMagicText) - 1;
+constexpr std::size_t kCodePrefixLength = sizeof(transport::kSessionCodePrefix) - 1;
 constexpr int kClipboardAttempts = 3;
 
 std::FILE* open_file(const char* path, const char* mode) noexcept
@@ -29,7 +31,12 @@ std::FILE* open_file(const char* path, const char* mode) noexcept
 
 bool looks_like_token(const char* text, std::size_t length) noexcept
 {
-    return length > kTokenPrefixLength && std::memcmp(text, kTokenPrefix, kTokenPrefixLength) == 0;
+    if (length >= kCodePrefixLength &&
+        std::memcmp(text, transport::kSessionCodePrefix, kCodePrefixLength) == 0) {
+        text += kCodePrefixLength;
+        length -= kCodePrefixLength;
+    }
+    return length > kMagicTextLength && std::memcmp(text, kMagicText, kMagicTextLength) == 0;
 }
 
 std::size_t strip_edges(char* text, std::size_t length) noexcept
@@ -67,6 +74,28 @@ std::size_t trimmed_length(Span<const char> text) noexcept
         --length;
     }
     return length;
+}
+
+Outcome read_machine_token(const char* kind, char* out, std::size_t capacity,
+                           std::size_t& length) noexcept
+{
+    MachineEvent("need_code").text("kind", kind);
+
+    while (std::fgets(out, static_cast<int>(capacity), stdin) != nullptr) {
+        length = strip_edges(out, std::strlen(out));
+        if (length == 0) {
+            continue;
+        }
+        if (std::strcmp(out, "stop") == 0) {
+            length = 0;
+            return fail(Status::Empty, "consume_token: parado");
+        }
+        return ok();
+    }
+
+    length = 0;
+    out[0] = '\0';
+    return fail(Status::Empty, "consume_token: entrada fechada");
 }
 
 }  // namespace
@@ -189,9 +218,14 @@ Outcome apply_remote_blob(transport::MediaTransport& media,
     return ok();
 }
 
-Outcome publish_token(const SignalingOptions& options, const char* label, const char* token,
-                      std::size_t length) noexcept
+Outcome publish_token(const SignalingOptions& options, const char* kind, const char* label,
+                      const char* token, std::size_t length) noexcept
 {
+    if (machine_events_enabled()) {
+        MachineEvent("code").text("kind", kind).text("code", token, length);
+        return ok();
+    }
+
     if (options.out_path[0] != '\0') {
         std::FILE* file = open_file(options.out_path, "wb");
         if (file == nullptr) {
@@ -228,10 +262,14 @@ Outcome publish_token(const SignalingOptions& options, const char* label, const 
     return ok();
 }
 
-Outcome consume_token(const SignalingOptions& options, const char* label, char* out,
-                      std::size_t capacity, std::size_t& length) noexcept
+Outcome consume_token(const SignalingOptions& options, const char* kind, const char* label,
+                      char* out, std::size_t capacity, std::size_t& length) noexcept
 {
     length = 0;
+
+    if (machine_events_enabled()) {
+        return read_machine_token(kind, out, capacity, length);
+    }
 
     if (options.in_path[0] != '\0') {
         std::FILE* file = open_file(options.in_path, "rb");
@@ -301,6 +339,30 @@ Outcome consume_token(const SignalingOptions& options, const char* label, char* 
 
     out[length] = '\0';
     return length == 0 ? fail(Status::Empty, "consume_token: vazio") : ok();
+}
+
+Outcome receive_remote_blob(const SignalingOptions& options, const char* kind, const char* label,
+                            transport::TransportRole expected, char* scratch, std::size_t capacity,
+                            transport::SessionBlob& blob) noexcept
+{
+    for (;;) {
+        std::size_t length = 0;
+        TL_TRY(consume_token(options, kind, label, scratch, capacity, length));
+
+        Outcome decoded = transport::decode_session_blob(Span<const char>(scratch, length), blob);
+        if (decoded.ok() && blob.role() != expected) {
+            decoded = fail(Status::InvalidArgument,
+                           "receive_remote_blob: o codigo veio da mesma ponta, e o seu proprio");
+        }
+        if (decoded.ok() || !machine_events_enabled()) {
+            return decoded;
+        }
+
+        MachineEvent("code_rejected")
+            .text("kind", kind)
+            .text("status", to_string(decoded.status()))
+            .text("message", decoded.error().context);
+    }
 }
 
 }  // namespace tl::app

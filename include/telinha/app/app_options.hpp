@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "telinha/audio/audio_source.hpp"
 #include "telinha/capture/capture_target.hpp"
 #include "telinha/core/log.hpp"
 #include "telinha/receive/audio_renderer.hpp"
@@ -28,6 +29,7 @@ enum class AudioScope : std::uint8_t {
     None = 0,
     System,
     Process,
+    Device,
 };
 
 const char* to_string(AudioScope scope) noexcept;
@@ -79,11 +81,14 @@ struct SenderOptions {
 
     AudioScope audio_scope = AudioScope::System;
     std::uint32_t audio_process_id = 0;
+    std::uint32_t audio_exclude_process_id = 0;
+    char audio_device_id[audio::kAudioDeviceIdCapacity] = {};
 
     NetworkOptions network;
     SignalingOptions signaling;
     Nanoseconds stats_interval_ns = 5ull * kNanosecondsPerSecond;
     std::uint32_t capture_timeout_ms = 100;
+    bool multi_peer = false;
 };
 
 struct ReceiverOptions {
@@ -103,13 +108,17 @@ struct ReceiverOptions {
 struct AppOptions {
     AppMode mode = AppMode::None;
     LogLevel log_level = LogLevel::Info;
+    bool machine_output = false;
     capture::CaptureTargetKind list_kind = capture::CaptureTargetKind::None;
     SenderOptions sender;
     ReceiverOptions receiver;
+    std::int32_t title_argument = 0;
 };
 
 [[nodiscard]] Outcome parse_command_line(int argc, const char* const* argv, AppOptions& out,
                                          char* error, int error_capacity) noexcept;
+
+void set_window_title(ReceiverOptions& options, const char* text) noexcept;
 
 void print_usage() noexcept;
 

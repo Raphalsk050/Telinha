@@ -38,6 +38,7 @@
 #include "backends/webrtc/push_video_source.hpp"
 #include "rtc_base/thread.h"
 #include "rtc_base/time_utils.h"
+#include "rtc_base/win32_socket_init.h"
 #include "telinha/core/clock.hpp"
 #include "telinha/core/log.hpp"
 #include "telinha/transport/media_transport.hpp"
@@ -104,6 +105,7 @@ public:
     [[nodiscard]] Outcome create_local_description() override;
     [[nodiscard]] Outcome set_remote_description(Span<const char> description) override;
     [[nodiscard]] Outcome add_remote_candidate(Span<const char> candidate) override;
+    [[nodiscard]] Outcome local_session_description(Span<char> out, std::size_t& length) override;
 
     [[nodiscard]] Outcome send_video(const EncodedVideoFrame& frame) override;
     [[nodiscard]] Outcome send_audio(const PcmAudioBlock& block) override;
@@ -167,11 +169,15 @@ private:
 
         void OnSetRemoteDescriptionComplete(webrtc::RTCError error) override
         {
+            refused_ = !error.ok();
             owner_->on_remote_description_applied(std::move(error));
         }
 
+        [[nodiscard]] bool refused() const noexcept { return refused_; }
+
     private:
         WebrtcMediaTransport* owner_;
+        bool refused_ = false;
     };
 
     class StatsObserver : public webrtc::RTCStatsCollectorCallback {
@@ -202,6 +208,7 @@ private:
     WireVideoCodec codec_ = WireVideoCodec::H264;
     TransportObserver* observer_ = nullptr;
 
+    webrtc::WinsockInitializer winsock_;
     std::unique_ptr<webrtc::Thread> network_thread_;
     std::unique_ptr<webrtc::Thread> worker_thread_;
     std::unique_ptr<webrtc::Thread> signaling_thread_;
@@ -238,6 +245,10 @@ private:
     std::atomic<std::uint32_t> pacer_queue_ms_{0};
 
     std::string local_description_;
+
+    std::uint64_t remote_frame_index_ = 0;
+    std::uint32_t remote_width_ = 0;
+    std::uint32_t remote_height_ = 0;
 
     char pending_candidates_[kMaxPendingCandidates][kMaxCandidateBytes + kMaxMidBytes + 16] = {};
     std::size_t pending_candidate_count_ = 0;
@@ -572,6 +583,32 @@ Outcome WebrtcMediaTransport::set_remote_description(Span<const char> descriptio
     });
 }
 
+Outcome WebrtcMediaTransport::local_session_description(Span<char> out, std::size_t& length)
+{
+    length = 0;
+    if (!running_.load(std::memory_order_acquire)) {
+        return fail(Status::Unavailable, "local_session_description: the transport is not running");
+    }
+
+    std::string sdp;
+    const bool described = signaling_thread_->BlockingCall([this, &sdp]() {
+        const webrtc::SessionDescriptionInterface* description =
+            peer_connection_->local_description();
+        return description != nullptr && description->ToString(&sdp);
+    });
+    if (!described || sdp.empty()) {
+        return fail(Status::Unavailable, "local_session_description: no local description yet");
+    }
+    if (sdp.size() >= out.size()) {
+        return fail(Status::OutOfRange, "local_session_description: the SDP does not fit");
+    }
+
+    std::memcpy(out.data(), sdp.data(), sdp.size());
+    out.data()[sdp.size()] = '\0';
+    length = sdp.size();
+    return ok();
+}
+
 void WebrtcMediaTransport::on_remote_description_applied(webrtc::RTCError error)
 {
     if (!error.ok()) {
@@ -863,9 +900,20 @@ void WebrtcMediaTransport::on_target_bitrate(std::uint32_t bits_per_second,
 
 void WebrtcMediaTransport::on_remote_video(const EncodedVideoFrame& frame) noexcept
 {
-    if (observer_ != nullptr) {
-        observer_->on_remote_video(frame);
+    if (observer_ == nullptr) {
+        return;
     }
+
+    EncodedVideoFrame numbered = frame;
+    numbered.frame_index = remote_frame_index_++;
+    if (numbered.width == 0 || numbered.height == 0) {
+        numbered.width = remote_width_;
+        numbered.height = remote_height_;
+    } else {
+        remote_width_ = numbered.width;
+        remote_height_ = numbered.height;
+    }
+    observer_->on_remote_video(numbered);
 }
 
 void WebrtcMediaTransport::on_remote_audio(const PcmAudioBlock& block) noexcept

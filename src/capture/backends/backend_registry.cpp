@@ -10,6 +10,7 @@
 #if TL_PLATFORM_WINDOWS
 #include "win/desktop_duplication_source.hpp"
 #include "win/graphics_capture_source.hpp"
+#include "win/media_foundation_source.hpp"
 #include "win/target_enumeration.hpp"
 #endif
 
@@ -49,6 +50,9 @@ namespace {
         return requested;
     }
 #if TL_PLATFORM_WINDOWS
+    if (kind == CaptureTargetKind::Device) {
+        return CaptureBackend::MediaFoundation;
+    }
     return kind == CaptureTargetKind::Window ? CaptureBackend::GraphicsCapture
                                              : CaptureBackend::DesktopDuplication;
 #else
@@ -112,9 +116,11 @@ bool backend_available(CaptureBackend backend) noexcept
 #if TL_PLATFORM_WINDOWS
         case CaptureBackend::DesktopDuplication: return true;
         case CaptureBackend::GraphicsCapture: return win::graphics_capture_supported();
+        case CaptureBackend::MediaFoundation: return true;
 #else
         case CaptureBackend::DesktopDuplication:
-        case CaptureBackend::GraphicsCapture: return false;
+        case CaptureBackend::GraphicsCapture:
+        case CaptureBackend::MediaFoundation: return false;
 #endif
     }
     return false;
@@ -161,9 +167,16 @@ Result<std::unique_ptr<CaptureSource>> create_capture_source(const CaptureTarget
                 return Error{Status::NotSupported, "Windows Graphics Capture is unavailable"};
             }
             return win::create_graphics_capture_source(target, options);
+
+        case CaptureBackend::MediaFoundation:
+            if (target.kind != CaptureTargetKind::Device) {
+                return Error{Status::InvalidArgument, "media foundation only captures devices"};
+            }
+            return win::create_media_foundation_source(target, options);
 #else
         case CaptureBackend::DesktopDuplication:
         case CaptureBackend::GraphicsCapture:
+        case CaptureBackend::MediaFoundation:
             return Error{Status::NotSupported, "backend requires Windows"};
 #endif
 

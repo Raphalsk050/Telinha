@@ -6,6 +6,7 @@
 #include "telinha/audio/audio_format.hpp"
 #include "telinha/audio/captured_audio.hpp"
 #include "telinha/core/result.hpp"
+#include "telinha/core/span.hpp"
 
 namespace tl::audio {
 
@@ -13,6 +14,7 @@ enum class AudioCaptureScope : std::uint8_t {
     None = 0,
     SystemLoopback,
     ProcessLoopback,
+    Device,
 };
 
 const char* to_string(AudioCaptureScope scope) noexcept;
@@ -24,15 +26,20 @@ enum class ProcessLoopbackMode : std::uint8_t {
 
 const char* to_string(ProcessLoopbackMode mode) noexcept;
 
+inline constexpr std::uint32_t kAudioDeviceIdCapacity = 128;
+inline constexpr std::uint32_t kAudioDeviceNameCapacity = 128;
+
 struct AudioCaptureTarget {
     AudioCaptureScope scope = AudioCaptureScope::None;
     std::uint32_t process_id = 0;
     ProcessLoopbackMode process_loopback_mode = ProcessLoopbackMode::IncludeProcessTree;
+    char device_id[kAudioDeviceIdCapacity] = {};
 
     [[nodiscard]] constexpr bool valid() const noexcept
     {
         return scope == AudioCaptureScope::SystemLoopback ||
-               (scope == AudioCaptureScope::ProcessLoopback && process_id != 0);
+               (scope == AudioCaptureScope::ProcessLoopback && process_id != 0) ||
+               (scope == AudioCaptureScope::Device && device_id[0] != '\0');
     }
 
     [[nodiscard]] static constexpr AudioCaptureTarget system_loopback() noexcept
@@ -54,6 +61,23 @@ struct AudioCaptureTarget {
         return AudioCaptureTarget{AudioCaptureScope::ProcessLoopback, pid,
                                   ProcessLoopbackMode::ExcludeProcessTree};
     }
+
+    [[nodiscard]] static AudioCaptureTarget capture_device(const char* id) noexcept
+    {
+        AudioCaptureTarget target;
+        target.scope = AudioCaptureScope::Device;
+        for (std::uint32_t index = 0;
+             id != nullptr && id[index] != '\0' && index + 1 < kAudioDeviceIdCapacity; ++index) {
+            target.device_id[index] = id[index];
+        }
+        return target;
+    }
+};
+
+struct AudioEndpointInfo {
+    char id[kAudioDeviceIdCapacity] = {};
+    char name[kAudioDeviceNameCapacity] = {};
+    std::uint8_t container_id[16] = {};
 };
 
 struct AudioCaptureOptions {
@@ -121,6 +145,10 @@ private:
 };
 
 [[nodiscard]] bool process_loopback_available() noexcept;
+
+[[nodiscard]] Outcome enumerate_capture_endpoints(Span<AudioEndpointInfo> out,
+                                                  std::uint32_t& written,
+                                                  std::uint32_t& available) noexcept;
 
 [[nodiscard]] Result<std::unique_ptr<AudioSource>> create_audio_source(
     const AudioCaptureTarget& target, const AudioCaptureOptions& options);

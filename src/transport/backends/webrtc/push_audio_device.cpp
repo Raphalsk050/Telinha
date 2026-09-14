@@ -123,20 +123,22 @@ void PushAudioDevice::run_playout() noexcept
 
         webrtc::AudioTransport* transport = audio_transport_.load(std::memory_order_acquire);
         if (transport != nullptr) {
-            std::size_t produced = 0;
+            std::size_t produced_samples = 0;
             std::int64_t elapsed_time_ms = -1;
             std::int64_t ntp_time_ms = -1;
             transport->NeedMorePlayData(kFrames, sizeof(std::int16_t) * kPlayoutChannels,
-                                        kPlayoutChannels, kPlayoutSampleRateHz, buffer, produced,
-                                        &elapsed_time_ms, &ntp_time_ms);
+                                        kPlayoutChannels, kPlayoutSampleRateHz, buffer,
+                                        produced_samples, &elapsed_time_ms, &ntp_time_ms);
 
             RemoteAudioSink* sink = remote_audio_sink_.load(std::memory_order_acquire);
-            if (sink != nullptr && produced > 0) {
+            if (sink != nullptr && produced_samples > 0 &&
+                produced_samples <= kFrames * kPlayoutChannels) {
                 PcmAudioBlock block;
-                block.interleaved = Span<const std::int16_t>(buffer, produced * kPlayoutChannels);
+                block.interleaved = Span<const std::int16_t>(buffer, produced_samples);
                 block.capture_time_ns = now_ns();
                 block.sample_rate_hz = kPlayoutSampleRateHz;
-                block.frames_per_channel = static_cast<std::uint32_t>(produced);
+                block.frames_per_channel =
+                    static_cast<std::uint32_t>(produced_samples / kPlayoutChannels);
                 block.channels = kPlayoutChannels;
                 sink->on_remote_audio(block);
             }

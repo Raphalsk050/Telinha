@@ -7,6 +7,8 @@ const WATCH_TIMEOUT_MS = 45000;
 const VIEWER_GRACE_MS = 15000;
 const RESTART_GRACE_MS = 8000;
 const MAX_SDP_LENGTH = 60000;
+const MAX_THUMB_LENGTH = 120000;
+const SELF_VIEWER = 'self';
 
 function asciiTitle(text) {
   return String(text ?? '')
@@ -38,7 +40,9 @@ class StreamManager extends EventEmitter {
         width: outgoing.width,
         height: outgoing.height,
         targetName: outgoing.targetName,
-        viewers: [...outgoing.viewers].map(([id, viewer]) => ({ id, state: viewer.state })),
+        viewers: [...outgoing.viewers]
+          .filter(([id]) => id !== SELF_VIEWER)
+          .map(([id, viewer]) => ({ id, state: viewer.state })),
       } : null,
       incoming: [...this.incoming.values()].map((entry) => ({
         sharerId: entry.sharerId,
@@ -102,6 +106,7 @@ class StreamManager extends EventEmitter {
         outgoing.state = 'live';
         outgoing.width = event.width;
         outgoing.height = event.height;
+        this.watchOwnScreen(outgoing);
         this.changed();
         break;
       case 'target':
@@ -121,16 +126,22 @@ class StreamManager extends EventEmitter {
       case 'offer':
         if (viewer && typeof event.sdp === 'string') {
           viewer.state = 'inviting';
-          this.publish(outgoing.spaceId, 'stream-offer', {
-            to: event.peer, roomId: outgoing.roomId, sdp: event.sdp,
-          });
+          if (event.peer === SELF_VIEWER) {
+            this.emit('embedded-offer', { sharerId: SELF_VIEWER, sdp: event.sdp });
+          } else {
+            this.publish(outgoing.spaceId, 'stream-offer', {
+              to: event.peer, roomId: outgoing.roomId, sdp: event.sdp,
+            });
+          }
           this.changed();
         }
         break;
       case 'code_rejected':
         if (viewer) {
           outgoing.session.sendCommand({ command: 'remove_peer', peer: event.peer });
-          this.publish(outgoing.spaceId, 'stream-end', { to: event.peer, roomId: outgoing.roomId, reason: 'peer' });
+          if (event.peer !== SELF_VIEWER) {
+            this.publish(outgoing.spaceId, 'stream-end', { to: event.peer, roomId: outgoing.roomId, reason: 'peer' });
+          }
         }
         break;
       case 'peer_state':
@@ -140,7 +151,7 @@ class StreamManager extends EventEmitter {
         }
         break;
       case 'peer_failed':
-        if (viewer) {
+        if (viewer && event.peer !== SELF_VIEWER) {
           this.publish(outgoing.spaceId, 'stream-end', { to: event.peer, roomId: outgoing.roomId, reason: 'peer' });
         }
         break;
@@ -166,6 +177,32 @@ class StreamManager extends EventEmitter {
   command(command) {
     const { outgoing } = this;
     return Boolean(outgoing && outgoing.state === 'live' && outgoing.session.sendCommand(command));
+  }
+
+  // O proprio emissor entra como espectador local, e assim ve a tela que esta mandando.
+  watchOwnScreen(outgoing) {
+    if (outgoing.viewers.has(SELF_VIEWER)) {
+      return;
+    }
+    outgoing.viewers.set(SELF_VIEWER, { state: 'preparing', addedAt: Date.now(), format: 'sdp' });
+    outgoing.session.sendCommand({ command: 'add_peer', peer: SELF_VIEWER, format: 'sdp' });
+  }
+
+  answerOwnScreen(sdp) {
+    const { outgoing } = this;
+    if (!outgoing || typeof sdp !== 'string' || sdp.length > MAX_SDP_LENGTH) {
+      return false;
+    }
+    return outgoing.session.sendCommand({ command: 'peer_sdp_answer', peer: SELF_VIEWER, sdp });
+  }
+
+  publishThumb(image) {
+    const { outgoing } = this;
+    if (!outgoing || outgoing.state !== 'live' || typeof image !== 'string'
+      || !image.startsWith('data:image/jpeg;base64,') || image.length > MAX_THUMB_LENGTH) {
+      return false;
+    }
+    return this.publish(outgoing.spaceId, 'stream-thumb', { roomId: outgoing.roomId, image });
   }
 
   /* assistir */
@@ -381,6 +418,9 @@ class StreamManager extends EventEmitter {
   }
 
   answerEmbedded(sharerId, sdp) {
+    if (sharerId === SELF_VIEWER) {
+      return this.answerOwnScreen(sdp);
+    }
     const entry = this.incoming.get(sharerId);
     if (!entry || entry.mode !== 'embedded' || typeof sdp !== 'string' || sdp.length > MAX_SDP_LENGTH) {
       return false;
@@ -493,6 +533,17 @@ class StreamManager extends EventEmitter {
       return;
     }
 
+    if (message.type === 'stream-thumb') {
+      if (typeof message.image !== 'string' || message.image.length > MAX_THUMB_LENGTH
+        || !message.image.startsWith('data:image/jpeg;base64,')) {
+        return;
+      }
+      this.emit('thumb', {
+        sharerId: from, spaceId, roomId: message.roomId, image: message.image,
+      });
+      return;
+    }
+
     if (message.type === 'stream-end') {
       const entry = this.incoming.get(from);
       if (!entry || entry.spaceId !== spaceId) {
@@ -526,7 +577,7 @@ class StreamManager extends EventEmitter {
     if (outgoing && outgoing.spaceId === spaceId) {
       const now = Date.now();
       for (const [viewerId, viewer] of outgoing.viewers) {
-        if (!inRoom.has(viewerId) && now - viewer.addedAt > VIEWER_GRACE_MS) {
+        if (viewerId !== SELF_VIEWER && !inRoom.has(viewerId) && now - viewer.addedAt > VIEWER_GRACE_MS) {
           outgoing.session.sendCommand({ command: 'remove_peer', peer: viewerId });
         }
       }
@@ -545,4 +596,4 @@ class StreamManager extends EventEmitter {
   }
 }
 
-module.exports = { StreamManager, asciiTitle };
+module.exports = { SELF_VIEWER, StreamManager, asciiTitle };

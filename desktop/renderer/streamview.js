@@ -6,6 +6,7 @@ const StreamView = (() => {
   const GATHER_TIMEOUT_MS = 3000;
   const STATS_INTERVAL_MS = 1000;
 
+  const SELF = 'self';
   const views = new Map();
   const listeners = new Set();
   const statsListeners = new Set();
@@ -58,7 +59,7 @@ const StreamView = (() => {
   }
 
   function applyAudio(view) {
-    if (!view.audioStream) {
+    if (!view.audioStream || view.mine) {
       return;
     }
     const volume = Math.max(0, Math.min(200, Number(volumeFor(view.sharerId)) || 0));
@@ -201,7 +202,8 @@ const StreamView = (() => {
       sharerId,
       pc: new RTCPeerConnection({ iceServers: ICE_SERVERS, bundlePolicy: 'max-bundle' }),
       video,
-      audio: hiddenAudio(false),
+      mine: sharerId === SELF,
+      audio: hiddenAudio(sharerId === SELF),
       keepAlive: hiddenAudio(true),
       videoTrack: null,
       audioStream: null,
@@ -263,8 +265,11 @@ const StreamView = (() => {
     emit();
   }
 
-  function sync(incoming) {
+  function sync(incoming, keepSelf) {
     const embedded = new Set(incoming.filter((entry) => entry.mode === 'embedded').map((entry) => entry.sharerId));
+    if (keepSelf) {
+      embedded.add(SELF);
+    }
     for (const sharerId of [...views.keys()]) {
       if (!embedded.has(sharerId)) {
         close(sharerId);
@@ -288,6 +293,17 @@ const StreamView = (() => {
   }
 
   return {
-    close, configure, handleOffer, mediaStream, onStats, refreshAudio, setSink, state, subscribe, sync, video,
+    SELF,
+    close,
+    configure,
+    handleOffer,
+    mediaStream,
+    onStats,
+    refreshAudio,
+    setSink,
+    state,
+    subscribe,
+    sync,
+    video,
   };
 })();

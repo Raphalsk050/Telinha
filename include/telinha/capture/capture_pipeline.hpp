@@ -47,6 +47,7 @@ public:
     }
 
 private:
+    [[nodiscard]] Outcome prepare_tiles(const CaptureSourceInfo& source_info);
     [[nodiscard]] Outcome rebuild_tiles(std::uint32_t width, std::uint32_t height);
     [[nodiscard]] Outcome apply_surface_extent(std::uint32_t width, std::uint32_t height);
     [[nodiscard]] std::uint32_t tile_span(std::uint32_t extent) const noexcept;

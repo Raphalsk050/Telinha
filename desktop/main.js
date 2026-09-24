@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {
-  app, BrowserWindow, Notification, clipboard, dialog, ipcMain, safeStorage, session,
+  app, BrowserWindow, Notification, clipboard, dialog, ipcMain, nativeImage, safeStorage, session,
 } = require('electron');
 const {
   BLOB_ID_PATTERN, ChatStore, MAX_TEXT_LENGTH, decodeImage,
@@ -40,6 +40,12 @@ const WEBRTC_PORT_MAX = 50039;
 const MAX_RTC_PAYLOAD = 60000;
 const META_REPLY_INTERVAL_MS = 5000;
 const CHANNEL_ID_PATTERN = /^[a-f0-9]{16}$/;
+const IMAGE_EXTENSIONS = new Map([
+  ['image/png', 'png'],
+  ['image/jpeg', 'jpg'],
+  ['image/webp', 'webp'],
+  ['image/gif', 'gif'],
+]);
 
 let mainWindow = null;
 let profile = null;
@@ -71,6 +77,66 @@ function telinhaExe() {
     throw new Error('nao encontrei o telinha.exe, compile o projeto com cmake --build --preset msvc-release');
   }
   return exe;
+}
+
+// O .ico fica solto em resources, porque o lado nativo do Windows nao le de dentro do asar.
+function iconFile() {
+  for (const candidate of [
+    path.join(process.resourcesPath || '', 'icon.ico'),
+    path.join(__dirname, 'assets', 'icon.ico'),
+  ]) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function appIcon() {
+  const file = iconFile();
+  if (!file) {
+    return undefined;
+  }
+  const image = nativeImage.createFromPath(file);
+  return image.isEmpty() ? undefined : image;
+}
+
+// O portatil roda de uma pasta temporaria diferente a cada vez, entao o icone da barra de tarefas
+// aponta para uma copia fixa em userData.
+function storedIconFile() {
+  const source = iconFile();
+  if (!source) {
+    return null;
+  }
+  const stored = path.join(app.getPath('userData'), 'icon.ico');
+  try {
+    if (!fs.existsSync(stored) || fs.statSync(stored).size !== fs.statSync(source).size) {
+      fs.copyFileSync(source, stored);
+    }
+    return stored;
+  } catch {
+    return source;
+  }
+}
+
+// O app nao fixa um AppUserModelID proprio: sem registro no Windows, a barra de tarefas desenha
+// um icone generico no lugar do icone da janela. Aqui so vai o que o Windows usa para reabrir.
+function describeToTaskbar(window) {
+  const icon = storedIconFile();
+  if (process.platform !== 'win32' || !icon) {
+    return;
+  }
+  const launcher = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+  try {
+    window.setAppDetails({
+      appIconPath: icon,
+      appIconIndex: 0,
+      relaunchCommand: `"${launcher}"`,
+      relaunchDisplayName: 'Telinha',
+    });
+  } catch {
+    // sem detalhes para a barra de tarefas, o Windows usa o icone do executavel
+  }
 }
 
 function systemName() {
@@ -123,6 +189,15 @@ function toLimit(value) {
 
 function conversationKey(spaceId, channelId) {
   return channelId ? `${spaceId}-${channelId}` : spaceId;
+}
+
+function imageFileName(message) {
+  const extension = IMAGE_EXTENSIONS.get(message.image.mime) ?? 'png';
+  const stamp = new Date(Number(message.sentAt) || Date.now())
+    .toISOString()
+    .slice(0, 19)
+    .replace(/[:T]/g, '-');
+  return `telinha-${stamp}.${extension}`;
 }
 
 function profileView() {
@@ -822,6 +897,26 @@ function registerIpc() {
     return true;
   });
 
+  ipcMain.handle('chat:save-image', async (_event, { spaceId, channelId = null, imageId }) => {
+    const key = storedConversation(spaceId, channelId);
+    if (!key || !BLOB_ID_PATTERN.test(String(imageId))) {
+      return false;
+    }
+    const message = chats.history(key).find((item) => item.image && item.image.id === imageId);
+    const data = message ? chats.loadBlob(key, imageId) : null;
+    if (!data) {
+      throw new Error('essa imagem nao esta mais guardada neste computador');
+    }
+    const result = await dialog.showSaveDialog(mainWindow, {
+      defaultPath: path.join(app.getPath('downloads'), imageFileName(message)),
+    });
+    if (result.canceled || !result.filePath) {
+      return false;
+    }
+    await fs.promises.writeFile(result.filePath, data);
+    return true;
+  });
+
   ipcMain.handle('voice:join', (_event, request) => {
     const { spaceId, roomId } = request ?? {};
     if (!roomExists(spaceId, roomId)) {
@@ -906,6 +1001,7 @@ function registerIpc() {
   ipcMain.handle('stream:volume', (_event, { sharerId, volume }) => streams.setVolume(sharerId, volume));
   ipcMain.handle('stream:answer', (_event, { sharerId, sdp }) => streams.answerEmbedded(sharerId, sdp));
   ipcMain.handle('stream:embedded-state', (_event, { sharerId, state }) => streams.embeddedState(sharerId, state));
+  ipcMain.handle('stream:thumb', (_event, image) => streams.publishThumb(image));
   ipcMain.handle('stream:popout', (_event, sharerId) => {
     const entry = streams.incoming.get(sharerId);
     if (entry) {
@@ -953,6 +1049,7 @@ function createWindow() {
     minWidth: 1040,
     minHeight: 640,
     title: 'Telinha',
+    icon: appIcon(),
     backgroundColor: '#1e1f22',
     autoHideMenuBar: true,
     show: false,
@@ -964,6 +1061,7 @@ function createWindow() {
       backgroundThrottling: false,
     },
   });
+  describeToTaskbar(mainWindow);
   const contents = mainWindow.webContents;
   if (typeof contents.setWebRTCUDPPortRange === 'function') {
     contents.setWebRTCUDPPortRange({ min: WEBRTC_PORT_MIN, max: WEBRTC_PORT_MAX });
@@ -973,8 +1071,6 @@ function createWindow() {
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 }
-
-app.setAppUserModelId('dev.telinha.desktop');
 
 app.whenReady().then(() => {
   const storage = protectedStorage();
@@ -1021,6 +1117,7 @@ app.whenReady().then(() => {
   streams.on('outgoing-ended', (info) => sendToWindow('stream:outgoing-ended', info));
   streams.on('incoming-ended', (info) => sendToWindow('stream:incoming-ended', info));
   streams.on('embedded-offer', (payload) => sendToWindow('stream:offer', payload));
+  streams.on('thumb', (payload) => sendToWindow('stream:thumb', payload));
 
   configurePermissions();
   registerIpc();

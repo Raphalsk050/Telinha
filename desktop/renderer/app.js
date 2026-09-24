@@ -215,6 +215,7 @@ const state = {
   showMembers: true,
   voice: null,
   streams: { outgoing: null, incoming: [] },
+  streamThumbs: new Map(),
   outgoing: null,
   pendingQuality: null,
   streamStats: new Map(),
@@ -969,6 +970,8 @@ function renderStage() {
     avatarFor: (info) => avatarUrlFor(info.memberId),
     outgoingLive: outgoingLive(),
     outgoingName: state.streams.outgoing ? state.streams.outgoing.targetName : '',
+    selfPreview: outgoingLive() ? StreamView.video(StreamView.SELF) : null,
+    thumbFor: streamThumbFor,
     nameFor: (peer) => nameForPeer(voice.spaceId, peer),
     liveActions: fillLiveActions,
     focusId: state.focusTile,
@@ -2588,10 +2591,12 @@ function applyStageHeight(height) {
   if (!height) {
     el.roomTiles.style.height = '';
     el.roomTiles.style.maxHeight = '';
+    el.roomTiles.style.removeProperty('--stage-cap');
     return;
   }
   el.roomTiles.style.height = `${height}px`;
   el.roomTiles.style.maxHeight = 'none';
+  el.roomTiles.style.setProperty('--stage-cap', `${height}px`);
 }
 
 function bindStageResize() {
@@ -2697,6 +2702,69 @@ function streamVolumeFor(sharerId) {
   return Call.personPrefs(Call.prefsKey({ id: sharerId, memberId: peer ? peer.memberId : null })).streamVolume;
 }
 
+const THUMB_INTERVAL_MS = 4000;
+const THUMB_MAX_AGE_MS = 60000;
+const THUMB_WIDTH = 480;
+let thumbTimer = null;
+let thumbCanvas = null;
+
+// Quem transmite manda um retrato pequeno de tempos em tempos, para quem ainda nao clicou em assistir.
+function captureThumb() {
+  const video = StreamView.video(StreamView.SELF);
+  if (!video || !video.videoWidth || !video.videoHeight) {
+    return null;
+  }
+  if (!thumbCanvas) {
+    thumbCanvas = document.createElement('canvas');
+  }
+  const scale = Math.min(1, THUMB_WIDTH / video.videoWidth);
+  thumbCanvas.width = Math.max(2, Math.round(video.videoWidth * scale));
+  thumbCanvas.height = Math.max(2, Math.round(video.videoHeight * scale));
+  thumbCanvas.getContext('2d').drawImage(video, 0, 0, thumbCanvas.width, thumbCanvas.height);
+  return thumbCanvas.toDataURL('image/jpeg', 0.55);
+}
+
+function sendThumb() {
+  if (Call.participants().length === 0) {
+    return;
+  }
+  const image = captureThumb();
+  if (image) {
+    api.publishStreamThumb(image).catch(() => {});
+  }
+}
+
+function startThumbLoop() {
+  stopThumbLoop();
+  thumbTimer = setInterval(sendThumb, THUMB_INTERVAL_MS);
+  setTimeout(sendThumb, 1500);
+}
+
+function stopThumbLoop() {
+  clearInterval(thumbTimer);
+  thumbTimer = null;
+}
+
+function handleStreamThumb({ sharerId, image }) {
+  state.streamThumbs.set(sharerId, { image, at: Date.now() });
+  render();
+}
+
+function streamThumbFor(sharerId) {
+  if (state.streams.incoming.some((entry) => entry.sharerId === sharerId)) {
+    return null;
+  }
+  const entry = state.streamThumbs.get(sharerId);
+  if (!entry) {
+    return null;
+  }
+  if (Date.now() - entry.at > THUMB_MAX_AGE_MS) {
+    state.streamThumbs.delete(sharerId);
+    return null;
+  }
+  return entry.image;
+}
+
 function streamTilesInfo() {
   const { voice } = state;
   if (!voice) {
@@ -2722,6 +2790,9 @@ function openStreamViewer(stream) {
 }
 
 function handleStreamViewStats(sharerId, stats) {
+  if (sharerId === StreamView.SELF) {
+    return;
+  }
   const entry = state.streams.incoming.find((item) => item.sharerId === sharerId);
   const name = entry ? entry.name : 'alguém';
   Debug.update(`watch-${sharerId}`, {
@@ -3109,8 +3180,17 @@ function handleVoice(voice) {
 }
 
 function handleStreams(snapshot) {
+  const wasLive = outgoingLive();
   state.streams = snapshot;
-  StreamView.sync(snapshot.incoming);
+  const live = outgoingLive();
+  StreamView.sync(snapshot.incoming, live);
+  if (live && !wasLive) {
+    Call.playLiveTone();
+    startThumbLoop();
+  } else if (!live && wasLive) {
+    stopThumbLoop();
+    StreamView.close(StreamView.SELF);
+  }
   applyStreamVolumes();
   render();
 }
@@ -3394,6 +3474,7 @@ function subscribeEvents() {
   api.onOutgoingEnded(handleOutgoingEnded);
   api.onIncomingEnded(handleIncomingEnded);
   api.onStreamOffer((payload) => StreamView.handleOffer(payload));
+  api.onStreamThumb(handleStreamThumb);
   api.onAvatars(({ memberId, contactId, url }) => {
     if (contactId) {
       state.contactMembers.set(contactId, memberId);

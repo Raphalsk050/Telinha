@@ -48,3 +48,7 @@ Screen streams bind their local ports inside 50000-50019 and calls inside
 50000-50039 on the router is usually enough, unless that connection sits behind
 carrier grade NAT. `dist` writes a portable `Telinha-<version>-portable.exe` with
 `telinha.exe` bundled inside to `desktop/dist`.
+
+On Windows, `.\build.ps1` builds `telinha.exe` on every core and runs `dist` in
+one go. `-Run` starts the app from the build instead of packaging it, and
+`-ExeOnly` stops after `telinha.exe`.

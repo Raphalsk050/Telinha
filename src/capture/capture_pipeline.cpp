@@ -36,21 +36,31 @@ Outcome CapturePipeline::initialize(std::unique_ptr<CaptureSource> source,
         return fail(Status::OutOfMemory, "CapturePipeline::initialize: arena reservation failed");
     }
 
-    const CaptureSourceInfo source_info = source_->info();
-    if (source_info.width == 0 || source_info.height == 0) {
-        source_.reset();
-        return fail(Status::Unavailable,
-                    "CapturePipeline::initialize: source reported an empty surface");
-    }
-
     tiles_marker_ = storage_.arena().mark();
-    if (!rebuild_tiles(source_info.width, source_info.height).ok()) {
-        source_.reset();
-        return fail(Status::OutOfMemory, "CapturePipeline::initialize: tile map allocation failed");
-    }
-
     stats_.reset();
     last_present_ns_ = 0;
+
+    // A capture device only learns its picture size when start() opens it, so its tiles wait.
+    const CaptureSourceInfo source_info = source_->info();
+    if (source_info.width == 0 || source_info.height == 0) {
+        return ok();
+    }
+
+    const Outcome prepared = prepare_tiles(source_info);
+    if (!prepared.ok()) {
+        source_.reset();
+    }
+    return prepared;
+}
+
+Outcome CapturePipeline::prepare_tiles(const CaptureSourceInfo& source_info)
+{
+    if (source_info.width == 0 || source_info.height == 0) {
+        return fail(Status::Unavailable, "CapturePipeline: source reported an empty surface");
+    }
+    if (!rebuild_tiles(source_info.width, source_info.height).ok()) {
+        return fail(Status::OutOfMemory, "CapturePipeline: tile map allocation failed");
+    }
 
     TL_LOG_INFO("capture pipeline ready: %ux%u, %u tiles, backend %s", source_info.width,
                 source_info.height, tiles_.tile_count(), to_string(source_info.backend));
@@ -101,6 +111,14 @@ Outcome CapturePipeline::start()
         return ok();
     }
     TL_TRY(source_->start());
+
+    if (tiles_.tile_count() == 0) {
+        const Outcome prepared = prepare_tiles(source_->info());
+        if (!prepared.ok()) {
+            source_->stop();
+            return prepared;
+        }
+    }
     started_ = true;
     return ok();
 }

@@ -54,6 +54,7 @@ const Call = (() => {
   let testMeter = null;
   let testTimer = null;
   let knownParticipants = new Set();
+  let knownLive = new Set();
   let soundVolume = loadSoundVolume();
   const mix = { destination: null, micSource: null, soundBus: null, track: null };
   const soundBuffers = new Map();
@@ -339,6 +340,7 @@ const Call = (() => {
       });
       room = { spaceId: state.spaceId, roomId: state.roomId };
       knownParticipants = new Set(participants().map((peer) => peer.id));
+      knownLive = new Set(participants().filter((peer) => peer.voice.live).map((peer) => peer.id));
       playTone('join');
       startTimers();
       reconcile();
@@ -358,6 +360,7 @@ const Call = (() => {
     }
     room = null;
     knownParticipants = new Set();
+    knownLive = new Set();
     for (const peer of [...peers.values()]) {
       closePeer(peer);
     }
@@ -450,6 +453,13 @@ const Call = (() => {
       playTone('join');
     } else if (departed) {
       playTone('leave');
+    }
+
+    const live = new Set(participants().filter((peer) => peer.voice.live).map((peer) => peer.id));
+    const started = [...live].some((id) => !knownLive.has(id));
+    knownLive = live;
+    if (started) {
+      playTone('live');
     }
     const now = Date.now();
     for (const peer of [...peers.values()]) {
@@ -1074,7 +1084,12 @@ const Call = (() => {
     }
     try {
       const context = ensureAudioContext();
-      const notes = kind === 'join' ? [587.33, 880] : [659.25, 440];
+      let notes = [659.25, 440];
+      if (kind === 'join') {
+        notes = [587.33, 880];
+      } else if (kind === 'live') {
+        notes = [523.25, 783.99, 1046.5];
+      }
       const start = context.currentTime + 0.01;
       notes.forEach((frequency, index) => {
         const oscillator = context.createOscillator();
@@ -1093,6 +1108,10 @@ const Call = (() => {
     } catch {
       // sem saida de audio disponivel
     }
+  }
+
+  function playLiveTone() {
+    playTone('live');
   }
 
   function loadSoundVolume() {
@@ -1203,6 +1222,12 @@ const Call = (() => {
         context.onFullscreen(info);
       });
       element.append(expand);
+    } else if (info.thumb) {
+      const preview = document.createElement('img');
+      preview.className = 'tile-thumb';
+      preview.src = info.thumb;
+      preview.alt = '';
+      element.append(preview);
     } else {
       const avatar = document.createElement('span');
       avatar.className = 'avatar tile-avatar';
@@ -1335,7 +1360,7 @@ const Call = (() => {
       name: context.selfName,
       mic: micLive(),
       deaf: local.deaf,
-      video: local.cameraOn && local.camera ? localVideo() : null,
+      video: local.cameraOn && local.camera ? localVideo() : (context.selfPreview || null),
       live: context.outgoingLive ? { name: context.outgoingName } : null,
       state: 'connected',
     }, context)];
@@ -1352,6 +1377,9 @@ const Call = (() => {
         mic: participant.voice.mic,
         deaf: participant.voice.deaf,
         video: showVideo ? peer.videoEl : null,
+        thumb: !showVideo && participant.voice.live && context.thumbFor
+          ? context.thumbFor(participant.id)
+          : null,
         live: participant.voice.live ? { name: participant.voice.liveName } : null,
         state: peer ? peer.state : 'new',
       }, context));
@@ -1425,6 +1453,7 @@ const Call = (() => {
     avatarColor,
     forgetSound,
     getSoundVolume,
+    playLiveTone,
     playSound,
     setSoundVolume,
     soundDuration,

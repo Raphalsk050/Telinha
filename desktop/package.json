@@ -21,17 +21,23 @@
       "main.js",
       "preload.js",
       "src/**/*",
-      "renderer/**/*"
+      "renderer/**/*",
+      "assets/**/*"
     ],
     "extraResources": [
       {
         "from": "../build/msvc-release/tools/telinha/Release/telinha.exe",
         "to": "telinha.exe"
+      },
+      {
+        "from": "assets/icon.ico",
+        "to": "icon.ico"
       }
     ],
     "win": {
       "target": "portable",
-      "signAndEditExecutable": false
+      "icon": "assets/icon.ico",
+      "signExecutable": false
     },
     "portable": {
       "artifactName": "Telinha-${version}-portable.exe"

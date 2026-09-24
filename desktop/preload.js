@@ -51,6 +51,7 @@ contextBridge.exposeInMainWorld('telinha', {
   }),
   chatImage: (spaceId, channelId, imageId) => invoke('chat:image', { spaceId, channelId, imageId }),
   saveChatFile: (spaceId, channelId, fileId) => invoke('chat:save-file', { spaceId, channelId, fileId }),
+  saveChatImage: (spaceId, channelId, imageId) => invoke('chat:save-image', { spaceId, channelId, imageId }),
 
   voiceJoin: (request) => invoke('voice:join', request),
   voiceUpdate: (changes) => invoke('voice:update', changes),
@@ -68,6 +69,7 @@ contextBridge.exposeInMainWorld('telinha', {
   streamVolume: (sharerId, volume) => invoke('stream:volume', { sharerId, volume }),
   streamAnswer: (sharerId, sdp) => invoke('stream:answer', { sharerId, sdp }),
   streamEmbeddedState: (sharerId, state) => invoke('stream:embedded-state', { sharerId, state }),
+  publishStreamThumb: (image) => invoke('stream:thumb', image),
   streamPopout: (sharerId) => invoke('stream:popout', sharerId),
   streamPopin: (sharerId) => invoke('stream:popin', sharerId),
   streamsState: () => invoke('streams:state'),
@@ -102,4 +104,5 @@ contextBridge.exposeInMainWorld('telinha', {
   onOutgoingEnded: (listener) => subscribe('stream:outgoing-ended', listener),
   onIncomingEnded: (listener) => subscribe('stream:incoming-ended', listener),
   onStreamOffer: (listener) => subscribe('stream:offer', listener),
+  onStreamThumb: (listener) => subscribe('stream:thumb', listener),
 });

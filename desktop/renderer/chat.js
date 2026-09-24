@@ -42,6 +42,7 @@ const Chat = (() => {
   let sending = false;
   let preparing = false;
   let attachment = null;
+  let lightboxSource = null;
   let profileName = () => 'Você';
 
   function initial(name) {
@@ -118,14 +119,34 @@ const Chat = (() => {
     return imageLoads.get(key);
   }
 
-  function openLightbox(url) {
+  function openLightbox(url, source) {
+    lightboxSource = source ?? null;
     nodes.lightboxImage.src = url;
     nodes.lightbox.hidden = false;
   }
 
   function closeLightbox() {
+    lightboxSource = null;
     nodes.lightbox.hidden = true;
     nodes.lightboxImage.removeAttribute('src');
+  }
+
+  async function saveImage(source) {
+    try {
+      if (await window.telinha.saveChatImage(source.target.spaceId, source.target.channelId, source.imageId)) {
+        nodes.hint.textContent = 'Imagem salva.';
+      }
+    } catch (error) {
+      nodes.hint.textContent = `Não consegui salvar: ${cleanError(error)}`;
+    }
+  }
+
+  function openImageMenu(event, source) {
+    if (!source) {
+      return;
+    }
+    event.preventDefault();
+    openContextMenu(event, [{ type: 'action', label: 'Salvar imagem', onSelect: () => saveImage(source) }]);
   }
 
   function imageNode(image) {
@@ -158,9 +179,15 @@ const Chat = (() => {
     } else {
       loadImage(target, image.id, key).then(show);
     }
+    const source = { target, imageId: image.id };
     frame.addEventListener('click', () => {
       if (picture.src) {
-        openLightbox(picture.src);
+        openLightbox(picture.src, source);
+      }
+    });
+    frame.addEventListener('contextmenu', (event) => {
+      if (picture.src) {
+        openImageMenu(event, source);
       }
     });
     return frame;
@@ -588,6 +615,7 @@ const Chat = (() => {
     });
 
     nodes.lightbox.addEventListener('click', closeLightbox);
+    nodes.lightbox.addEventListener('contextmenu', (event) => openImageMenu(event, lightboxSource));
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && !nodes.lightbox.hidden) {
         closeLightbox();

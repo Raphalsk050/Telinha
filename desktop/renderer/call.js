@@ -56,7 +56,9 @@ const Call = (() => {
   let knownParticipants = new Set();
   let knownLive = new Set();
   let soundVolume = loadSoundVolume();
-  const mix = { destination: null, micSource: null, soundBus: null, track: null };
+  const mix = {
+    destination: null, micSource: null, soundBus: null, track: null, playing: 0, round: 0,
+  };
   const soundBuffers = new Map();
 
   function loadSettings() {
@@ -260,7 +262,9 @@ const Call = (() => {
       local.micError = null;
       closeMeter(local.meter);
       local.meter = createMeter(local.mic);
-      connectMic();
+      if (mix.playing > 0) {
+        connectMic();
+      }
     } catch (error) {
       local.mic = null;
       disconnectMic();
@@ -361,6 +365,8 @@ const Call = (() => {
     room = null;
     knownParticipants = new Set();
     knownLive = new Set();
+    mix.playing = 0;
+    mix.round += 1;
     for (const peer of [...peers.values()]) {
       closePeer(peer);
     }
@@ -676,33 +682,34 @@ const Call = (() => {
     const prefs = personPrefs(prefsKey(participant || { id: peer.id }));
     const volume = prefs.muted ? 0 : prefs.volume;
 
+    // Acima de 100% o som sai direto do AudioContext. Passar por uma segunda MediaStream e outro
+    // elemento de audio punha mais uma troca de relogio no caminho, e isso picotava a voz.
     if (volume > 100 && !peer.boost) {
       try {
         const context = ensureAudioContext();
         const source = context.createMediaStreamSource(peer.directStream);
         const gain = context.createGain();
-        const destination = context.createMediaStreamDestination();
         source.connect(gain);
-        gain.connect(destination);
-        peer.boost = { source, gain, destination };
+        gain.connect(context.destination);
+        peer.boost = { source, gain };
       } catch {
         peer.boost = null;
       }
+    } else if (volume <= 100) {
+      closeBoost(peer);
     }
 
-    if (volume > 100 && peer.boost) {
-      peer.boost.gain.gain.value = volume / 100;
-      if (peer.audioEl.srcObject !== peer.boost.destination.stream) {
-        peer.audioEl.srcObject = peer.boost.destination.stream;
-      }
-      peer.audioEl.volume = 1;
-    } else {
-      if (peer.audioEl.srcObject !== peer.directStream) {
-        peer.audioEl.srcObject = peer.directStream;
-      }
-      peer.audioEl.volume = Math.min(1, volume / 100);
+    if (peer.audioEl.srcObject !== peer.directStream) {
+      peer.audioEl.srcObject = peer.directStream;
     }
-    peer.audioEl.muted = local.deaf;
+    if (peer.boost) {
+      peer.boost.gain.gain.value = local.deaf ? 0 : volume / 100;
+      peer.audioEl.volume = 1;
+      peer.audioEl.muted = true;
+    } else {
+      peer.audioEl.volume = Math.min(1, volume / 100);
+      peer.audioEl.muted = local.deaf;
+    }
     peer.audioEl.play().catch(() => {});
   }
 
@@ -776,12 +783,16 @@ const Call = (() => {
         let pair = null;
         let lost = 0;
         let received = 0;
+        let voice = null;
         report.forEach((stat) => {
           if (stat.type === 'transport' && stat.selectedCandidatePairId) {
             pair = report.get(stat.selectedCandidatePairId) || pair;
           } else if (stat.type === 'inbound-rtp') {
             lost += stat.packetsLost || 0;
             received += stat.packetsReceived || 0;
+            if (stat.kind === 'audio') {
+              voice = stat;
+            }
           }
         });
         if (!pair) {
@@ -793,12 +804,29 @@ const Call = (() => {
         }
         const deltaLost = Math.max(0, lost - peer.stats.lost);
         const deltaReceived = Math.max(0, received - peer.stats.received);
+        // Quanto da voz o receptor teve de inventar (pacote que nao chegou a tempo) ou de esticar e
+        // encolher para acertar o atraso. As duas coisas soam robotizadas.
+        const audio = voice ? {
+          samples: voice.totalSamplesReceived || 0,
+          concealed: voice.concealedSamples || 0,
+          stretched: (voice.insertedSamplesForDeceleration || 0) + (voice.removedSamplesForAcceleration || 0),
+          delay: voice.jitterBufferDelay || 0,
+          emitted: voice.jitterBufferEmittedCount || 0,
+        } : null;
+        const before = peer.stats.audio;
+        const deltaSamples = audio && before ? audio.samples - before.samples : 0;
         peer.stats = {
           rtt: pair && Number.isFinite(pair.currentRoundTripTime) ? pair.currentRoundTripTime * 1000 : null,
           loss: deltaLost + deltaReceived > 0 ? deltaLost / (deltaLost + deltaReceived) : 0,
           lost,
           received,
           local: pair ? pair.localCandidateId : null,
+          audio,
+          concealment: deltaSamples > 0 ? Math.max(0, audio.concealed - before.concealed) / deltaSamples : null,
+          stretch: deltaSamples > 0 ? Math.max(0, audio.stretched - before.stretched) / deltaSamples : null,
+          buffer: audio && before && audio.emitted > before.emitted
+            ? ((audio.delay - before.delay) / (audio.emitted - before.emitted)) * 1000
+            : null,
         };
         results.push(peer.stats);
       } catch {
@@ -806,11 +834,18 @@ const Call = (() => {
       }
     }
     const rtts = results.map((item) => item.rtt).filter((value) => value !== null);
+    const worst = (key) => {
+      const values = results.map((item) => item[key]).filter((value) => value !== null);
+      return values.length > 0 ? Math.max(...values) : null;
+    };
     const summary = {
       peers: peers.size,
       connected: results.length,
       rtt: rtts.length > 0 ? rtts.reduce((sum, value) => sum + value, 0) / rtts.length : null,
       loss: results.length > 0 ? Math.max(...results.map((item) => item.loss)) : null,
+      concealment: worst('concealment'),
+      stretch: worst('stretch'),
+      buffer: worst('buffer'),
     };
     for (const listener of statsListeners) {
       listener(summary);
@@ -1045,11 +1080,29 @@ const Call = (() => {
     return mix;
   }
 
+  // A voz vai direto do microfone para a conexao. Pelo mixer ela atravessaria o relogio do
+  // AudioContext, que segue a saida de som e nao o microfone, e a diferenca entre os dois deixava
+  // a voz robotizada para quem ouvia. O mixer so entra enquanto toca um som da mesa.
   function outgoingAudio() {
-    try {
-      return ensureMix().track || local.mic;
-    } catch {
-      return local.mic;
+    return mix.playing > 0 && mix.track ? mix.track : local.mic;
+  }
+
+  function beginMixing() {
+    mix.playing += 1;
+    if (mix.playing === 1) {
+      connectMic();
+      applyTrack('audio');
+    }
+  }
+
+  function endMixing() {
+    if (mix.playing === 0) {
+      return;
+    }
+    mix.playing -= 1;
+    if (mix.playing === 0) {
+      applyTrack('audio');
+      disconnectMic();
     }
   }
 
@@ -1158,8 +1211,10 @@ const Call = (() => {
     const gain = context.createGain();
     gain.gain.value = soundVolume;
     source.connect(gain);
-    if (room) {
+    const mixed = room ? mix.round : null;
+    if (mixed !== null) {
       gain.connect(ensureMix().soundBus);
+      beginMixing();
     }
     if (!local.deaf) {
       gain.connect(context.destination);
@@ -1169,6 +1224,9 @@ const Call = (() => {
         gain.disconnect();
       } catch {
         // ja desligado
+      }
+      if (mixed === mix.round) {
+        endMixing();
       }
     };
     source.start();

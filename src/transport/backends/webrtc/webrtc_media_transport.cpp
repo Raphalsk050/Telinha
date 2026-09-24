@@ -57,6 +57,9 @@ constexpr std::size_t kMaxCandidateBytes = 384;
 constexpr std::size_t kMaxMidBytes = 32;
 constexpr char kCandidateSeparator = '|';
 constexpr char kVideoStreamId[] = "telinha";
+// Audio in its own stream keeps the receiver from lip syncing it to the video. Every keyframe
+// or lost frame moved the audio delay, and NetEq stretched the sound until it went robotic.
+constexpr char kAudioStreamId[] = "telinha_sound";
 constexpr char kVideoTrackId[] = "telinha_video";
 constexpr char kAudioTrackId[] = "telinha_audio";
 
@@ -374,7 +377,7 @@ Outcome WebrtcMediaTransport::attach_media()
 
     webrtc::RtpTransceiverInit audio_init;
     audio_init.direction = video_init.direction;
-    audio_init.stream_ids.emplace_back(kVideoStreamId);
+    audio_init.stream_ids.emplace_back(kAudioStreamId);
 
     if (sending) {
         video_source_ = signaling_thread_->BlockingCall([] {

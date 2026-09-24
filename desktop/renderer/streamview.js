@@ -58,6 +58,25 @@ const StreamView = (() => {
     }
   }
 
+  function applyContextSink() {
+    if (audioContext && typeof audioContext.setSinkId === 'function') {
+      audioContext.setSinkId(sinkId).catch(() => {});
+    }
+  }
+
+  function ensureAudioContext() {
+    if (!audioContext) {
+      audioContext = new AudioContext();
+      applyContextSink();
+    }
+    if (audioContext.state === 'suspended') {
+      audioContext.resume().catch(() => {});
+    }
+    return audioContext;
+  }
+
+  // Acima de 100% o som sai direto do AudioContext, sem passar por outra MediaStream e outro
+  // elemento de audio, que so acrescentavam uma troca de relogio no caminho.
   function applyAudio(view) {
     if (!view.audioStream || view.mine) {
       return;
@@ -65,30 +84,29 @@ const StreamView = (() => {
     const volume = Math.max(0, Math.min(200, Number(volumeFor(view.sharerId)) || 0));
     if (volume > 100 && !view.boost) {
       try {
-        audioContext = audioContext || new AudioContext();
-        const source = audioContext.createMediaStreamSource(view.audioStream);
-        const gain = audioContext.createGain();
-        const destination = audioContext.createMediaStreamDestination();
+        const context = ensureAudioContext();
+        const source = context.createMediaStreamSource(view.audioStream);
+        const gain = context.createGain();
         source.connect(gain);
-        gain.connect(destination);
-        view.boost = { source, gain, destination };
+        gain.connect(context.destination);
+        view.boost = { source, gain };
       } catch {
         view.boost = null;
       }
+    } else if (volume <= 100) {
+      closeBoost(view);
     }
-    if (volume > 100 && view.boost) {
-      view.boost.gain.gain.value = volume / 100;
-      if (view.audio.srcObject !== view.boost.destination.stream) {
-        view.audio.srcObject = view.boost.destination.stream;
-      }
+    if (view.audio.srcObject !== view.audioStream) {
+      view.audio.srcObject = view.audioStream;
+    }
+    if (view.boost) {
+      view.boost.gain.gain.value = deafFor() ? 0 : volume / 100;
       view.audio.volume = 1;
+      view.audio.muted = true;
     } else {
-      if (view.audio.srcObject !== view.audioStream) {
-        view.audio.srcObject = view.audioStream;
-      }
       view.audio.volume = Math.min(1, volume / 100);
+      view.audio.muted = deafFor();
     }
-    view.audio.muted = deafFor();
     if (sinkId && typeof view.audio.setSinkId === 'function') {
       view.audio.setSinkId(sinkId).catch(() => {});
     }
@@ -103,6 +121,7 @@ const StreamView = (() => {
 
   function setSink(id) {
     sinkId = String(id || '');
+    applyContextSink();
     refreshAudio();
   }
 

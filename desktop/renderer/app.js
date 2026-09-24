@@ -733,7 +733,12 @@ function channelRow(server, channel) {
   if (unread > 0) {
     button.append(unreadBadge(unread));
   }
-  button.addEventListener('click', () => openChannel(server.id, channel.id));
+  button.addEventListener('click', () => {
+    openChannel(server.id, channel.id);
+    if (channel.kind === 'voice' && !Call.inRoom(server.id, channel.id)) {
+      joinRoom(server.id, channel.id);
+    }
+  });
 
   const gear = make('button', 'channel-gear');
   gear.type = 'button';
@@ -2350,6 +2355,9 @@ async function saveName() {
 /* menu de contexto, volumes, foco e tela cheia */
 
 const STAGE_HEIGHT_KEY = 'telinha.stageHeight';
+// Mesmo valor de --stage-limit no CSS: o que sobra para o cabecalho, os controles da sala,
+// um pedaco das mensagens e a caixa de texto.
+const STAGE_RESERVED_PX = 340;
 
 function closeContextMenu() {
   el.contextMenu.hidden = true;
@@ -2593,13 +2601,11 @@ function closeTileViewer() {
 function applyStageHeight(height) {
   if (!height) {
     el.roomTiles.style.height = '';
-    el.roomTiles.style.maxHeight = '';
     el.roomTiles.style.removeProperty('--stage-cap');
     return;
   }
-  el.roomTiles.style.height = `${height}px`;
-  el.roomTiles.style.maxHeight = 'none';
-  el.roomTiles.style.setProperty('--stage-cap', `${height}px`);
+  el.roomTiles.style.setProperty('--stage-cap', `min(${height}px, var(--stage-limit))`);
+  el.roomTiles.style.height = 'var(--stage-cap)';
 }
 
 function bindStageResize() {
@@ -2613,7 +2619,7 @@ function bindStageResize() {
   let startY = 0;
   let startHeight = 0;
   const move = (event) => {
-    const limit = Math.max(200, window.innerHeight - 260);
+    const limit = Math.max(140, window.innerHeight - STAGE_RESERVED_PX);
     state.stageHeight = Math.round(Math.max(140, Math.min(limit, startHeight + event.clientY - startY)));
     applyStageHeight(state.stageHeight);
   };

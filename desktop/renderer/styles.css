@@ -620,16 +620,18 @@ svg { display: block; }
 }
 
 .tiles {
-  --stage-cap: 46vh;
+  /* o palco nunca empurra a caixa de texto para fora da janela; o mesmo valor esta em app.js */
+  --stage-limit: calc(100vh - 340px);
+  --stage-cap: min(46vh, var(--stage-limit));
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   grid-auto-rows: minmax(0, 1fr);
   gap: 10px;
-  max-height: 46vh;
+  max-height: var(--stage-cap);
   overflow-y: auto;
 }
 
-.view-chat.voice-channel .tiles { --stage-cap: 58vh; max-height: 58vh; }
+.view-chat.voice-channel .tiles { --stage-cap: min(58vh, var(--stage-limit)); }
 
 .tile {
   position: relative;
@@ -981,8 +983,7 @@ svg { display: block; }
 .tile-expand svg { width: 18px; height: 18px; }
 .tile:hover .tile-expand { display: grid; }
 
-.tiles.focused { display: flex; flex-direction: column; gap: 10px; height: 46vh; }
-.view-chat.voice-channel .tiles.focused { height: 58vh; }
+.tiles.focused { display: flex; flex-direction: column; gap: 10px; height: var(--stage-cap); }
 .tiles.focused .tile.focus { flex: 1; min-height: 0; aspect-ratio: auto; }
 .tile.focus video { object-fit: contain; }
 .tile-strip { flex: none; display: flex; gap: 10px; overflow-x: auto; }

@@ -52,3 +52,7 @@ carrier grade NAT. `dist` writes a portable `Telinha-<version>-portable.exe` wit
 On Windows, `.\build.ps1` builds `telinha.exe` on every core and runs `dist` in
 one go. `-Run` starts the app from the build instead of packaging it, and
 `-ExeOnly` stops after `telinha.exe`.
+
+CI builds the same portable app on every push to `main`, and on demand from
+the Actions tab with "Run workflow". It is attached to the run as the
+`telinha-app-windows-x64` artifact.

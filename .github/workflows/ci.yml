@@ -128,6 +128,40 @@ jobs:
           path: staging/
           if-no-files-found: error
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Cache the Electron downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~\AppData\Local\electron\Cache
+            ~\AppData\Local\electron-builder\Cache
+          key: electron-${{ runner.os }}-${{ hashFiles('desktop/package-lock.json') }}
+          restore-keys: electron-${{ runner.os }}-
+
+      - name: Install the desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Package the desktop app
+        working-directory: desktop
+        run: npm run dist -- --publish never
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: telinha-app-windows-x64
+          path: desktop/dist/Telinha-*-portable.exe
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Test the desktop app
+        working-directory: desktop
+        run: npm test
+
   format:
     name: format
     runs-on: ubuntu-24.04

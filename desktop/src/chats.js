@@ -3,11 +3,20 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { once } = require('node:events');
+const { pipeline } = require('node:stream');
 
 const MAX_MESSAGES = 500;
 const MAX_TEXT_LENGTH = 2000;
 const MAX_IMAGE_BYTES = 400 * 1024;
 const MAX_IMAGE_SIDE = 8192;
+const MAX_EMBED_URL = 2048;
+const MAX_EMBED_TITLE = 200;
+const MAX_EMBED_DESCRIPTION = 400;
+const MAX_EMBED_SITE = 80;
+const FILE_CIPHER = 'aes-256-ctr';
+const FILE_READ_BYTES = 1024 * 1024;
+const FILE_WRITE_BYTES = 1024 * 1024;
 const BLOB_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
 const IMAGE_SIGNATURES = new Map([
   ['image/webp', (data) => data.length > 12 && data.toString('ascii', 0, 4) === 'RIFF'
@@ -41,6 +50,107 @@ function decodeImage(image) {
   return { mime: image.mime, width, height, data };
 }
 
+function embedText(value, max) {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, max) : '';
+}
+
+function decodeEmbed(embed) {
+  if (!embed || typeof embed !== 'object' || typeof embed.url !== 'string' || embed.url.length > MAX_EMBED_URL) {
+    return null;
+  }
+  let url;
+  try {
+    url = new URL(embed.url);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return null;
+  }
+  const decoded = {
+    url: url.href,
+    title: embedText(embed.title, MAX_EMBED_TITLE),
+    description: embedText(embed.description, MAX_EMBED_DESCRIPTION),
+    siteName: embedText(embed.siteName, MAX_EMBED_SITE),
+    image: embed.image ? decodeImage(embed.image) : null,
+  };
+  return decoded.title || decoded.description || decoded.image ? decoded : null;
+}
+
+function blobsOf(message) {
+  return [message.image, message.file, message.embed && message.embed.image].filter((blob) => blob && blob.id);
+}
+
+// Arquivos grandes ficam cifrados em disco com uma chave so deles, guardada na conversa, que ja e
+// protegida pelo sistema. Assim nada precisa caber inteiro na memoria.
+class FileWriter {
+  constructor(file) {
+    this.file = file;
+    this.temporary = `${file}.part`;
+    this.key = crypto.randomBytes(32);
+    this.iv = crypto.randomBytes(16);
+    this.cipher = crypto.createCipheriv(FILE_CIPHER, this.key, this.iv);
+    this.hash = crypto.createHash('sha256');
+    this.size = 0;
+    this.failure = null;
+    this.draining = null;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    this.stream = fs.createWriteStream(this.temporary, { highWaterMark: FILE_WRITE_BYTES });
+    this.stream.on('error', (error) => {
+      this.failure = error;
+    });
+  }
+
+  write(chunk) {
+    if (this.failure) {
+      return Promise.reject(this.failure);
+    }
+    this.size += chunk.length;
+    this.hash.update(chunk);
+    if (this.stream.write(this.cipher.update(chunk))) {
+      return Promise.resolve();
+    }
+    if (!this.draining) {
+      this.draining = once(this.stream, 'drain').finally(() => {
+        this.draining = null;
+      });
+    }
+    return this.draining;
+  }
+
+  async finish(expected = null) {
+    if (this.failure) {
+      throw this.failure;
+    }
+    this.stream.end(this.cipher.final());
+    await once(this.stream, 'close');
+    if (this.failure) {
+      throw this.failure;
+    }
+    const sha256 = this.hash.digest('hex');
+    if (expected && (expected.size !== this.size || expected.sha256 !== sha256)) {
+      await fs.promises.rm(this.temporary, { force: true });
+      throw new Error('o arquivo chegou diferente do que foi enviado');
+    }
+    await fs.promises.rename(this.temporary, this.file);
+    return {
+      size: this.size,
+      sha256,
+      key: this.key.toString('base64'),
+      iv: this.iv.toString('base64'),
+    };
+  }
+
+  async abort() {
+    if (!this.stream.closed) {
+      const closed = once(this.stream, 'close').catch(() => {});
+      this.stream.destroy();
+      await closed;
+    }
+    await fs.promises.rm(this.temporary, { force: true }).catch(() => {});
+  }
+}
+
 class ChatStore {
   constructor(directory, { encrypt = (text) => text, decrypt = (text) => text } = {}) {
     this.directory = directory;
@@ -59,6 +169,29 @@ class ChatStore {
 
   blobFile(conversationId, blobId) {
     return path.join(this.blobDirectory(), `${safeId(conversationId)}_${safeId(blobId)}.bin`);
+  }
+
+  fileDirectory() {
+    return path.join(this.directory, 'files');
+  }
+
+  storedFile(conversationId, blobId) {
+    return path.join(this.fileDirectory(), `${safeId(conversationId)}_${safeId(blobId)}.dat`);
+  }
+
+  createFileWriter(conversationId, blobId) {
+    return new FileWriter(this.storedFile(conversationId, blobId));
+  }
+
+  hasFile(conversationId, blobId) {
+    return fs.existsSync(this.storedFile(conversationId, blobId));
+  }
+
+  openFileReader(conversationId, blobId, secret) {
+    const decipher = crypto.createDecipheriv(FILE_CIPHER, Buffer.from(secret.key, 'base64'),
+      Buffer.from(secret.iv, 'base64'));
+    const source = fs.createReadStream(this.storedFile(conversationId, blobId), { highWaterMark: FILE_READ_BYTES });
+    return pipeline(source, decipher, () => {});
   }
 
   history(conversationId) {
@@ -105,6 +238,9 @@ class ChatStore {
 
   removeBlob(conversationId, blobId) {
     fs.rmSync(this.blobFile(conversationId, blobId), { force: true });
+    const stored = this.storedFile(conversationId, blobId);
+    fs.rmSync(stored, { force: true });
+    fs.rmSync(`${stored}.part`, { force: true });
   }
 
   append(conversationId, message) {
@@ -117,13 +253,25 @@ class ChatStore {
     if (messages.length > MAX_MESSAGES) {
       const removed = messages.splice(0, messages.length - MAX_MESSAGES);
       for (const old of removed) {
-        for (const blob of [old.image, old.file]) {
-          if (blob && blob.id) {
-            this.removeBlob(conversationId, blob.id);
-          }
+        for (const blob of blobsOf(old)) {
+          this.removeBlob(conversationId, blob.id);
         }
       }
     }
+    this.save(conversationId);
+    return message;
+  }
+
+  find(conversationId, messageId) {
+    return this.history(conversationId).find((message) => message.id === messageId) ?? null;
+  }
+
+  update(conversationId, messageId, change) {
+    const message = this.find(conversationId, messageId);
+    if (!message) {
+      return null;
+    }
+    change(message);
     this.save(conversationId);
     return message;
   }
@@ -141,18 +289,20 @@ class ChatStore {
     this.cache.delete(conversationId);
     fs.rmSync(this.fileFor(conversationId), { force: true });
     const prefix = `${safeId(conversationId)}_`;
-    try {
-      for (const name of fs.readdirSync(this.blobDirectory())) {
-        if (name.startsWith(prefix)) {
-          fs.rmSync(path.join(this.blobDirectory(), name), { force: true });
+    for (const directory of [this.blobDirectory(), this.fileDirectory()]) {
+      try {
+        for (const name of fs.readdirSync(directory)) {
+          if (name.startsWith(prefix)) {
+            fs.rmSync(path.join(directory, name), { force: true });
+          }
         }
+      } catch {
+        // ainda nao existe pasta de anexos
       }
-    } catch {
-      // ainda nao existe pasta de anexos
     }
   }
 }
 
 module.exports = {
-  BLOB_ID_PATTERN, ChatStore, MAX_IMAGE_BYTES, MAX_TEXT_LENGTH, cleanText, decodeImage,
+  BLOB_ID_PATTERN, ChatStore, MAX_IMAGE_BYTES, MAX_TEXT_LENGTH, blobsOf, cleanText, decodeEmbed, decodeImage,
 };

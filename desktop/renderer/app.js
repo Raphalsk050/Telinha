@@ -2172,7 +2172,11 @@ async function openInvite(serverId) {
     const send = actionButton('Enviar', 'primary small', async () => {
       send.disabled = true;
       try {
-        const message = await api.sendChat(contact.id, null, `Entre no meu servidor ${server.name} no Telinha: ${code}`);
+        const message = await api.sendChat({
+          spaceId: contact.id,
+          channelId: null,
+          text: `Entre no meu servidor ${server.name} no Telinha: ${code}`,
+        });
         if (message) {
           Chat.receive(contact.id, message);
         }
@@ -3473,6 +3477,15 @@ function subscribeEvents() {
   api.onRtc((message) => Call.handleRtc(message));
   api.onIncomingCall(handleIncomingCall);
   api.onChatMessage(handleChatMessage);
+  api.onChatUpdate(({ spaceId, channelId, message }) => Chat.update(conversationKey(spaceId, channelId), message));
+  api.onUploadProgress((info) => Chat.uploadProgress(info));
+  api.onFileProgress(({
+    spaceId, channelId, fileId, direction, done, total,
+  }) => Chat.transferProgress({
+    key: conversationKey(spaceId, channelId), fileId, direction, done, total, peers: 1,
+  }));
+  api.onFileStatus((info) => Chat.fetchStatus(info));
+  FileTransfer.onProgress((info) => Chat.transferProgress(info));
   api.onSignalingStatus(handleSignaling);
   api.onStreams(handleStreams);
   api.onStreamEvent(handleStreamEvent);
@@ -3509,6 +3522,7 @@ async function init() {
   state.profile = await api.profile();
   Call.init(state.profile.instanceId);
   Chat.bind({ profileName: () => state.profile.name });
+  FileTransfer.bind();
   StreamView.configure({
     volumeFor: streamVolumeFor,
     deafFor: () => Call.state().deaf,

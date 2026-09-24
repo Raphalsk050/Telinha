@@ -3,10 +3,17 @@
 const Chat = (() => {
   const GROUP_WINDOW_MS = 5 * 60 * 1000;
   const INVITE_PATTERN = /TELINHA-GRUPO\.[A-Za-z0-9_-]+/;
+  const LINK_PATTERN = /\b(?:https?:\/\/|www\.)[^\s<>"]+/gi;
   const MAX_IMAGE_BYTES = 380 * 1024;
-  const MAX_FILE_BYTES = 8 * 1024 * 1024;
+  const MAX_FILE_BYTES = 1024 * 1024 * 1024;
   const IMAGE_SIDES = [1920, 1600, 1280, 960, 720];
   const IMAGE_QUALITIES = [0.85, 0.72, 0.6];
+  const IMAGE_BOUNDS = { width: 400, height: 300 };
+  const EMBED_BOUNDS = { width: 400, height: 225 };
+  const EMBED_IMAGE_BYTES = 120 * 1024;
+  const EMBED_IMAGE_SIDES = [640, 480, 360];
+  const EMBED_DELAY_MS = 400;
+  const EMBED_WAIT_MS = 2500;
   const IMAGE_CACHE_LIMIT = 80;
   const DOWNLOAD_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   const FILE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2.5h8l4.5 4.5v14a.5.5 0 0 1-.5.5H6a.5.5 0 0 1-.5-.5V3a.5.5 0 0 1 .5-.5z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M14 2.5V7h4.5M8.5 12h7M8.5 15h7M8.5 18h4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -27,7 +34,14 @@ const Chat = (() => {
     pendingImage: find('chat-pending-image'),
     pendingIcon: find('chat-pending-icon'),
     pendingName: find('chat-pending-name'),
+    pendingBar: find('chat-pending-bar'),
     pendingRemove: find('chat-pending-remove'),
+    embed: find('chat-embed'),
+    embedSite: find('chat-embed-site'),
+    embedTitle: find('chat-embed-title'),
+    embedText: find('chat-embed-text'),
+    embedImage: find('chat-embed-image'),
+    embedRemove: find('chat-embed-remove'),
     hint: find('chat-hint'),
     lightbox: find('lightbox'),
     lightboxImage: find('lightbox-image'),
@@ -35,6 +49,10 @@ const Chat = (() => {
 
   const imageCache = new Map();
   const imageLoads = new Map();
+  const progress = new Map();
+  const fetches = new Map();
+  const fileCards = new Map();
+  const dismissedLinks = new Set();
 
   let conversation = null;
   let messages = [];
@@ -42,7 +60,10 @@ const Chat = (() => {
   let sending = false;
   let preparing = false;
   let attachment = null;
+  let uploadId = null;
   let lightboxSource = null;
+  let draftEmbed = null;
+  let embedTimer = null;
   let profileName = () => 'Você';
 
   function initial(name) {
@@ -71,12 +92,30 @@ const Chat = (() => {
     if (bytes < 1024 * 1024) {
       return `${Math.round(bytes / 1024)} KB`;
     }
-    return `${(bytes / (1024 * 1024)).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} MB`;
+    if (bytes < 1024 * 1024 * 1024) {
+      return `${(bytes / (1024 * 1024)).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} MB`;
+    }
+    return `${(bytes / (1024 * 1024 * 1024)).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} GB`;
+  }
+
+  function formatPercent(fraction) {
+    return `${Math.floor(Math.min(1, Math.max(0, fraction)) * 100)}%`;
+  }
+
+  function setBar(bar, fraction) {
+    bar.hidden = fraction === null;
+    if (fraction !== null) {
+      bar.firstElementChild.style.width = `${Math.min(1, Math.max(0, fraction)) * 100}%`;
+    }
   }
 
   function cleanError(error) {
     return String(error && error.message ? error.message : error)
       .replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+  }
+
+  function delay(milliseconds) {
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
   }
 
   function authorOf(message) {
@@ -92,6 +131,81 @@ const Chat = (() => {
 
   function scrollToBottom() {
     nodes.scroll.scrollTop = nodes.scroll.scrollHeight;
+  }
+
+  /* links */
+
+  function trimLink(raw) {
+    let link = raw;
+    const unbalanced = (open, closing) => link.endsWith(closing) && link.split(open).length < link.split(closing).length;
+    while (link && (/[.,;:!?'"*_~]$/.test(link) || unbalanced('(', ')') || unbalanced('[', ']') || unbalanced('{', '}'))) {
+      link = link.slice(0, -1);
+    }
+    return link;
+  }
+
+  function linkTarget(text) {
+    const address = /^www\./i.test(text) ? `https://${text}` : text;
+    try {
+      const url = new URL(address);
+      return (url.protocol === 'http:' || url.protocol === 'https:') && url.hostname ? url.href : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function splitLinks(text) {
+    const parts = [];
+    let last = 0;
+    for (const match of text.matchAll(LINK_PATTERN)) {
+      const raw = trimLink(match[0]);
+      const href = raw ? linkTarget(raw) : null;
+      if (!href) {
+        continue;
+      }
+      if (match.index > last) {
+        parts.push({ text: text.slice(last, match.index) });
+      }
+      parts.push({ text: raw, href });
+      last = match.index + raw.length;
+    }
+    if (last < text.length) {
+      parts.push({ text: text.slice(last) });
+    }
+    return parts;
+  }
+
+  function firstLink(text) {
+    const part = splitLinks(text).find((item) => item.href);
+    return part ? part.href : null;
+  }
+
+  function linkNode(text, href) {
+    const link = document.createElement('a');
+    link.className = 'message-link';
+    link.href = href;
+    link.textContent = text;
+    link.title = href;
+    link.draggable = false;
+    return link;
+  }
+
+  function appendLinked(parent, text) {
+    for (const part of splitLinks(text)) {
+      parent.append(part.href ? linkNode(part.text, part.href) : document.createTextNode(part.text));
+    }
+  }
+
+  function openLink(href) {
+    window.telinha.openExternal(href).catch(() => {});
+  }
+
+  function openLinkMenu(event, href) {
+    event.preventDefault();
+    openContextMenu(event, [
+      { type: 'action', label: 'Abrir link', onSelect: () => openLink(href) },
+      { type: 'action', label: 'Copiar link', onSelect: () => window.telinha.copyText(href) },
+    ]);
   }
 
   /* anexos recebidos */
@@ -149,14 +263,14 @@ const Chat = (() => {
     openContextMenu(event, [{ type: 'action', label: 'Salvar imagem', onSelect: () => saveImage(source) }]);
   }
 
-  function imageNode(image) {
+  function imageNode(image, bounds, className = 'message-image') {
     const frame = document.createElement('button');
     frame.type = 'button';
-    frame.className = 'message-image';
+    frame.className = className;
     frame.title = 'Abrir imagem';
     const width = Math.max(1, Number(image.width) || 1);
     const height = Math.max(1, Number(image.height) || 1);
-    const scale = Math.min(1, 400 / width, 300 / height);
+    const scale = Math.min(1, bounds.width / width, bounds.height / height);
     frame.style.width = `${Math.max(60, Math.round(width * scale))}px`;
     frame.style.height = `${Math.max(60, Math.round(height * scale))}px`;
 
@@ -193,7 +307,102 @@ const Chat = (() => {
     return frame;
   }
 
+  function embedNode(embed) {
+    const card = document.createElement('div');
+    card.className = 'message-embed';
+    const href = linkTarget(String(embed.url ?? ''));
+    if (embed.siteName) {
+      const site = document.createElement('span');
+      site.className = 'embed-site';
+      site.textContent = embed.siteName;
+      card.append(site);
+    }
+    if (embed.title) {
+      const title = href ? linkNode(embed.title, href) : document.createElement('span');
+      title.classList.add('embed-title');
+      title.textContent = embed.title;
+      card.append(title);
+    }
+    if (embed.description) {
+      const description = document.createElement('p');
+      description.className = 'embed-description';
+      description.textContent = embed.description;
+      card.append(description);
+    }
+    if (embed.image && embed.image.id) {
+      card.append(imageNode(embed.image, EMBED_BOUNDS, 'message-image embed-image'));
+    }
+    return card;
+  }
+
+  /* cartao de arquivo */
+
+  function transferKey(key, fileId) {
+    return `${key}/${fileId}`;
+  }
+
+  function paintFile(entry) {
+    const {
+      file, target, status, bar, action,
+    } = entry;
+    const key = transferKey(target.key, file.id);
+    const moving = progress.get(key);
+    const size = formatBytes(Number(file.size) || 0);
+    let text = size;
+    let fraction = null;
+    let busy = false;
+
+    if (file.pending) {
+      const fetching = fetches.get(key);
+      if (moving && moving.direction === 'down' && moving.total > 0) {
+        fraction = moving.done / moving.total;
+        text = `Recebendo · ${formatPercent(fraction)} · ${formatBytes(moving.done)} de ${size}`;
+        busy = true;
+      } else if (fetching && fetching.status === 'failed') {
+        text = `${size} · não chegou. Quem mandou precisa estar com o Telinha aberto.`;
+      } else if (fetching) {
+        text = fetching.status === 'receiving' ? `Recebendo · ${size}` : `${size} · procurando quem tem o arquivo…`;
+        busy = true;
+      } else {
+        text = `${size} · ainda não chegou`;
+      }
+    } else if (moving && moving.direction === 'up' && moving.total > 0) {
+      fraction = moving.done / moving.total;
+      const who = moving.peers > 1 ? ` para ${moving.peers} pessoas` : '';
+      text = `Enviando${who} · ${formatPercent(fraction)} de ${size}`;
+    }
+
+    status.textContent = text;
+    setBar(bar, fraction);
+    action.hidden = busy;
+    action.title = file.pending ? 'Baixar de novo' : 'Salvar arquivo';
+    action.setAttribute('aria-label', file.pending ? `Baixar ${file.name}` : `Salvar ${file.name}`);
+  }
+
+  async function fileAction(entry) {
+    const { file, target, action } = entry;
+    const key = transferKey(target.key, file.id);
+    action.disabled = true;
+    try {
+      if (file.pending) {
+        fetches.set(key, { status: 'waiting' });
+        paintFile(entry);
+        if (!await window.telinha.downloadChatFile(target.spaceId, target.channelId, file.id)) {
+          fetches.delete(key);
+          paintFile(entry);
+        }
+      } else if (await window.telinha.saveChatFile(target.spaceId, target.channelId, file.id)) {
+        nodes.hint.textContent = `Arquivo salvo: ${file.name}`;
+      }
+    } catch (error) {
+      nodes.hint.textContent = `Não consegui salvar: ${cleanError(error)}`;
+    } finally {
+      action.disabled = false;
+    }
+  }
+
   function fileNode(file) {
+    const target = conversation;
     const card = document.createElement('div');
     card.className = 'message-file';
     const icon = document.createElement('span');
@@ -206,32 +415,25 @@ const Chat = (() => {
     name.className = 'file-name';
     name.textContent = file.name;
     name.title = file.name;
-    const size = document.createElement('span');
-    size.className = 'file-size';
-    size.textContent = formatBytes(Number(file.size) || 0);
-    info.append(name, size);
+    const status = document.createElement('span');
+    status.className = 'file-size';
+    const bar = document.createElement('span');
+    bar.className = 'progress-bar';
+    bar.append(document.createElement('span'));
+    info.append(name, status, bar);
 
-    const download = document.createElement('button');
-    download.type = 'button';
-    download.className = 'icon-button file-download';
-    download.title = 'Salvar arquivo';
-    download.setAttribute('aria-label', `Salvar ${file.name}`);
-    download.innerHTML = DOWNLOAD_ICON;
-    const target = conversation;
-    download.addEventListener('click', async () => {
-      download.disabled = true;
-      try {
-        if (await window.telinha.saveChatFile(target.spaceId, target.channelId, file.id)) {
-          nodes.hint.textContent = `Arquivo salvo: ${file.name}`;
-        }
-      } catch (error) {
-        nodes.hint.textContent = `Não consegui salvar: ${cleanError(error)}`;
-      } finally {
-        download.disabled = false;
-      }
-    });
+    const action = document.createElement('button');
+    action.type = 'button';
+    action.className = 'icon-button file-download';
+    action.innerHTML = DOWNLOAD_ICON;
 
-    card.append(icon, info, download);
+    const entry = {
+      file, target, status, bar, action,
+    };
+    action.addEventListener('click', () => fileAction(entry));
+    card.append(icon, info, action);
+    fileCards.set(transferKey(target.key, file.id), entry);
+    paintFile(entry);
     return card;
   }
 
@@ -241,10 +443,10 @@ const Chat = (() => {
     return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
   }
 
-  async function encodeImage(file) {
+  async function encodeImage(file, sides = IMAGE_SIDES, maxBytes = MAX_IMAGE_BYTES) {
     const bitmap = await createImageBitmap(file);
     try {
-      for (const side of IMAGE_SIDES) {
+      for (const side of sides) {
         const scale = Math.min(1, side / Math.max(bitmap.width, bitmap.height));
         const width = Math.max(1, Math.round(bitmap.width * scale));
         const height = Math.max(1, Math.round(bitmap.height * scale));
@@ -254,7 +456,7 @@ const Chat = (() => {
         canvas.getContext('2d').drawImage(bitmap, 0, 0, width, height);
         for (const quality of IMAGE_QUALITIES) {
           const blob = await canvasBlob(canvas, 'image/webp', quality);
-          if (blob && blob.size <= MAX_IMAGE_BYTES) {
+          if (blob && blob.size <= maxBytes) {
             return { blob, width, height, mime: blob.type || 'image/webp' };
           }
         }
@@ -297,6 +499,7 @@ const Chat = (() => {
 
   function showPending() {
     nodes.pending.hidden = false;
+    setBar(nodes.pendingBar, null);
     if (!attachment) {
       nodes.pendingImage.hidden = true;
       nodes.pendingIcon.hidden = true;
@@ -317,16 +520,26 @@ const Chat = (() => {
     nodes.pendingName.textContent = `${attachment.name} · ${details}`;
   }
 
+  function showUpload(done, total) {
+    if (!attachment || nodes.pending.hidden) {
+      return;
+    }
+    const fraction = total > 0 ? done / total : 0;
+    nodes.pendingName.textContent = `Preparando ${attachment.name} · ${formatPercent(fraction)}`;
+    setBar(nodes.pendingBar, fraction);
+  }
+
   function clearAttachment() {
     attachment = null;
     nodes.pending.hidden = true;
     nodes.pendingImage.removeAttribute('src');
     nodes.pendingName.textContent = '';
+    setBar(nodes.pendingBar, null);
     nodes.file.value = '';
   }
 
   async function attachFile(file) {
-    if (!conversation || !file) {
+    if (!conversation || !file || sending) {
       return;
     }
     preparing = true;
@@ -344,12 +557,12 @@ const Chat = (() => {
       if (!attachment) {
         if (file.size === 0 || file.size > MAX_FILE_BYTES) {
           clearAttachment();
-          nodes.hint.textContent = 'O arquivo precisa ter no máximo 8 MB.';
+          nodes.hint.textContent = 'O arquivo precisa ter no máximo 1 GB.';
           return;
         }
         attachment = {
           kind: 'file',
-          data: await blobToBase64(file),
+          source: file,
           mime: file.type || 'application/octet-stream',
           name: file.name || 'arquivo',
           size: file.size,
@@ -363,6 +576,124 @@ const Chat = (() => {
     } finally {
       preparing = false;
     }
+  }
+
+  /* previa de link na caixa de texto */
+
+  function hostOf(url) {
+    try {
+      return new URL(url).hostname.replace(/^www\./i, '');
+    } catch {
+      return '';
+    }
+  }
+
+  async function embedImage(source) {
+    const blob = new Blob([source.data], { type: source.mime });
+    const encoded = await encodeImage(blob, EMBED_IMAGE_SIDES, EMBED_IMAGE_BYTES);
+    return {
+      data: await blobToBase64(encoded.blob), mime: encoded.mime, width: encoded.width, height: encoded.height,
+    };
+  }
+
+  // A previa e montada aqui, por quem manda: quem recebe nao abre o link de ninguem, e a pagina
+  // nao fica sabendo quem leu a mensagem.
+  async function buildEmbed(url) {
+    const preview = await window.telinha.linkPreview(url).catch(() => null);
+    if (!preview) {
+      return null;
+    }
+    const image = preview.image && preview.image.data ? await embedImage(preview.image).catch(() => null) : null;
+    const data = {
+      url,
+      title: String(preview.title || ''),
+      description: String(preview.description || ''),
+      siteName: String(preview.siteName || ''),
+      image,
+    };
+    return data.title || data.description || data.image ? data : null;
+  }
+
+  function showEmbed() {
+    const current = draftEmbed;
+    const visible = Boolean(current && current.status !== 'none');
+    nodes.embed.hidden = !visible;
+    nodes.embed.classList.toggle('loading', Boolean(current && current.status === 'loading'));
+    if (!visible || current.status === 'loading' || !current.data.image) {
+      nodes.embedImage.hidden = true;
+      nodes.embedImage.removeAttribute('src');
+    }
+    if (!visible) {
+      return;
+    }
+    if (current.status === 'loading') {
+      nodes.embedSite.textContent = hostOf(current.url);
+      nodes.embedTitle.textContent = 'Carregando a prévia do link…';
+      nodes.embedText.textContent = '';
+      return;
+    }
+    const { data } = current;
+    nodes.embedSite.textContent = data.siteName || hostOf(data.url);
+    nodes.embedTitle.textContent = data.title || data.url;
+    nodes.embedText.textContent = data.description;
+    if (data.image) {
+      nodes.embedImage.src = `data:${data.image.mime};base64,${data.image.data}`;
+      nodes.embedImage.hidden = false;
+    }
+  }
+
+  function clearEmbed() {
+    clearTimeout(embedTimer);
+    embedTimer = null;
+    draftEmbed = null;
+    showEmbed();
+  }
+
+  function refreshEmbed() {
+    clearTimeout(embedTimer);
+    embedTimer = null;
+    const url = conversation ? firstLink(nodes.input.value) : null;
+    if (!url || dismissedLinks.has(url)) {
+      if (draftEmbed) {
+        clearEmbed();
+      }
+      return;
+    }
+    if (draftEmbed && draftEmbed.url === url) {
+      return;
+    }
+    const current = {
+      url, status: 'loading', data: null, promise: null,
+    };
+    current.promise = buildEmbed(url).then((data) => {
+      current.data = data;
+      current.status = data ? 'ready' : 'none';
+      if (draftEmbed === current) {
+        showEmbed();
+      }
+      return data;
+    });
+    draftEmbed = current;
+    showEmbed();
+  }
+
+  function scheduleEmbed() {
+    clearTimeout(embedTimer);
+    embedTimer = setTimeout(refreshEmbed, EMBED_DELAY_MS);
+  }
+
+  async function embedFor(text) {
+    if (embedTimer) {
+      refreshEmbed();
+    }
+    const current = draftEmbed;
+    if (!current || firstLink(text) !== current.url) {
+      return null;
+    }
+    if (current.status === 'loading') {
+      await Promise.race([current.promise, delay(EMBED_WAIT_MS)]);
+    }
+    return current.status === 'ready' ? current.data : null;
   }
 
   /* mensagens */
@@ -407,12 +738,15 @@ const Chat = (() => {
     if (message.text) {
       const text = document.createElement('p');
       text.className = 'message-text';
-      text.textContent = message.text;
+      appendLinked(text, message.text);
       text.title = formatTime(message.sentAt);
       line.append(text);
     }
+    if (message.embed && (message.embed.title || message.embed.description || message.embed.image)) {
+      line.append(embedNode(message.embed));
+    }
     if (message.image && message.image.id) {
-      line.append(imageNode(message.image));
+      line.append(imageNode(message.image, IMAGE_BOUNDS));
     }
     if (message.file && message.file.id) {
       line.append(fileNode(message.file));
@@ -437,6 +771,7 @@ const Chat = (() => {
   }
 
   function render() {
+    fileCards.clear();
     const groups = [];
     let current = null;
     let previous = null;
@@ -466,11 +801,6 @@ const Chat = (() => {
     renderHint();
   }
 
-  function autoGrow() {
-    nodes.input.style.height = 'auto';
-    nodes.input.style.height = `${Math.min(nodes.input.scrollHeight, 200)}px`;
-  }
-
   async function open(next) {
     const changed = !conversation || conversation.key !== next.key;
     conversation = next;
@@ -481,8 +811,9 @@ const Chat = (() => {
     }
 
     nodes.input.value = '';
-    autoGrow();
     clearAttachment();
+    clearEmbed();
+    dismissedLinks.clear();
     messages = [];
     render();
     const token = ++loadToken;
@@ -510,6 +841,7 @@ const Chat = (() => {
     conversation = null;
     loadToken += 1;
     clearAttachment();
+    clearEmbed();
   }
 
   function receive(key, message) {
@@ -529,6 +861,61 @@ const Chat = (() => {
     return true;
   }
 
+  // Uma mensagem guardada mudou: o arquivo chegou, ou o envio pelo servidor terminou.
+  function update(key, message) {
+    if (message.file && message.file.id) {
+      const id = transferKey(key, message.file.id);
+      if (!message.file.pending) {
+        fetches.delete(id);
+      }
+      if (message.mine && !message.file.offerId && message.delivered !== undefined) {
+        progress.delete(id);
+      }
+    }
+    if (!conversation || conversation.key !== key) {
+      return false;
+    }
+    const index = messages.findIndex((existing) => existing.id === message.id);
+    if (index < 0) {
+      return false;
+    }
+    const stick = nearBottom();
+    messages[index] = message;
+    render();
+    if (stick) {
+      scrollToBottom();
+    }
+    return true;
+  }
+
+  function transferProgress(info) {
+    const id = transferKey(info.key, info.fileId);
+    if (info.peers > 0) {
+      progress.set(id, info);
+    } else {
+      progress.delete(id);
+    }
+    const entry = fileCards.get(id);
+    if (entry) {
+      paintFile(entry);
+    }
+  }
+
+  function fetchStatus(info) {
+    const id = transferKey(info.key, info.fileId);
+    fetches.set(id, { status: info.status });
+    const entry = fileCards.get(id);
+    if (entry) {
+      paintFile(entry);
+    }
+  }
+
+  function uploadProgress(info) {
+    if (info && info.uploadId === uploadId) {
+      showUpload(info.done, info.total);
+    }
+  }
+
   function currentKey() {
     return conversation ? conversation.key : null;
   }
@@ -539,39 +926,68 @@ const Chat = (() => {
       return;
     }
     sending = true;
+    nodes.pendingRemove.disabled = true;
     const target = conversation;
     const current = attachment;
     const image = current && current.kind === 'image'
-      ? { data: current.data, mime: current.mime, width: current.width, height: current.height }
+      ? {
+        data: current.data, mime: current.mime, width: current.width, height: current.height,
+      }
       : null;
     const file = current && current.kind === 'file'
-      ? { data: current.data, mime: current.mime, name: current.name }
+      ? { source: current.source, name: current.name, mime: current.mime }
       : null;
+    uploadId = file ? crypto.randomUUID() : null;
     if (file) {
       nodes.hint.textContent = `Enviando ${file.name}…`;
     }
     try {
-      const message = await window.telinha.sendChat(target.spaceId, target.channelId, text, image, file);
-      nodes.input.value = '';
-      autoGrow();
-      clearAttachment();
+      const embed = text ? await embedFor(text) : null;
+      const message = await window.telinha.sendChat({
+        spaceId: target.spaceId,
+        channelId: target.channelId,
+        text,
+        image,
+        file,
+        embed,
+        uploadId,
+      });
+      if (conversation === target) {
+        nodes.input.value = '';
+        clearAttachment();
+        clearEmbed();
+        dismissedLinks.clear();
+      }
       renderHint();
       if (message) {
         if (message.image && image) {
           cacheImage(`${target.key}/${message.image.id}`, `data:${image.mime};base64,${image.data}`);
         }
+        if (message.embed && message.embed.image && embed && embed.image) {
+          cacheImage(`${target.key}/${message.embed.image.id}`, `data:${embed.image.mime};base64,${embed.image.data}`);
+        }
         receive(target.key, message);
       }
     } catch (error) {
       nodes.hint.textContent = `Não consegui enviar: ${cleanError(error)}`;
+      if (attachment === current && current) {
+        showPending();
+      }
     } finally {
       sending = false;
+      uploadId = null;
+      nodes.pendingRemove.disabled = false;
     }
+  }
+
+  function linkFrom(event) {
+    const link = event.target instanceof Element ? event.target.closest('a[href]') : null;
+    return link && nodes.messages.contains(link) ? link.href : null;
   }
 
   function bind(options) {
     profileName = options.profileName;
-    nodes.input.addEventListener('input', autoGrow);
+    nodes.input.addEventListener('input', scheduleEmbed);
     nodes.input.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
@@ -593,6 +1009,34 @@ const Chat = (() => {
     nodes.attach.addEventListener('click', () => nodes.file.click());
     nodes.file.addEventListener('change', () => attachFile(nodes.file.files[0]));
     nodes.pendingRemove.addEventListener('click', clearAttachment);
+    nodes.embedRemove.addEventListener('click', () => {
+      if (draftEmbed) {
+        dismissedLinks.add(draftEmbed.url);
+      }
+      clearEmbed();
+      nodes.input.focus();
+    });
+
+    nodes.messages.addEventListener('click', (event) => {
+      const href = linkFrom(event);
+      if (href) {
+        event.preventDefault();
+        openLink(href);
+      }
+    });
+    nodes.messages.addEventListener('auxclick', (event) => {
+      const href = event.button === 1 ? linkFrom(event) : null;
+      if (href) {
+        event.preventDefault();
+        openLink(href);
+      }
+    });
+    nodes.messages.addEventListener('contextmenu', (event) => {
+      const href = linkFrom(event);
+      if (href) {
+        openLinkMenu(event, href);
+      }
+    });
 
     nodes.view.addEventListener('dragover', (event) => {
       if (event.dataTransfer && [...event.dataTransfer.types].includes('Files')) {
@@ -623,5 +1067,7 @@ const Chat = (() => {
     });
   }
 
-  return { bind, close, currentKey, open, receive, refresh };
+  return {
+    bind, close, currentKey, fetchStatus, open, receive, refresh, transferProgress, update, uploadProgress,
+  };
 })();

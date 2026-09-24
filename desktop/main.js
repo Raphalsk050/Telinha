@@ -4,21 +4,24 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { pipeline } = require('node:stream/promises');
 const {
-  app, BrowserWindow, Notification, clipboard, dialog, ipcMain, nativeImage, safeStorage, session,
+  app, BrowserWindow, Notification, clipboard, dialog, ipcMain, nativeImage, safeStorage, session, shell,
 } = require('electron');
 const {
-  BLOB_ID_PATTERN, ChatStore, MAX_TEXT_LENGTH, decodeImage,
+  BLOB_ID_PATTERN, ChatStore, MAX_TEXT_LENGTH, blobsOf, decodeEmbed, decodeImage,
 } = require('./src/chats');
 const { ContactStore, cleanName } = require('./src/contacts');
 const { AvatarStore, decodeAvatar } = require('./src/avatars');
+const { FileShare } = require('./src/fileshare');
+const { LinkPreviews } = require('./src/linkpreview');
 const { MEMBER_ID_PATTERN, ProfileStore } = require('./src/profile');
 const { ServerStore } = require('./src/servers');
 const { PEER_ID_PATTERN, Signaling } = require('./src/signaling');
 const { SoundStore } = require('./src/sounds');
 const { StreamManager } = require('./src/streams');
 const {
-  MAX_FILE_BYTES, TransferInbox, cleanFileName, cleanMime, sha256, splitFile,
+  CHUNK_BYTES, MAX_FILE_BYTES, MAX_RELAY_BYTES, TransferInbox, cleanFileName, cleanMime, sha256, splitFile,
 } = require('./src/transfers');
 const {
   TelinhaSession,
@@ -40,6 +43,14 @@ const WEBRTC_PORT_MAX = 50039;
 const MAX_RTC_PAYLOAD = 60000;
 const META_REPLY_INTERVAL_MS = 5000;
 const CHANNEL_ID_PATTERN = /^[a-f0-9]{16}$/;
+const OFFER_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const UPLOAD_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
+const RELAY_WINDOW = 4;
+const RELAY_ACK_TIMEOUT_MS = 30000;
+const PROGRESS_INTERVAL_MS = 150;
+const COPY_CHUNK_BYTES = 1024 * 1024;
+const MAX_URL_LENGTH = 4096;
 const IMAGE_EXTENSIONS = new Map([
   ['image/png', 'png'],
   ['image/jpeg', 'jpg'],
@@ -53,6 +64,8 @@ let store = null;
 let servers = null;
 let chats = null;
 let inbox = null;
+let fileShare = null;
+let linkPreviews = null;
 let sounds = null;
 let avatars = null;
 let signaling = null;
@@ -191,13 +204,58 @@ function conversationKey(spaceId, channelId) {
   return channelId ? `${spaceId}-${channelId}` : spaceId;
 }
 
-function imageFileName(message) {
-  const extension = IMAGE_EXTENSIONS.get(message.image.mime) ?? 'png';
-  const stamp = new Date(Number(message.sentAt) || Date.now())
+function imageFileName(image, sentAt) {
+  const extension = IMAGE_EXTENSIONS.get(image.mime) ?? 'png';
+  const stamp = new Date(Number(sentAt) || Date.now())
     .toISOString()
     .slice(0, 19)
     .replace(/[:T]/g, '-');
   return `telinha-${stamp}.${extension}`;
+}
+
+// A chave que cifra o arquivo guardado fica so neste processo, a janela nunca precisa dela.
+function publicMessage(message) {
+  if (!message || !message.file || !('key' in message.file)) {
+    return message;
+  }
+  const file = { ...message.file };
+  delete file.key;
+  delete file.iv;
+  return { ...message, file };
+}
+
+function throttle(send) {
+  let last = 0;
+  return (...args) => {
+    const now = Date.now();
+    if (now - last >= PROGRESS_INTERVAL_MS) {
+      last = now;
+      send(...args);
+    }
+  };
+}
+
+function toBuffer(value) {
+  if (value instanceof ArrayBuffer) {
+    return Buffer.from(value);
+  }
+  if (ArrayBuffer.isView(value)) {
+    return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+  }
+  return null;
+}
+
+function safeExternalUrl(value) {
+  const text = String(value ?? '');
+  if (text.length > MAX_URL_LENGTH) {
+    return null;
+  }
+  try {
+    const url = new URL(text);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null;
+  } catch {
+    return null;
+  }
 }
 
 function profileView() {
@@ -381,6 +439,59 @@ function storedConversation(spaceId, channelId) {
     : null;
 }
 
+function directOffer(file) {
+  const size = file ? Number(file.size) : 0;
+  if (!file || !OFFER_ID_PATTERN.test(String(file.offerId)) || !Number.isInteger(size) || size < 1
+    || size > MAX_FILE_BYTES || !SHA256_PATTERN.test(String(file.sha256))) {
+    return null;
+  }
+  return {
+    name: cleanFileName(file.name), mime: cleanMime(file.mime), size, sha256: file.sha256, offerId: file.offerId,
+  };
+}
+
+function incomingFileInfo(message, fileData) {
+  if (fileData) {
+    return {
+      id: crypto.randomUUID(),
+      name: cleanFileName(message.file.name),
+      mime: cleanMime(message.file.mime),
+      size: fileData.length,
+    };
+  }
+  const offer = message.file ? directOffer(message.file) : null;
+  return offer ? { id: crypto.randomUUID(), ...offer, pending: true } : undefined;
+}
+
+function embedInfo(embed) {
+  if (!embed) {
+    return undefined;
+  }
+  return {
+    url: embed.url,
+    title: embed.title,
+    description: embed.description,
+    siteName: embed.siteName,
+    image: embed.image
+      ? { id: crypto.randomUUID(), mime: embed.image.mime, width: embed.image.width, height: embed.image.height }
+      : undefined,
+  };
+}
+
+function downloadTarget(spaceId, channelId, key, message) {
+  const { file } = message;
+  return {
+    spaceId,
+    channelId,
+    key,
+    messageId: message.id,
+    fileId: file.id,
+    offerId: file.offerId,
+    size: file.size,
+    sha256: file.sha256,
+  };
+}
+
 function storeIncomingChat(spaceId, message, fileData) {
   const target = chatTarget(spaceId, message);
   if (!target) {
@@ -391,7 +502,9 @@ function storeIncomingChat(spaceId, message, fileData) {
   } = target;
   const text = typeof message.text === 'string' ? message.text.slice(0, MAX_TEXT_LENGTH) : '';
   const image = message.image ? decodeImage(message.image) : null;
-  if (!text && !image && !fileData) {
+  const embed = text && message.embed ? decodeEmbed(message.embed) : null;
+  const fileInfo = incomingFileInfo(message, fileData);
+  if (!text && !image && !fileInfo) {
     return;
   }
 
@@ -400,19 +513,15 @@ function storeIncomingChat(spaceId, message, fileData) {
   const imageInfo = image
     ? { id: crypto.randomUUID(), mime: image.mime, width: image.width, height: image.height }
     : undefined;
-  const fileInfo = fileData
-    ? {
-      id: crypto.randomUUID(),
-      name: cleanFileName(message.file.name),
-      mime: cleanMime(message.file.mime),
-      size: fileData.length,
-    }
-    : undefined;
+  const linkInfo = embedInfo(embed);
   if (imageInfo) {
     chats.saveBlob(key, imageInfo.id, image.data);
   }
-  if (fileInfo) {
+  if (fileData) {
     chats.saveBlob(key, fileInfo.id, fileData);
+  }
+  if (linkInfo && linkInfo.image) {
+    chats.saveBlob(key, linkInfo.image.id, embed.image.data);
   }
   const stored = chats.append(key, {
     id: message.messageId,
@@ -423,16 +532,18 @@ function storeIncomingChat(spaceId, message, fileData) {
     sentAt: Number.isFinite(message.sentAt) ? Math.min(message.sentAt, now + 60000) : now,
     image: imageInfo,
     file: fileInfo,
+    embed: linkInfo,
   });
   if (!stored) {
-    for (const blob of [imageInfo, fileInfo]) {
-      if (blob) {
-        chats.removeBlob(key, blob.id);
-      }
+    for (const blob of blobsOf({ image: imageInfo, file: fileInfo, embed: linkInfo })) {
+      chats.removeBlob(key, blob.id);
     }
     return;
   }
-  sendToWindow('chat:message', { spaceId, channelId, message: stored });
+  sendToWindow('chat:message', { spaceId, channelId, message: publicMessage(stored) });
+  if (fileInfo && fileInfo.pending) {
+    fileShare.download(downloadTarget(spaceId, channelId, key, stored));
+  }
 
   if (!windowFocused()) {
     const channel = server ? server.channels.find((item) => item.id === channelId) : null;
@@ -451,30 +562,210 @@ function handleChat(spaceId, message) {
   if (!chatTarget(spaceId, message)) {
     return;
   }
-  if (message.file) {
+  if (message.file && !message.file.offerId) {
     inbox.addMessage(spaceId, message);
     return;
   }
   storeIncomingChat(spaceId, message, null);
 }
 
-function publishFile(spaceId, payload, fileInfo, data) {
-  const transferId = crypto.randomUUID();
-  const chunks = splitFile(data);
-  for (const [index, chunk] of chunks.entries()) {
-    const sent = signaling.publish(spaceId, 'file-chunk', {
-      transferId, index, total: chunks.length, data: chunk.toString('base64'),
-    });
-    if (!sent) {
-      return false;
+// Arquivos pequenos vao em pedacos pelo servidor de mensagens, poucos de cada vez, e cada
+// confirmacao do servidor conta como progresso do envio.
+function publishRelayFile(spaceId, payload, fileInfo, data, onProgress) {
+  return new Promise((resolve) => {
+    const transferId = crypto.randomUUID();
+    const chunks = splitFile(data);
+    let next = 0;
+    let acked = 0;
+    let finished = false;
+    let timer = null;
+    const finish = (delivered) => {
+      if (!finished) {
+        finished = true;
+        clearTimeout(timer);
+        resolve(delivered);
+      }
+    };
+    const watch = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => finish(false), RELAY_ACK_TIMEOUT_MS);
+    };
+    let pump = null;
+    const onAcked = (error) => {
+      if (finished) {
+        return;
+      }
+      if (error) {
+        finish(false);
+        return;
+      }
+      acked += 1;
+      watch();
+      onProgress(Math.min(data.length, acked * CHUNK_BYTES), data.length);
+      if (acked < chunks.length) {
+        pump();
+        return;
+      }
+      finish(signaling.publish(spaceId, 'chat', {
+        ...payload,
+        file: {
+          transferId, name: fileInfo.name, mime: fileInfo.mime, size: data.length, sha256: sha256(data),
+        },
+      }));
+    };
+    pump = () => {
+      while (!finished && next < chunks.length && next - acked < RELAY_WINDOW) {
+        const index = next;
+        next += 1;
+        const sent = signaling.publish(spaceId, 'file-chunk', {
+          transferId, index, total: chunks.length, data: chunks[index].toString('base64'),
+        }, onAcked);
+        if (!sent) {
+          finish(false);
+        }
+      }
+    };
+    watch();
+    pump();
+  });
+}
+
+async function relayFile(target, message, payload, data) {
+  const { spaceId, channelId, key } = target;
+  const fileId = message.file.id;
+  const progress = throttle((done, total) => sendToWindow('file:progress', {
+    spaceId, channelId, fileId, direction: 'up', done, total,
+  }));
+  const delivered = await publishRelayFile(spaceId, payload, message.file, data, progress);
+  const updated = chats.update(key, message.id, (item) => {
+    item.delivered = delivered;
+  });
+  if (updated) {
+    sendToWindow('chat:update', { spaceId, channelId, message: publicMessage(updated) });
+  }
+}
+
+/* arquivos direto entre computadores */
+
+function conversationsOf(spaceId) {
+  if (store.get(spaceId)) {
+    return [spaceId];
+  }
+  const server = servers.get(spaceId);
+  return server ? server.channels.map((channel) => conversationKey(spaceId, channel.id)) : [];
+}
+
+function findSharedFile(spaceId, offerId) {
+  for (const key of conversationsOf(spaceId)) {
+    const message = chats.history(key).find((item) => item.file && item.file.offerId === offerId
+      && !item.file.pending && item.file.key);
+    if (message && chats.hasFile(key, message.file.id)) {
+      return {
+        key,
+        fileId: message.file.id,
+        size: message.file.size,
+        secret: { key: message.file.key, iv: message.file.iv },
+      };
     }
   }
-  return signaling.publish(spaceId, 'chat', {
-    ...payload,
-    file: {
-      transferId, name: fileInfo.name, mime: fileInfo.mime, size: data.length, sha256: sha256(data),
-    },
+  return null;
+}
+
+function completeDownload({ target, secret }) {
+  const updated = chats.update(target.key, target.messageId, (message) => {
+    if (message.file && message.file.id === target.fileId) {
+      delete message.file.pending;
+      message.file.key = secret.key;
+      message.file.iv = secret.iv;
+    }
   });
+  if (!updated) {
+    chats.removeBlob(target.key, target.fileId);
+    return;
+  }
+  sendToWindow('chat:update', {
+    spaceId: target.spaceId, channelId: target.channelId, message: publicMessage(updated),
+  });
+}
+
+function startDownload(spaceId, channelId, fileId) {
+  const key = storedConversation(spaceId, channelId);
+  if (!key || !BLOB_ID_PATTERN.test(String(fileId))) {
+    return false;
+  }
+  const message = chats.history(key).find((item) => item.file && item.file.id === fileId);
+  if (!message || !message.file.pending || !message.file.offerId) {
+    return false;
+  }
+  fileShare.download(downloadTarget(spaceId, store.get(spaceId) ? null : channelId, key, message));
+  return true;
+}
+
+async function prepareOutgoingFile(key, file, uploadId) {
+  const filePath = typeof file.path === 'string' ? file.path : '';
+  const bytes = filePath ? null : toBuffer(file.bytes);
+  let size = bytes ? bytes.length : 0;
+  if (filePath) {
+    const stat = await fs.promises.stat(filePath).catch(() => null);
+    if (!stat || !stat.isFile()) {
+      throw new Error('nao consegui ler esse arquivo');
+    }
+    size = stat.size;
+  } else if (!bytes) {
+    throw new Error('nao consegui ler esse arquivo');
+  }
+  if (size === 0 || size > MAX_FILE_BYTES) {
+    throw new Error('o arquivo precisa ter no maximo 1 GB');
+  }
+
+  const name = cleanFileName(file.name);
+  const mime = cleanMime(file.mime);
+  const id = crypto.randomUUID();
+  if (size <= MAX_RELAY_BYTES) {
+    const data = bytes ?? await fs.promises.readFile(filePath);
+    if (data.length === 0 || data.length > MAX_RELAY_BYTES) {
+      throw new Error('o arquivo mudou enquanto era lido, tente de novo');
+    }
+    chats.saveBlob(key, id, data);
+    return { info: { id, name, mime, size: data.length }, data };
+  }
+
+  const report = UPLOAD_ID_PATTERN.test(String(uploadId))
+    ? throttle((done) => sendToWindow('chat:upload-progress', { uploadId, done, total: size }))
+    : () => {};
+  const writer = chats.createFileWriter(key, id);
+  try {
+    if (filePath) {
+      for await (const chunk of fs.createReadStream(filePath, { highWaterMark: COPY_CHUNK_BYTES })) {
+        await writer.write(chunk);
+        report(writer.size);
+      }
+    } else {
+      for (let offset = 0; offset < bytes.length; offset += COPY_CHUNK_BYTES) {
+        await writer.write(bytes.subarray(offset, offset + COPY_CHUNK_BYTES));
+        report(writer.size);
+      }
+    }
+    if (writer.size === 0 || writer.size > MAX_FILE_BYTES) {
+      throw new Error('o arquivo mudou enquanto era lido, tente de novo');
+    }
+    const result = await writer.finish();
+    return {
+      info: {
+        id,
+        name,
+        mime,
+        size: result.size,
+        sha256: result.sha256,
+        offerId: crypto.randomUUID(),
+        key: result.key,
+        iv: result.iv,
+      },
+    };
+  } catch (error) {
+    await writer.abort();
+    throw error;
+  }
 }
 
 function handleSignalingMessage({ spaceId, message }) {
@@ -498,6 +789,18 @@ function handleSignalingMessage({ spaceId, message }) {
   }
   if (message.type === 'file-chunk') {
     inbox.addChunk(spaceId, message);
+    return;
+  }
+  if (message.type === 'file-want') {
+    fileShare.handleWant(spaceId, message);
+    return;
+  }
+  if (message.type === 'file-have') {
+    fileShare.handleHave(spaceId, message);
+    return;
+  }
+  if (message.type === 'file-signal') {
+    fileShare.handleSignal(spaceId, message);
     return;
   }
   if (message.type === 'chat') {
@@ -633,6 +936,18 @@ function audioCommand(audio) {
     return isAudioDeviceId(audio.device) ? { command: 'set_audio', scope, pid: 0, device: audio.device } : null;
   }
   return scope ? { command: 'set_audio', scope, pid: toLimit(audio.pid) } : null;
+}
+
+function findImage(key, imageId) {
+  for (const message of chats.history(key)) {
+    if (message.image && message.image.id === imageId) {
+      return { message, image: message.image };
+    }
+    if (message.embed && message.embed.image && message.embed.image.id === imageId) {
+      return { message, image: message.embed.image };
+    }
+  }
+  return null;
 }
 
 /* ipc */
@@ -796,18 +1111,13 @@ function registerIpc() {
   ipcMain.handle('presence:snapshot', () => signaling.snapshot());
 
   ipcMain.handle('chat:history', (_event, { spaceId, channelId = null }) => {
-    if (store.get(spaceId)) {
-      return chats.history(spaceId);
-    }
-    const server = servers.get(spaceId);
-    if (server && server.channels.some((channel) => channel.id === channelId)) {
-      return chats.history(conversationKey(spaceId, channelId));
-    }
-    return [];
+    const key = storedConversation(spaceId, channelId);
+    return key ? chats.history(key).map(publicMessage) : [];
   });
-  ipcMain.handle('chat:send', (_event, {
-    spaceId, channelId = null, text, image = null, file = null,
-  }) => {
+  ipcMain.handle('chat:send', async (_event, request) => {
+    const {
+      spaceId, channelId = null, text, image = null, file = null, embed = null, uploadId = null,
+    } = request ?? {};
     const contact = store.get(spaceId);
     const server = contact ? null : servers.get(spaceId);
     if (!contact && !server) {
@@ -820,36 +1130,35 @@ function registerIpc() {
     if (image && !decoded) {
       throw new Error('essa imagem nao pode ser enviada, tente outra');
     }
-    const fileData = file ? Buffer.from(String(file.data ?? ''), 'base64') : null;
-    if (fileData && (fileData.length === 0 || fileData.length > MAX_FILE_BYTES)) {
-      throw new Error('o arquivo precisa ter no maximo 8 MB');
-    }
-    const message = chats.createOutgoing(profile.name, text, { allowEmpty: Boolean(decoded || fileData) });
+    const preview = embed ? decodeEmbed(embed) : null;
+    const message = chats.createOutgoing(profile.name, text, { allowEmpty: Boolean(decoded || file) });
     if (!message) {
       return null;
     }
 
-    const key = conversationKey(spaceId, server ? channelId : null);
+    const target = {
+      spaceId,
+      channelId: server ? channelId : null,
+      key: conversationKey(spaceId, server ? channelId : null),
+    };
+    const { key } = target;
+    const outgoing = file ? await prepareOutgoingFile(key, file, uploadId) : null;
     const imageInfo = decoded
       ? { id: crypto.randomUUID(), mime: decoded.mime, width: decoded.width, height: decoded.height }
       : undefined;
-    const fileInfo = fileData
-      ? {
-        id: crypto.randomUUID(), name: cleanFileName(file.name), mime: cleanMime(file.mime), size: fileData.length,
-      }
-      : undefined;
+    const linkInfo = message.text ? embedInfo(preview) : undefined;
     if (imageInfo) {
       chats.saveBlob(key, imageInfo.id, decoded.data);
     }
-    if (fileInfo) {
-      chats.saveBlob(key, fileInfo.id, fileData);
+    if (linkInfo && linkInfo.image) {
+      chats.saveBlob(key, linkInfo.image.id, preview.image.data);
     }
 
     const payload = {
       messageId: message.id,
       text: message.text,
       sentAt: message.sentAt,
-      channelId: server ? channelId : undefined,
+      channelId: target.channelId ?? undefined,
       author: profile.name,
       memberId: profile.memberId,
       image: decoded ? {
@@ -858,13 +1167,42 @@ function registerIpc() {
         height: decoded.height,
         data: decoded.data.toString('base64'),
       } : undefined,
+      embed: linkInfo ? {
+        url: preview.url,
+        title: preview.title,
+        description: preview.description,
+        siteName: preview.siteName,
+        image: preview.image ? {
+          mime: preview.image.mime,
+          width: preview.image.width,
+          height: preview.image.height,
+          data: preview.image.data.toString('base64'),
+        } : undefined,
+      } : undefined,
     };
-    const delivered = fileInfo
-      ? publishFile(spaceId, payload, fileInfo, fileData)
-      : signaling.publish(spaceId, 'chat', payload);
-    return chats.append(key, {
-      ...message, memberId: profile.memberId, delivered, image: imageInfo, file: fileInfo,
+    const fileInfo = outgoing ? outgoing.info : undefined;
+    let delivered;
+    if (!fileInfo) {
+      delivered = signaling.publish(spaceId, 'chat', payload);
+    } else if (fileInfo.offerId) {
+      delivered = signaling.publish(spaceId, 'chat', {
+        ...payload,
+        file: {
+          offerId: fileInfo.offerId,
+          name: fileInfo.name,
+          mime: fileInfo.mime,
+          size: fileInfo.size,
+          sha256: fileInfo.sha256,
+        },
+      });
+    }
+    const stored = chats.append(key, {
+      ...message, memberId: profile.memberId, delivered, image: imageInfo, file: fileInfo, embed: linkInfo,
     });
+    if (stored && outgoing && outgoing.data) {
+      relayFile(target, stored, payload, outgoing.data);
+    }
+    return publicMessage(stored);
   });
 
   ipcMain.handle('chat:image', (_event, { spaceId, channelId = null, imageId }) => {
@@ -872,9 +1210,9 @@ function registerIpc() {
     if (!key || !BLOB_ID_PATTERN.test(String(imageId))) {
       return null;
     }
-    const message = chats.history(key).find((item) => item.image && item.image.id === imageId);
-    const data = message ? chats.loadBlob(key, imageId) : null;
-    return data ? `data:${message.image.mime};base64,${data.toString('base64')}` : null;
+    const found = findImage(key, imageId);
+    const data = found ? chats.loadBlob(key, imageId) : null;
+    return data ? `data:${found.image.mime};base64,${data.toString('base64')}` : null;
   });
 
   ipcMain.handle('chat:save-file', async (_event, { spaceId, channelId = null, fileId }) => {
@@ -883,8 +1221,12 @@ function registerIpc() {
       return false;
     }
     const message = chats.history(key).find((item) => item.file && item.file.id === fileId);
-    const data = message ? chats.loadBlob(key, fileId) : null;
-    if (!data) {
+    if (message && message.file.pending) {
+      throw new Error('esse arquivo ainda nao chegou neste computador');
+    }
+    const direct = Boolean(message && message.file.key && chats.hasFile(key, fileId));
+    const data = message && !message.file.key ? chats.loadBlob(key, fileId) : null;
+    if (!direct && !data) {
       throw new Error('esse arquivo nao esta mais guardado neste computador');
     }
     const result = await dialog.showSaveDialog(mainWindow, {
@@ -893,7 +1235,11 @@ function registerIpc() {
     if (result.canceled || !result.filePath) {
       return false;
     }
-    await fs.promises.writeFile(result.filePath, data);
+    if (direct) {
+      await pipeline(chats.openFileReader(key, fileId, message.file), fs.createWriteStream(result.filePath));
+    } else {
+      await fs.promises.writeFile(result.filePath, data);
+    }
     return true;
   });
 
@@ -902,18 +1248,42 @@ function registerIpc() {
     if (!key || !BLOB_ID_PATTERN.test(String(imageId))) {
       return false;
     }
-    const message = chats.history(key).find((item) => item.image && item.image.id === imageId);
-    const data = message ? chats.loadBlob(key, imageId) : null;
+    const found = findImage(key, imageId);
+    const data = found ? chats.loadBlob(key, imageId) : null;
     if (!data) {
       throw new Error('essa imagem nao esta mais guardada neste computador');
     }
     const result = await dialog.showSaveDialog(mainWindow, {
-      defaultPath: path.join(app.getPath('downloads'), imageFileName(message)),
+      defaultPath: path.join(app.getPath('downloads'), imageFileName(found.image, found.message.sentAt)),
     });
     if (result.canceled || !result.filePath) {
       return false;
     }
     await fs.promises.writeFile(result.filePath, data);
+    return true;
+  });
+
+  ipcMain.handle('chat:download-file', (_event, { spaceId, channelId = null, fileId }) => (
+    startDownload(spaceId, channelId, fileId)
+  ));
+  ipcMain.handle('file:signal', (_event, { id, sdp }) => fileShare.signal(String(id), sdp));
+  ipcMain.handle('file:read', (_event, id) => fileShare.read(String(id)));
+  ipcMain.on('file:chunk', (_event, { id, data }) => {
+    const chunk = toBuffer(data);
+    if (chunk) {
+      fileShare.chunk(String(id), chunk);
+    }
+  });
+  ipcMain.handle('file:finish', (_event, id) => fileShare.finish(String(id)));
+  ipcMain.handle('file:close', (_event, { id, reason = null }) => fileShare.close(String(id), reason));
+
+  ipcMain.handle('link:preview', (_event, url) => linkPreviews.get(url));
+  ipcMain.handle('app:open-external', (_event, url) => {
+    const target = safeExternalUrl(url);
+    if (!target) {
+      return false;
+    }
+    shell.openExternal(target).catch(() => {});
     return true;
   });
 
@@ -1066,7 +1436,13 @@ function createWindow() {
   if (typeof contents.setWebRTCUDPPortRange === 'function') {
     contents.setWebRTCUDPPortRange({ min: WEBRTC_PORT_MIN, max: WEBRTC_PORT_MAX });
   }
-  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  contents.setWindowOpenHandler(({ url }) => {
+    const target = safeExternalUrl(url);
+    if (target) {
+      shell.openExternal(target).catch(() => {});
+    }
+    return { action: 'deny' };
+  });
   contents.on('will-navigate', (event) => event.preventDefault());
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
@@ -1080,6 +1456,7 @@ app.whenReady().then(() => {
   servers = new ServerStore(path.join(userData, 'servers.json'), storage).load();
   chats = new ChatStore(path.join(userData, 'chats'), storage);
   inbox = new TransferInbox({ onComplete: storeIncomingChat });
+  linkPreviews = new LinkPreviews();
   sounds = new SoundStore(path.join(userData, 'sounds')).load();
   avatars = new AvatarStore(path.join(userData, 'avatars')).load();
 
@@ -1090,6 +1467,18 @@ app.whenReady().then(() => {
     selfId: signaling.instanceId,
     ownerPid: process.pid,
   });
+  fileShare = new FileShare({
+    publish: (spaceId, type, body) => signaling.publish(spaceId, type, body),
+    selfId: signaling.instanceId,
+    findLocal: findSharedFile,
+    openReader: (local) => chats.openFileReader(local.key, local.fileId, local.secret),
+    createWriter: (target) => chats.createFileWriter(target.key, target.fileId),
+  });
+  fileShare.on('start', (payload) => sendToWindow('file:start', payload));
+  fileShare.on('signal', (payload) => sendToWindow('file:signal', payload));
+  fileShare.on('stop', (payload) => sendToWindow('file:stop', payload));
+  fileShare.on('status', (payload) => sendToWindow('file:status', payload));
+  fileShare.on('complete', completeDownload);
 
   signaling.on('message', handleSignalingMessage);
   signaling.on('presence', sendContacts);
@@ -1136,6 +1525,7 @@ app.on('before-quit', (event) => {
     manual.session.stop();
   }
   streams.stopAll();
+  fileShare.stopAll();
   Promise.race([signaling.stop(), new Promise((resolve) => setTimeout(resolve, 1500))])
     .finally(() => app.quit());
 });

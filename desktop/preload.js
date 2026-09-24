@@ -1,6 +1,8 @@
 'use strict';
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
+
+const MAX_LOOSE_FILE_BYTES = 64 * 1024 * 1024;
 
 function subscribe(channel, listener) {
   const handler = (_event, payload) => listener(payload);
@@ -9,6 +11,30 @@ function subscribe(channel, listener) {
 }
 
 const invoke = (channel, payload) => ipcRenderer.invoke(channel, payload);
+
+// O arquivo chega aqui como File. O caminho dele no disco e resolvido neste ponto e vai direto
+// para o processo principal, sem nunca passar pela pagina. Sem caminho (arquivo que so existe na
+// memoria), os bytes vao juntos, com um limite.
+async function outgoingFile(file) {
+  if (!file || !file.source) {
+    return null;
+  }
+  const { source } = file;
+  let filePath = '';
+  try {
+    filePath = webUtils.getPathForFile(source);
+  } catch {
+    filePath = '';
+  }
+  const described = { name: String(file.name ?? ''), mime: String(file.mime ?? '') };
+  if (filePath) {
+    return { ...described, path: filePath };
+  }
+  if (typeof source.arrayBuffer !== 'function' || source.size > MAX_LOOSE_FILE_BYTES) {
+    throw new Error('esse arquivo não está numa pasta do computador. Salve ele numa pasta e anexe de lá.');
+  }
+  return { ...described, bytes: new Uint8Array(await source.arrayBuffer()) };
+}
 
 contextBridge.exposeInMainWorld('telinha', {
   profile: () => invoke('app:profile'),
@@ -46,9 +72,15 @@ contextBridge.exposeInMainWorld('telinha', {
 
   presenceSnapshot: () => invoke('presence:snapshot'),
   chatHistory: (spaceId, channelId) => invoke('chat:history', { spaceId, channelId }),
-  sendChat: (spaceId, channelId, text, image, file) => invoke('chat:send', {
-    spaceId, channelId, text, image, file,
-  }),
+  sendChat: async (request) => invoke('chat:send', { ...request, file: await outgoingFile(request.file) }),
+  linkPreview: (url) => invoke('link:preview', url),
+  openExternal: (url) => invoke('app:open-external', url),
+  downloadChatFile: (spaceId, channelId, fileId) => invoke('chat:download-file', { spaceId, channelId, fileId }),
+  fileSignal: (id, sdp) => invoke('file:signal', { id, sdp }),
+  fileRead: (id) => invoke('file:read', id),
+  fileChunk: (id, data) => ipcRenderer.send('file:chunk', { id, data }),
+  fileFinish: (id) => invoke('file:finish', id),
+  fileClose: (id, reason) => invoke('file:close', { id, reason }),
   chatImage: (spaceId, channelId, imageId) => invoke('chat:image', { spaceId, channelId, imageId }),
   saveChatFile: (spaceId, channelId, fileId) => invoke('chat:save-file', { spaceId, channelId, fileId }),
   saveChatImage: (spaceId, channelId, imageId) => invoke('chat:save-image', { spaceId, channelId, imageId }),
@@ -97,6 +129,13 @@ contextBridge.exposeInMainWorld('telinha', {
   onRtc: (listener) => subscribe('rtc:message', listener),
   onIncomingCall: (listener) => subscribe('call:incoming', listener),
   onChatMessage: (listener) => subscribe('chat:message', listener),
+  onChatUpdate: (listener) => subscribe('chat:update', listener),
+  onUploadProgress: (listener) => subscribe('chat:upload-progress', listener),
+  onFileProgress: (listener) => subscribe('file:progress', listener),
+  onFileStatus: (listener) => subscribe('file:status', listener),
+  onFileStart: (listener) => subscribe('file:start', listener),
+  onFileSignal: (listener) => subscribe('file:signal', listener),
+  onFileStop: (listener) => subscribe('file:stop', listener),
   onSignalingStatus: (listener) => subscribe('signaling:status', listener),
   onStreams: (listener) => subscribe('streams:changed', listener),
   onStreamEvent: (listener) => subscribe('stream:event', listener),

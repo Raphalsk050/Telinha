@@ -290,13 +290,25 @@
               </div>
               <ol id="chat-messages" class="chat-messages"></ol>
             </div>
+            <div id="chat-embed" class="chat-embed" hidden>
+              <div class="chat-embed-body">
+                <span id="chat-embed-site" class="embed-site"></span>
+                <span id="chat-embed-title" class="chat-embed-title"></span>
+                <span id="chat-embed-text" class="chat-embed-text"></span>
+              </div>
+              <img id="chat-embed-image" alt="" hidden>
+              <button id="chat-embed-remove" class="close-button" type="button" aria-label="Enviar sem a prévia do link">×</button>
+            </div>
             <div id="chat-pending" class="chat-pending" hidden>
               <img id="chat-pending-image" alt="Imagem anexada">
               <span id="chat-pending-icon" class="file-icon" hidden>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2.5h8l4.5 4.5v14a.5.5 0 0 1-.5.5H6a.5.5 0 0 1-.5-.5V3a.5.5 0 0 1 .5-.5z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M14 2.5V7h4.5M8.5 12h7M8.5 15h7M8.5 18h4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
               </span>
-              <span id="chat-pending-name" class="chat-pending-name"></span>
-              <button id="chat-pending-remove" class="close-button" type="button" aria-label="Remover imagem">×</button>
+              <div class="chat-pending-info">
+                <span id="chat-pending-name" class="chat-pending-name"></span>
+                <span id="chat-pending-bar" class="progress-bar" hidden><span></span></span>
+              </div>
+              <button id="chat-pending-remove" class="close-button" type="button" aria-label="Remover anexo">×</button>
             </div>
             <form id="chat-form" class="composer" autocomplete="off">
               <button id="chat-attach" class="composer-attach" type="button" title="Enviar arquivo ou imagem" aria-label="Enviar arquivo ou imagem">
@@ -641,6 +653,7 @@
   <div id="toast" class="toast" role="status" hidden></div>
 
   <script src="debug.js"></script>
+  <script src="files.js"></script>
   <script src="chat.js"></script>
   <script src="share.js"></script>
   <script src="call.js"></script>

@@ -151,13 +151,14 @@ class Signaling extends EventEmitter {
     this.removeSpace(contactId);
   }
 
-  publish(spaceId, type, body = {}) {
+  // onAcked recebe o erro, ou nada quando o servidor confirmou a mensagem.
+  publish(spaceId, type, body = {}, onAcked = undefined) {
     const keys = this.spaces.keysFor(spaceId);
     if (!keys || !this.client || !this.connected) {
       return false;
     }
     const payload = sealMessage(keys.key, { ...body, type, from: this.instanceId, at: Date.now() });
-    this.client.publish(TOPIC_PREFIX + spaceId, payload, { qos: 1 });
+    this.client.publish(TOPIC_PREFIX + spaceId, payload, { qos: 1 }, onAcked);
     return true;
   }
 

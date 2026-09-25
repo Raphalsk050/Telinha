@@ -3532,30 +3532,39 @@ async function init() {
   bindEvents();
   subscribeEvents();
 
-  const [contacts, servers, presence, status, streams, sounds, avatarSnapshot] = await Promise.all([
-    api.listContacts(),
-    api.listServers(),
-    api.presenceSnapshot(),
-    api.signalingStatus(),
-    api.streamsState(),
-    api.listSounds(),
-    api.avatarsSnapshot(),
+  // Cada retrato entra assim que chega. Esperar todos juntos deixava um retrato velho apagar a
+  // presenca que tinha acabado de chegar por evento, e a pessoa parecia offline ate a proxima mudanca.
+  await Promise.all([
+    api.listContacts().then((contacts) => {
+      state.contacts = contacts;
+    }),
+    api.listServers().then((servers) => {
+      state.servers = servers;
+    }),
+    api.presenceSnapshot().then((presence) => {
+      for (const [spaceId, peers] of Object.entries(presence)) {
+        state.presence.set(spaceId, peers);
+        Call.setPresence(spaceId, peers);
+      }
+    }),
+    api.signalingStatus().then((status) => {
+      state.signaling = status;
+    }),
+    api.streamsState().then((streams) => {
+      state.streams = streams;
+    }),
+    api.listSounds().then((sounds) => {
+      state.sounds = sounds;
+    }),
+    api.avatarsSnapshot().then((avatarSnapshot) => {
+      for (const [memberId, url] of Object.entries(avatarSnapshot.members)) {
+        state.avatars.set(memberId, url);
+      }
+      for (const [contactId, memberId] of Object.entries(avatarSnapshot.contacts)) {
+        state.contactMembers.set(contactId, memberId);
+      }
+    }),
   ]);
-  for (const [memberId, url] of Object.entries(avatarSnapshot.members)) {
-    state.avatars.set(memberId, url);
-  }
-  for (const [contactId, memberId] of Object.entries(avatarSnapshot.contacts)) {
-    state.contactMembers.set(contactId, memberId);
-  }
-  state.contacts = contacts;
-  state.servers = servers;
-  state.signaling = status;
-  state.streams = streams;
-  state.sounds = sounds;
-  for (const [spaceId, peers] of Object.entries(presence)) {
-    state.presence.set(spaceId, peers);
-    Call.setPresence(spaceId, peers);
-  }
   render();
 }
 

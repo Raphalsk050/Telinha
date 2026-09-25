@@ -13,7 +13,13 @@ const TOPIC_PREFIX = 'telinha/v1/';
 const PRESENCE_INTERVAL_MS = 25000;
 const PRESENCE_TTL_MS = 70000;
 const RETRY_DELAY_MS = 5000;
+const MAX_RETRY_DELAY_MS = 60000;
 const RECONNECT_DELAY_MS = 1000;
+// Cobre a folga de relogio que openMessage aceita, para a copia que chega por outro servidor
+// nunca passar como mensagem nova.
+const SEEN_TTL_MS = 6 * 60 * 1000;
+const MAX_SEEN = 5000;
+const WIDE_PAYLOAD_BYTES = 16 * 1024;
 const PEER_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const MEMBER_ID_PATTERN = /^[a-f0-9]{32}$/;
 
@@ -44,6 +50,10 @@ function describePeer(message) {
   };
 }
 
+// O app fica ligado a todos os servidores de mensagens ao mesmo tempo. Quem abre o app acha os
+// outros pelo primeiro servidor que responder, e duas pessoas se encontram mesmo quando cada uma
+// so alcanca um servidor diferente. Toda mensagem leva um id, e a copia que chega por outro
+// servidor e descartada.
 class Signaling extends EventEmitter {
   constructor({
     store, spaces = store, profileName, presenceFor = null, brokers = DEFAULT_BROKERS, connect = defaultConnect,
@@ -52,85 +62,98 @@ class Signaling extends EventEmitter {
     this.spaces = spaces;
     this.profileName = profileName;
     this.presenceFor = presenceFor;
-    this.brokers = brokers;
     this.connectClient = connect;
     this.instanceId = crypto.randomUUID();
-    this.client = null;
-    this.connected = false;
-    this.broker = null;
-    this.brokerIndex = 0;
+    this.links = brokers.map((url) => ({
+      url, client: null, connected: false, failures: 0, retryTimer: null,
+    }));
     this.stopped = true;
     this.presence = new Map();
+    this.routes = new Map();
+    this.seen = new Map();
     this.presenceTimer = null;
-    this.retryTimer = null;
+  }
+
+  get connected() {
+    return this.links.some((link) => link.connected);
   }
 
   start() {
     this.stopped = false;
-    this.connectNext();
+    for (const link of this.links) {
+      this.connect(link);
+    }
     this.presenceTimer = setInterval(() => {
       this.publishPresence(true);
       this.expirePresence();
+      this.expireSeen();
     }, PRESENCE_INTERVAL_MS);
   }
 
-  connectNext() {
+  connect(link) {
     if (this.stopped) {
       return;
     }
-    const url = this.brokers[this.brokerIndex % this.brokers.length];
-    const client = this.connectClient(url, {
+    const client = this.connectClient(link.url, {
       clientId: `telinha-${this.instanceId.slice(0, 8)}-${Date.now().toString(36)}`,
       clean: true,
       connectTimeout: 8000,
       reconnectPeriod: 0,
       keepalive: 30,
     });
-    this.client = client;
+    link.client = client;
 
     client.on('connect', () => {
-      this.connected = true;
-      this.broker = url;
-      this.subscribeAll();
-      this.publishPresence(true);
+      link.connected = true;
+      link.failures = 0;
+      this.subscribeAll(link);
+      this.publishPresence(true, null, link);
       this.emitStatus();
     });
-    client.on('message', (topic, payload) => this.handleMessage(topic, payload));
+    client.on('message', (topic, payload) => this.handleMessage(topic, payload, link));
     client.on('error', () => {});
     client.on('close', () => {
-      if (this.client !== client) {
+      if (link.client !== client) {
         return;
       }
-      const wasConnected = this.connected;
-      this.client = null;
-      this.connected = false;
-      this.broker = null;
-      this.emitStatus();
+      const wasConnected = link.connected;
+      link.client = null;
+      link.connected = false;
+      if (wasConnected) {
+        this.emitStatus();
+      }
       if (this.stopped) {
         return;
       }
-      if (!wasConnected) {
-        this.brokerIndex += 1;
-      }
-      this.retryTimer = setTimeout(() => this.connectNext(),
-        wasConnected ? RECONNECT_DELAY_MS : RETRY_DELAY_MS);
+      link.failures = wasConnected ? 0 : link.failures + 1;
+      const delay = wasConnected
+        ? RECONNECT_DELAY_MS
+        : Math.min(MAX_RETRY_DELAY_MS, RETRY_DELAY_MS * 2 ** (link.failures - 1));
+      link.retryTimer = setTimeout(() => this.connect(link), delay);
     });
+  }
+
+  openLinks() {
+    return this.links.filter((link) => link.connected && link.client);
   }
 
   spaceIds() {
     return this.spaces.list().map((space) => space.id);
   }
 
-  subscribeAll() {
+  subscribeAll(link) {
     const topics = this.spaceIds().map((id) => TOPIC_PREFIX + id);
-    if (this.client && topics.length > 0) {
-      this.client.subscribe(topics, { qos: 1 });
+    if (topics.length > 0) {
+      link.client.subscribe(topics, { qos: 1 });
     }
   }
 
   addSpace(spaceId) {
-    if (this.client && this.connected) {
-      this.client.subscribe(TOPIC_PREFIX + spaceId, { qos: 1 });
+    const open = this.openLinks();
+    for (const link of open) {
+      link.client.subscribe(TOPIC_PREFIX + spaceId, { qos: 1 });
+    }
+    if (open.length > 0) {
       this.publishPresence(true, spaceId);
     }
   }
@@ -140,26 +163,88 @@ class Signaling extends EventEmitter {
   }
 
   removeSpace(spaceId) {
-    if (this.client && this.connected) {
-      this.publish(spaceId, 'presence', { online: false, name: this.profileName });
-      this.client.unsubscribe(TOPIC_PREFIX + spaceId);
+    this.publish(spaceId, 'presence', { online: false, name: this.profileName });
+    for (const link of this.openLinks()) {
+      link.client.unsubscribe(TOPIC_PREFIX + spaceId);
     }
     this.presence.delete(spaceId);
+    this.routes.delete(spaceId);
   }
 
   removeContact(contactId) {
     this.removeSpace(contactId);
   }
 
-  // onAcked recebe o erro, ou nada quando o servidor confirmou a mensagem.
+  // onAcked recebe o erro, ou nada quando algum servidor confirmou a mensagem.
   publish(spaceId, type, body = {}, onAcked = undefined) {
+    return this.send(spaceId, type, body, onAcked, null);
+  }
+
+  send(spaceId, type, body, onAcked, only) {
     const keys = this.spaces.keysFor(spaceId);
-    if (!keys || !this.client || !this.connected) {
+    const open = this.openLinks().filter((link) => !only || link === only);
+    if (!keys || open.length === 0) {
       return false;
     }
-    const payload = sealMessage(keys.key, { ...body, type, from: this.instanceId, at: Date.now() });
-    this.client.publish(TOPIC_PREFIX + spaceId, payload, { qos: 1 }, onAcked);
+    const payload = sealMessage(keys.key, {
+      ...body, type, from: this.instanceId, at: Date.now(), mid: crypto.randomUUID(),
+    });
+    const targets = only ? open : this.routeFor(spaceId, payload.length, open);
+    let settled = false;
+    let failures = 0;
+    const done = onAcked
+      ? (error) => {
+        if (settled) {
+          return;
+        }
+        if (!error) {
+          settled = true;
+          onAcked();
+        } else if (++failures === targets.length) {
+          settled = true;
+          onAcked(error);
+        }
+      }
+      : undefined;
+    for (const link of targets) {
+      link.client.publish(TOPIC_PREFIX + spaceId, payload, { qos: 1 }, done);
+    }
     return true;
+  }
+
+  // Mensagem pequena vai por todos os servidores. Mensagem grande (pedaco de arquivo, imagem,
+  // miniatura) vai so pelos servidores onde estao as pessoas online, para nao pagar o envio tres vezes.
+  routeFor(spaceId, size, open) {
+    if (size <= WIDE_PAYLOAD_BYTES || open.length < 2) {
+      return open;
+    }
+    const now = Date.now();
+    const routes = this.routes.get(spaceId);
+    let left = this.peers(spaceId).map((peer) => {
+      const via = routes ? routes.get(peer.id) : null;
+      return new Set(via ? [...via].filter(([, at]) => now - at < PRESENCE_TTL_MS).map(([url]) => url) : []);
+    });
+    if (left.length === 0) {
+      return [open[0]];
+    }
+    const chosen = [];
+    while (left.length > 0) {
+      let best = null;
+      let bestCount = 0;
+      for (const link of open) {
+        const count = left.filter((urls) => urls.has(link.url)).length;
+        if (count > bestCount) {
+          best = link;
+          bestCount = count;
+        }
+      }
+      if (!best) {
+        return open;
+      }
+      chosen.push(best);
+      left = left.filter((urls) => !urls.has(best.url));
+    }
+    return chosen;
   }
 
   presencePayload(spaceId) {
@@ -167,14 +252,54 @@ class Signaling extends EventEmitter {
     return { name: this.profileName, ...extra, online: true };
   }
 
-  publishPresence(online, spaceId = null) {
+  publishPresence(online, spaceId = null, only = null) {
     const ids = spaceId ? [spaceId] : this.spaceIds();
     for (const id of ids) {
-      this.publish(id, 'presence', online ? this.presencePayload(id) : { online: false, name: this.profileName });
+      const body = online ? this.presencePayload(id) : { online: false, name: this.profileName };
+      this.send(id, 'presence', body, undefined, only);
     }
   }
 
-  handleMessage(topic, payload) {
+  noteRoute(spaceId, peerId, link) {
+    let routes = this.routes.get(spaceId);
+    if (!routes) {
+      routes = new Map();
+      this.routes.set(spaceId, routes);
+    }
+    let via = routes.get(peerId);
+    if (!via) {
+      via = new Map();
+      routes.set(peerId, via);
+    }
+    via.set(link.url, Date.now());
+  }
+
+  // Mensagens de versoes antigas nao tem id, mas elas so usam um servidor e nunca chegam repetidas.
+  firstSight(message) {
+    if (typeof message.mid !== 'string') {
+      return true;
+    }
+    if (this.seen.has(message.mid)) {
+      return false;
+    }
+    this.seen.set(message.mid, Date.now());
+    if (this.seen.size > MAX_SEEN) {
+      this.seen.delete(this.seen.keys().next().value);
+    }
+    return true;
+  }
+
+  expireSeen() {
+    const now = Date.now();
+    for (const [mid, at] of this.seen) {
+      if (now - at < SEEN_TTL_MS) {
+        return;
+      }
+      this.seen.delete(mid);
+    }
+  }
+
+  handleMessage(topic, payload, link) {
     if (!topic.startsWith(TOPIC_PREFIX)) {
       return;
     }
@@ -185,6 +310,10 @@ class Signaling extends EventEmitter {
     }
     const message = openMessage(keys.key, payload);
     if (!message || typeof message.from !== 'string' || message.from === this.instanceId) {
+      return;
+    }
+    this.noteRoute(spaceId, message.from, link);
+    if (!this.firstSight(message)) {
       return;
     }
 
@@ -260,6 +389,14 @@ class Signaling extends EventEmitter {
           changed = true;
         }
       }
+      const routes = this.routes.get(spaceId);
+      if (routes) {
+        for (const peerId of routes.keys()) {
+          if (!peers.has(peerId)) {
+            routes.delete(peerId);
+          }
+        }
+      }
       if (changed) {
         this.emit('peers', { spaceId, peers: this.peers(spaceId) });
         if (peers.size === 0) {
@@ -270,7 +407,12 @@ class Signaling extends EventEmitter {
   }
 
   status() {
-    return { connected: this.connected, broker: this.broker };
+    const open = this.openLinks();
+    return {
+      connected: open.length > 0,
+      broker: open.length > 0 ? open[0].url : null,
+      brokers: open.map((link) => link.url),
+    };
   }
 
   emitStatus() {
@@ -280,25 +422,28 @@ class Signaling extends EventEmitter {
   stop() {
     this.stopped = true;
     clearInterval(this.presenceTimer);
-    clearTimeout(this.retryTimer);
-    const client = this.client;
-    this.client = null;
-    if (!client) {
-      return Promise.resolve();
-    }
-    if (this.connected) {
-      for (const id of this.spaceIds()) {
-        const keys = this.spaces.keysFor(id);
-        if (keys) {
-          const payload = sealMessage(keys.key, {
-            type: 'presence', online: false, from: this.instanceId, at: Date.now(),
-          });
+    const goodbyes = this.spaceIds().map((id) => {
+      const keys = this.spaces.keysFor(id);
+      return keys ? [id, sealMessage(keys.key, {
+        type: 'presence', online: false, from: this.instanceId, at: Date.now(), mid: crypto.randomUUID(),
+      })] : null;
+    }).filter(Boolean);
+    const endings = this.links.map((link) => {
+      clearTimeout(link.retryTimer);
+      const { client } = link;
+      link.client = null;
+      if (!client) {
+        return Promise.resolve();
+      }
+      if (link.connected) {
+        for (const [id, payload] of goodbyes) {
           client.publish(TOPIC_PREFIX + id, payload, { qos: 0 });
         }
       }
-    }
-    this.connected = false;
-    return new Promise((resolve) => client.end(false, {}, () => resolve()));
+      link.connected = false;
+      return new Promise((resolve) => client.end(false, {}, () => resolve()));
+    });
+    return Promise.all(endings);
   }
 }
 

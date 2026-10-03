@@ -101,6 +101,7 @@ private:
     [[nodiscard]] Outcome open_encoder(const capture::CaptureSourceInfo& info);
     [[nodiscard]] Outcome open_video();
     [[nodiscard]] Outcome open_audio();
+    void announce_audio_withheld() noexcept;
     [[nodiscard]] Outcome create_peer(std::unique_ptr<Peer>& out);
     [[nodiscard]] Outcome open_transport(Peer& peer);
     [[nodiscard]] Outcome negotiate();
@@ -171,6 +172,7 @@ private:
     std::atomic<bool> audio_stop_{false};
     std::atomic<bool> stop_{false};
     bool multi_ = false;
+    bool audio_withheld_ = false;
 };
 
 [[nodiscard]] int run_sender(const SenderOptions& options) noexcept;

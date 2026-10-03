@@ -18,6 +18,11 @@ constexpr std::uint32_t kAudioAcquireTimeoutMs = 40;
 constexpr std::uint32_t kMaxBitrateKbps = 4'000'000;
 constexpr std::uint32_t kEncoderFullWaitMs = 50;
 constexpr std::uint32_t kMaxPacketsPerDrain = 32;
+constexpr std::uint32_t kExcludeAttempts = 3;
+constexpr Nanoseconds kExcludeRetryNs = 300 * kNanosecondsPerMillisecond;
+constexpr const char* kAudioWithheldMessage =
+    "nao deu para tirar o som do Telinha da captura, entao a transmissao segue sem o som do "
+    "computador";
 
 void sleep_ns(Nanoseconds duration) noexcept
 {
@@ -289,6 +294,7 @@ void SenderSession::close_video() noexcept
 
 Outcome SenderSession::open_audio()
 {
+    audio_withheld_ = false;
     if (options_.audio_scope == AudioScope::None) {
         return ok();
     }
@@ -310,32 +316,36 @@ Outcome SenderSession::open_audio()
         }
         target = audio::AudioCaptureTarget::process_loopback(
             pid, audio::ProcessLoopbackMode::IncludeProcessTree);
-    } else if (options_.audio_exclude_process_id != 0 && audio::process_loopback_available()) {
+    } else if (options_.audio_exclude_process_id != 0) {
         target =
             audio::AudioCaptureTarget::everything_except_process(options_.audio_exclude_process_id);
     } else {
-        if (options_.audio_exclude_process_id != 0) {
-            TL_LOG_WARN(
-                "emissor: este Windows nao separa o audio por programa, o som do processo %u vai "
-                "junto",
-                options_.audio_exclude_process_id);
-        }
         target = audio::AudioCaptureTarget::system_loopback();
     }
+    const bool excluding =
+        target.process_loopback_mode == audio::ProcessLoopbackMode::ExcludeProcessTree;
 
     audio::AudioCaptureOptions capture_options;
     capture_options.requested_format = audio::AudioFormat{48000, 2, audio::SampleFormat::Int16};
 
     Result<std::unique_ptr<audio::AudioSource>> created =
         audio::create_audio_source(target, capture_options);
-    if (!created.ok() &&
-        target.process_loopback_mode == audio::ProcessLoopbackMode::ExcludeProcessTree) {
+    // A ativacao do loopback por processo as vezes falha de passagem, entao vale tentar de novo.
+    for (std::uint32_t attempt = 1; !created.ok() && excluding && attempt < kExcludeAttempts &&
+                                    created.status() != Status::NotSupported;
+         ++attempt) {
+        sleep_ns(kExcludeRetryNs);
+        created = audio::create_audio_source(target, capture_options);
+    }
+    if (!created.ok() && excluding) {
+        // Nunca cai no som do sistema inteiro: ele leva junto as vozes da chamada e os sons do
+        // Telinha para quem esta assistindo.
         TL_LOG_WARN(
-            "emissor: nao consegui deixar o processo %u fora do audio (%s), usando o som de todo "
-            "o sistema",
+            "emissor: nao consegui deixar o processo %u fora do audio (%s), a transmissao segue "
+            "sem o som do computador",
             options_.audio_exclude_process_id, to_string(created.status()));
-        created = audio::create_audio_source(audio::AudioCaptureTarget::system_loopback(),
-                                             capture_options);
+        audio_withheld_ = true;
+        return fail(Status::Unavailable, "open_audio: sem como deixar o som do Telinha de fora");
     }
     if (!created.ok()) {
         return Outcome{created.error()};
@@ -382,6 +392,26 @@ Outcome SenderSession::open_audio()
                     info.target.process_id);
     }
     return ok();
+}
+
+// Vai depois do "ready" e da conexao, senao o aviso de pronto apaga este na tela do app.
+void SenderSession::announce_audio_withheld() noexcept
+{
+    if (!audio_withheld_) {
+        return;
+    }
+    if (machine_events_enabled()) {
+        MachineEvent("audio")
+            .text("scope", "none")
+            .integer("pid", 0)
+            .text("device", "")
+            .text("message", kAudioWithheldMessage);
+        return;
+    }
+    std::printf("\nATENCAO: nao deu para deixar o som do processo %u de fora, entao a transmissao "
+                "segue sem o som do computador.\n\n",
+                options_.audio_exclude_process_id);
+    std::fflush(stdout);
 }
 
 Outcome SenderSession::create_peer(std::unique_ptr<Peer>& out)
@@ -439,7 +469,10 @@ Outcome SenderSession::initialize(const SenderOptions& options)
     }
 
     TL_TRY(open_video());
-    TL_TRY(open_audio());
+    const Outcome audio_opened = open_audio();
+    if (!audio_opened.ok() && !audio_withheld_) {
+        return audio_opened;
+    }
 
     if (!multi_) {
         say_step("preparando a rede");
@@ -637,6 +670,7 @@ void SenderSession::handle_command(const MachineCommand& command)
                 .text("command", "set_audio")
                 .text("status", to_string(switched.status()))
                 .text("message", switched.error().context);
+            announce_audio_withheld();
             return;
         }
         MachineEvent("audio")
@@ -1316,6 +1350,7 @@ Outcome SenderSession::run_multi()
         .integer("height", encoder_info.height);
     start_command_reader(stop_);
     TL_LOG_INFO("emissor: pronto para ate %u espectadores", kMaxSenderPeers);
+    announce_audio_withheld();
 
     if (audio_source_) {
         audio_thread_ = std::thread(&SenderSession::audio_thread_main, this);
@@ -1381,6 +1416,7 @@ Outcome SenderSession::run()
     }
 
     TL_LOG_INFO("emissor: conectado, transmitindo");
+    announce_audio_withheld();
 
     if (audio_source_) {
         audio_thread_ = std::thread(&SenderSession::audio_thread_main, this);

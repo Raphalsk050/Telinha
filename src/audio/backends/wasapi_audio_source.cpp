@@ -22,7 +22,8 @@
 namespace tl::audio {
 namespace {
 
-constexpr std::uint32_t kProcessLoopbackMinimumBuild = 20348;
+// Windows 10 2004. O OBS usa o mesmo piso para capturar o som de um programa.
+constexpr std::uint32_t kProcessLoopbackMinimumBuild = 19041;
 constexpr Nanoseconds kRingCapacityNs = 400 * kNanosecondsPerMillisecond;
 constexpr Nanoseconds kMaxSilenceBurstNs = 200 * kNanosecondsPerMillisecond;
 constexpr std::uint32_t kActivationTimeoutMs = 2000;
@@ -845,11 +846,6 @@ bool describe_endpoint(IMMDevice* device, AudioEndpointInfo& out) noexcept
 }
 
 }  // namespace
-
-bool process_loopback_available() noexcept
-{
-    return windows_build_number() >= kProcessLoopbackMinimumBuild;
-}
 
 Outcome enumerate_capture_endpoints(Span<AudioEndpointInfo> out, std::uint32_t& written,
                                     std::uint32_t& available) noexcept

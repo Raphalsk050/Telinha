@@ -144,8 +144,6 @@ private:
     bool held_ = false;
 };
 
-[[nodiscard]] bool process_loopback_available() noexcept;
-
 [[nodiscard]] Outcome enumerate_capture_endpoints(Span<AudioEndpointInfo> out,
                                                   std::uint32_t& written,
                                                   std::uint32_t& available) noexcept;

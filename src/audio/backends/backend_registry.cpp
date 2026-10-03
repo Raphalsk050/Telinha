@@ -4,11 +4,6 @@ namespace tl::audio {
 
 #if !defined(TELINHA_HAS_AUDIO_BACKENDS)
 
-bool process_loopback_available() noexcept
-{
-    return false;
-}
-
 Outcome enumerate_capture_endpoints(Span<AudioEndpointInfo>, std::uint32_t& written,
                                     std::uint32_t& available) noexcept
 {

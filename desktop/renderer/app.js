@@ -1421,6 +1421,13 @@ function describeQuality(event) {
   return `Qualidade aplicada: ${event.width}×${event.height}, ${fps}, ${bitrate}.`;
 }
 
+// O emissor manda a mensagem quando decidiu sozinho o som, como ao deixar de fora o som do computador.
+function audioFeedback(event) {
+  return event.message
+    ? `Som: ${event.message}.`
+    : `Som da transmissão: ${AUDIO_NAMES[event.scope] ?? event.scope}.`;
+}
+
 function describeCommandFailure(event) {
   switch (event.command) {
     case 'switch_target':
@@ -1513,7 +1520,7 @@ function handleStreamEvent({ source, event }) {
         info.audio = { scope: event.scope, pid: event.pid, device: event.device ?? '' };
         Share.syncStream(streamAudioState(info.target, info.audio));
       }
-      state.roomFeedback = `Som da transmissão: ${AUDIO_NAMES[event.scope] ?? event.scope}.`;
+      state.roomFeedback = audioFeedback(event);
       Share.streamFeedback(state.roomFeedback);
       break;
     case 'command_failed':
@@ -1874,7 +1881,7 @@ function handleManualEvent(event) {
       break;
     case 'audio':
       manual.audio = { scope: event.scope, pid: event.pid, device: event.device ?? '' };
-      manual.feedback = `Som da transmissão: ${AUDIO_NAMES[event.scope] ?? event.scope}.`;
+      manual.feedback = audioFeedback(event);
       Share.streamFeedback(manual.feedback);
       Share.syncStream(streamAudioState(manual.target, manual.audio));
       break;

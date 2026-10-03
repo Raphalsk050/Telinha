@@ -15,7 +15,8 @@ if(WIN32)
         backends/win/graphics_capture_source.cpp
         backends/win/media_foundation_source.cpp
         backends/win/target_enumeration.cpp
-        backends/win/win_capture_common.cpp)
+        backends/win/win_capture_common.cpp
+        backends/win/window_capture_source.cpp)
 endif()
 
 add_library(telinha_capture STATIC ${TELINHA_CAPTURE_SOURCES})
@@ -29,7 +30,7 @@ target_link_libraries(telinha_capture PUBLIC Telinha::Core)
 target_compile_definitions(telinha_capture PRIVATE TELINHA_HAS_PLATFORM_BACKENDS=1)
 
 if(WIN32)
-    target_link_libraries(telinha_capture PRIVATE d3d11 dxgi dxguid user32 shcore dwmapi
+    target_link_libraries(telinha_capture PRIVATE d3d11 dxgi dxguid user32 shell32 shcore dwmapi
         mfplat mf mfreadwrite mfuuid cfgmgr32 ole32)
     if(TELINHA_ENABLE_WGC)
         target_compile_definitions(telinha_capture PRIVATE TELINHA_ENABLE_WGC=1)

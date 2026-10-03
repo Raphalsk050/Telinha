@@ -213,7 +213,7 @@ bool window_is_offerable(HWND window) noexcept
     if (window == nullptr || IsWindow(window) == 0) {
         return false;
     }
-    if (IsWindowVisible(window) == 0 || IsIconic(window) != 0) {
+    if (IsWindowVisible(window) == 0) {
         return false;
     }
     if (GetAncestor(window, GA_ROOT) != window) {
@@ -257,6 +257,15 @@ Outcome describe_window(HWND window, CaptureTargetInfo& out) noexcept
         if (GetWindowRect(window, &bounds) == 0) {
             return fail(Status::NotFound, "GetWindowRect");
         }
+    }
+
+    // A minimized window only reports its taskbar stub, so describe where it restores to.
+    WINDOWPLACEMENT placement = {};
+    placement.length = sizeof(placement);
+    if (IsIconic(window) != 0 && GetWindowPlacement(window, &placement) != 0 &&
+        placement.rcNormalPosition.right > placement.rcNormalPosition.left &&
+        placement.rcNormalPosition.bottom > placement.rcNormalPosition.top) {
+        bounds = placement.rcNormalPosition;
     }
 
     out = CaptureTargetInfo{};

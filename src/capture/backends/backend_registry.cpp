@@ -12,6 +12,7 @@
 #include "win/graphics_capture_source.hpp"
 #include "win/media_foundation_source.hpp"
 #include "win/target_enumeration.hpp"
+#include "win/window_capture_source.hpp"
 #endif
 
 #endif
@@ -165,6 +166,9 @@ Result<std::unique_ptr<CaptureSource>> create_capture_source(const CaptureTarget
             }
             if (!win::graphics_capture_supported()) {
                 return Error{Status::NotSupported, "Windows Graphics Capture is unavailable"};
+            }
+            if (options.backend == CaptureBackend::Automatic) {
+                return win::create_window_capture_source(target, options);
             }
             return win::create_graphics_capture_source(target, options);
 

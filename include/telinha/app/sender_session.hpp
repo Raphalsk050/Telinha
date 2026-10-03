@@ -99,6 +99,7 @@ private:
     [[nodiscard]] Outcome resolve_target(capture::CaptureTargetInfo& out);
     [[nodiscard]] Outcome open_capture();
     [[nodiscard]] Outcome open_encoder(const capture::CaptureSourceInfo& info);
+    void follow_capture_source();
     [[nodiscard]] Outcome open_video();
     [[nodiscard]] Outcome open_audio();
     void announce_audio_withheld() noexcept;
@@ -162,6 +163,8 @@ private:
     std::uint32_t max_height_ = 0;
     std::uint32_t max_bitrate_bps_ = 0;
     std::uint32_t applied_bitrate_bps_ = 0;
+    void* encoder_device_ = nullptr;
+    capture::CaptureBackend encoder_capture_backend_ = capture::CaptureBackend::Automatic;
     Nanoseconds next_frame_ns_ = 0;
     Nanoseconds last_refusal_log_ns_ = 0;
     std::uint32_t encoder_refusals_ = 0;

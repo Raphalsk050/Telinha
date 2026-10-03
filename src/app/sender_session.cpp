@@ -265,6 +265,8 @@ Outcome SenderSession::open_encoder(const capture::CaptureSourceInfo& info)
     encoder_ = std::move(created).value();
     TL_TRY(encoder_->start());
     applied_bitrate_bps_ = config.target_bitrate_bps;
+    encoder_device_ = info.native_device;
+    encoder_capture_backend_ = info.backend;
 
     const encode::VideoEncoderInfo encoder_info = encoder_->info();
     TL_LOG_INFO("emissor: encoder %s %ux%u, regioes sujas %s, intra refresh %s",
@@ -272,6 +274,35 @@ Outcome SenderSession::open_encoder(const capture::CaptureSourceInfo& info)
                 encoder_info.supports_dirty_regions ? "sim" : "nao",
                 encoder_info.supports_intra_refresh ? "sim" : "nao");
     return ok();
+}
+
+// Uma janela em tela cheia exclusiva passa a vir do monitor, por outro dispositivo e noutro
+// tamanho, e o encoder aberto para a janela nao serve mais.
+void SenderSession::follow_capture_source()
+{
+    const capture::CaptureSourceInfo info = pipeline_->info();
+    if (info.native_device == encoder_device_ && info.backend == encoder_capture_backend_) {
+        return;
+    }
+
+    encoder_->stop();
+    encoder_.reset();
+    const Outcome opened = open_encoder(info);
+    if (!opened.ok()) {
+        TL_LOG_ERROR("emissor: nao consegui reabrir o encoder para a nova captura (%s)",
+                     to_string(opened.status()));
+        stop_.store(true, std::memory_order_relaxed);
+        return;
+    }
+
+    if (machine_events_enabled()) {
+        const encode::VideoEncoderInfo encoder_info = encoder_->info();
+        MachineEvent("target")
+            .text("kind", "window")
+            .integer("handle", info.target.handle)
+            .integer("width", encoder_info.width)
+            .integer("height", encoder_info.height);
+    }
 }
 
 Outcome SenderSession::open_video()
@@ -1157,7 +1188,9 @@ void SenderSession::pump_video()
     }
 
     if (!captured.ok()) {
-        if (captured.status() != Status::Timeout) {
+        if (captured.status() == Status::ConfigurationChanged) {
+            follow_capture_source();
+        } else if (captured.status() != Status::Timeout) {
             TL_LOG_WARN("emissor: captura falhou (%s)", to_string(captured.status()));
         }
         return;

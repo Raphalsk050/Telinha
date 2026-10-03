@@ -137,7 +137,8 @@ public:
             return fail(Status::TargetGone, "captured window closed");
         }
         if (IsIconic(window_) != 0) {
-            return fail(Status::Unavailable, "captured window is minimized");
+            Sleep(timeout_ms);
+            return fail(Status::Timeout, "captured window is minimized");
         }
 
         try {
@@ -213,6 +214,10 @@ private:
             }
 
             content_size_ = item_.Size();
+            if (IsIconic(window_) != 0 && description.width != 0 && description.height != 0) {
+                content_size_ = {static_cast<std::int32_t>(description.width),
+                                 static_cast<std::int32_t>(description.height)};
+            }
             if (content_size_.Width <= 0 || content_size_.Height <= 0) {
                 return fail(Status::Unavailable, "captured window has no content yet");
             }

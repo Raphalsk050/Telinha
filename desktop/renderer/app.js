@@ -992,6 +992,7 @@ function renderStage() {
     onPopin: (stream) => api.streamPopin(stream.sharerId),
     onStopWatching: (stream) => unwatch(stream.sharerId),
   });
+  fitTiles();
   el.roomFeedback.textContent = state.roomFeedback;
   el.roomMic.innerHTML = call.micLive ? ICONS.mic : ICONS.micOff;
   el.roomMic.classList.toggle('off', !call.micLive);
@@ -2369,6 +2370,9 @@ const STAGE_HEIGHT_KEY = 'telinha.stageHeight';
 // Mesmo valor de --stage-limit no CSS: o que sobra para o cabecalho, os controles da sala,
 // um pedaco das mensagens e a caixa de texto.
 const STAGE_RESERVED_PX = 340;
+// Mesmo gap de .tiles no CSS, e a largura que da os 120px de altura minima de .tile em 16:9.
+const TILE_GAP_PX = 10;
+const TILE_MIN_WIDTH_PX = 214;
 
 function closeContextMenu() {
   el.contextMenu.hidden = true;
@@ -2609,14 +2613,36 @@ function closeTileViewer() {
   el.tileViewerVideo.srcObject = null;
 }
 
+// Escolhe quantas colunas deixam os quadros maiores sem passar da altura do palco, para que
+// continuem 16:9 e juntos no centro quando a janela muda de tamanho.
+function fitTiles() {
+  const box = el.roomTiles;
+  const count = box.classList.contains('focused') ? 0 : box.children.length;
+  const width = box.clientWidth;
+  const height = parseFloat(getComputedStyle(box).maxHeight);
+  if (!count || !width || Number.isNaN(height)) {
+    return;
+  }
+  let best = 0;
+  for (let columns = 1; columns <= count; columns += 1) {
+    const rows = Math.ceil(count / columns);
+    const byWidth = (width - TILE_GAP_PX * (columns - 1)) / columns;
+    const byHeight = ((height - TILE_GAP_PX * (rows - 1)) / rows) * (16 / 9);
+    best = Math.max(best, Math.min(byWidth, byHeight));
+  }
+  box.style.setProperty('--tile-width', `${Math.floor(Math.max(best, TILE_MIN_WIDTH_PX))}px`);
+}
+
 function applyStageHeight(height) {
   if (!height) {
     el.roomTiles.style.height = '';
     el.roomTiles.style.removeProperty('--stage-cap');
+    fitTiles();
     return;
   }
   el.roomTiles.style.setProperty('--stage-cap', `min(${height}px, var(--stage-limit))`);
   el.roomTiles.style.height = 'var(--stage-cap)';
+  fitTiles();
 }
 
 function bindStageResize() {
@@ -2626,6 +2652,8 @@ function bindStageResize() {
     state.stageHeight = null;
   }
   applyStageHeight(state.stageHeight);
+  window.addEventListener('resize', fitTiles);
+  new ResizeObserver(fitTiles).observe(el.roomTiles);
 
   let startY = 0;
   let startHeight = 0;

@@ -116,6 +116,10 @@ contextBridge.exposeInMainWorld('telinha', {
   copyText: (text) => invoke('clipboard:write', text),
   readClipboard: () => invoke('clipboard:read'),
 
+  updateState: () => invoke('update:state'),
+  restartToUpdate: () => invoke('update:restart'),
+  onUpdate: (listener) => subscribe('update:changed', listener),
+
   onEvent: (listener) => subscribe('telinha:event', listener),
   onLog: (listener) => subscribe('telinha:log', listener),
   onExit: (listener) => subscribe('telinha:exit', listener),

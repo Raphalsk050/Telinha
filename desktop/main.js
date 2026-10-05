@@ -32,6 +32,7 @@ const {
   normalizeCode,
   resolveTelinhaExe,
 } = require('./src/telinha-process');
+const { Updater } = require('./src/updater');
 
 const DM_ROOM = 'dm';
 const AUDIO_SCOPES = new Set(['system', 'process', 'device', 'none']);
@@ -71,6 +72,7 @@ let avatars = null;
 let signaling = null;
 let streams = null;
 let manual = null;
+let updater = null;
 let voice = null;
 let quitting = false;
 let lastLive = false;
@@ -256,6 +258,40 @@ function safeExternalUrl(value) {
   } catch {
     return null;
   }
+}
+
+// So o portatil empacotado se atualiza: PORTABLE_EXECUTABLE_FILE e o arquivo que a pessoa abriu,
+// e e ele que da lugar a versao nova.
+function startUpdater() {
+  const target = process.env.PORTABLE_EXECUTABLE_FILE;
+  if (!app.isPackaged || process.platform !== 'win32' || !target) {
+    return;
+  }
+  updater = new Updater({
+    currentVersion: app.getVersion(),
+    target,
+    appliedFile: path.join(app.getPath('userData'), 'update-applied.txt'),
+  });
+  updater.on('changed', (snapshot) => sendToWindow('update:changed', snapshot));
+  updater.start();
+}
+
+// O empacotado ja traz a versao de version.json. Rodando do codigo ela e lida de la.
+function appVersion() {
+  if (app.isPackaged) {
+    return app.getVersion();
+  }
+  try {
+    return String(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'version.json'), 'utf8')).version);
+  } catch {
+    return app.getVersion();
+  }
+}
+
+function updateView() {
+  return updater
+    ? updater.snapshot()
+    : { status: 'off', version: null, progress: 0, page: null, current: appVersion() };
 }
 
 function profileView() {
@@ -1402,6 +1438,16 @@ function registerIpc() {
     clipboard.writeText(String(text));
   });
   ipcMain.handle('clipboard:read', () => clipboard.readText());
+
+  ipcMain.handle('update:state', () => updateView());
+  ipcMain.handle('update:restart', () => {
+    if (!updater || updater.snapshot().status !== 'ready') {
+      return false;
+    }
+    app.relaunch({ execPath: updater.target, args: [] });
+    app.quit();
+    return true;
+  });
 }
 
 function configurePermissions() {
@@ -1512,6 +1558,7 @@ app.whenReady().then(() => {
   registerIpc();
   createWindow();
   signaling.start();
+  startUpdater();
 });
 
 app.on('before-quit', (event) => {

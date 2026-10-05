@@ -201,6 +201,11 @@ const el = {
   settingsAvatarChange: byId('settings-avatar-change'),
   settingsAvatarRemove: byId('settings-avatar-remove'),
   toast: byId('toast'),
+  settingsVersion: byId('settings-version'),
+  updateNotice: byId('update-notice'),
+  updateText: byId('update-text'),
+  updateAction: byId('update-action'),
+  updateLater: byId('update-later'),
 };
 
 const state = {
@@ -236,6 +241,7 @@ const state = {
   sounds: [],
   avatars: new Map(),
   contactMembers: new Map(),
+  update: null,
 };
 
 let toastTimer = null;
@@ -2442,6 +2448,31 @@ async function saveName() {
   render();
 }
 
+/* versao nova do app */
+
+function handleUpdate(update) {
+  state.update = update;
+  el.settingsVersion.textContent = `Telinha ${update.current}`;
+  const ready = update.status === 'ready';
+  if (!ready && update.status !== 'available') {
+    el.updateNotice.hidden = true;
+    return;
+  }
+  el.updateText.textContent = ready
+    ? `O Telinha ${update.version} já foi baixado. Reinicie para atualizar.`
+    : `O Telinha ${update.version} saiu, mas não deu para atualizar sozinho.`;
+  el.updateAction.textContent = ready ? 'Reiniciar agora' : 'Baixar';
+  el.updateNotice.hidden = false;
+}
+
+function runUpdateAction() {
+  if (state.update && state.update.status === 'ready') {
+    api.restartToUpdate();
+  } else if (state.update && state.update.page) {
+    api.openExternal(state.update.page);
+  }
+}
+
 /* menu de contexto, volumes, foco e tela cheia */
 
 const STAGE_HEIGHT_KEY = 'telinha.stageHeight';
@@ -3516,6 +3547,10 @@ function bindEvents() {
   }
 
   el.settingsClose.addEventListener('click', closeSettings);
+  el.updateAction.addEventListener('click', runUpdateAction);
+  el.updateLater.addEventListener('click', () => {
+    el.updateNotice.hidden = true;
+  });
   el.settingsNameSave.addEventListener('click', saveName);
   el.settingsName.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
@@ -3610,6 +3645,7 @@ function subscribeEvents() {
   api.onIncomingEnded(handleIncomingEnded);
   api.onStreamOffer((payload) => StreamView.handleOffer(payload));
   api.onStreamThumb(handleStreamThumb);
+  api.onUpdate(handleUpdate);
   api.onAvatars(({ memberId, contactId, url }) => {
     if (contactId) {
       state.contactMembers.set(contactId, memberId);
@@ -3670,6 +3706,7 @@ async function init() {
     api.listSounds().then((sounds) => {
       state.sounds = sounds;
     }),
+    api.updateState().then(handleUpdate),
     api.avatarsSnapshot().then((avatarSnapshot) => {
       for (const [memberId, url] of Object.entries(avatarSnapshot.members)) {
         state.avatars.set(memberId, url);

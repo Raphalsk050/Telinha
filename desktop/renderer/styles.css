@@ -1581,6 +1581,25 @@ body.resizing, body.resizing * { cursor: ns-resize !important; user-select: none
   user-select: text;
 }
 
+.update-notice {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 20;
+  max-width: min(520px, calc(100vw - 48px));
+  padding: 10px 12px 10px 16px;
+  border-radius: 6px;
+  background: #111214;
+  color: var(--strong);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+}
+
+.settings-version { margin: 16px 0 0; text-align: right; }
+
 .toast {
   position: fixed;
   left: 50%;

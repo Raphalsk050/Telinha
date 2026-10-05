@@ -118,6 +118,7 @@ contextBridge.exposeInMainWorld('telinha', {
 
   updateState: () => invoke('update:state'),
   restartToUpdate: () => invoke('update:restart'),
+  postponeUpdate: () => invoke('update:postpone'),
   onUpdate: (listener) => subscribe('update:changed', listener),
 
   onEvent: (listener) => subscribe('telinha:event', listener),

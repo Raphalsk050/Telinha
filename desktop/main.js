@@ -52,6 +52,8 @@ const RELAY_ACK_TIMEOUT_MS = 30000;
 const PROGRESS_INTERVAL_MS = 150;
 const COPY_CHUNK_BYTES = 1024 * 1024;
 const MAX_URL_LENGTH = 4096;
+const UPDATE_WATCH_MS = 3000;
+const UPDATE_IDLE_MS = 15000;
 const IMAGE_EXTENSIONS = new Map([
   ['image/png', 'png'],
   ['image/jpeg', 'jpg'],
@@ -73,6 +75,8 @@ let signaling = null;
 let streams = null;
 let manual = null;
 let updater = null;
+let updatePostponed = false;
+let updateIdleSince = 0;
 let voice = null;
 let quitting = false;
 let lastLive = false;
@@ -260,6 +264,35 @@ function safeExternalUrl(value) {
   }
 }
 
+// Trocar o executavel no meio de uma chamada ou transmissao derrubaria tudo.
+function updateBusy() {
+  const snapshot = streams.snapshot();
+  return Boolean(voice || manual || snapshot.outgoing || snapshot.incoming.length > 0);
+}
+
+// O processo pai e o lancador do portatil, que segura o executavel aberto ate o app fechar.
+function restartToUpdate() {
+  if (!updater || !updater.apply({ waitPid: process.ppid, relaunch: true, elevate: true })) {
+    return false;
+  }
+  app.quit();
+  return true;
+}
+
+// Com a versao nova baixada, o app reinicia sozinho assim que fica um tempo sem chamada nem
+// transmissao. "Depois" segura isso ate o app ser fechado.
+function watchUpdate() {
+  if (updatePostponed || updater.snapshot().status !== 'ready' || updateBusy()) {
+    updateIdleSince = 0;
+    return;
+  }
+  if (updateIdleSince === 0) {
+    updateIdleSince = Date.now();
+  } else if (Date.now() - updateIdleSince >= UPDATE_IDLE_MS) {
+    restartToUpdate();
+  }
+}
+
 // So o portatil empacotado se atualiza: PORTABLE_EXECUTABLE_FILE e o arquivo que a pessoa abriu,
 // e e ele que da lugar a versao nova.
 function startUpdater() {
@@ -270,10 +303,12 @@ function startUpdater() {
   updater = new Updater({
     currentVersion: app.getVersion(),
     target,
-    appliedFile: path.join(app.getPath('userData'), 'update-applied.txt'),
+    stageDir: path.join(app.getPath('userData'), 'updates'),
+    helper: telinhaExe(),
   });
   updater.on('changed', (snapshot) => sendToWindow('update:changed', snapshot));
   updater.start();
+  setInterval(watchUpdate, UPDATE_WATCH_MS).unref();
 }
 
 // O empacotado ja traz a versao de version.json. Rodando do codigo ela e lida de la.
@@ -291,7 +326,7 @@ function appVersion() {
 function updateView() {
   return updater
     ? updater.snapshot()
-    : { status: 'off', version: null, progress: 0, page: null, current: appVersion() };
+    : { status: 'off', version: null, progress: 0, current: appVersion() };
 }
 
 function profileView() {
@@ -1440,13 +1475,9 @@ function registerIpc() {
   ipcMain.handle('clipboard:read', () => clipboard.readText());
 
   ipcMain.handle('update:state', () => updateView());
-  ipcMain.handle('update:restart', () => {
-    if (!updater || updater.snapshot().status !== 'ready') {
-      return false;
-    }
-    app.relaunch({ execPath: updater.target, args: [] });
-    app.quit();
-    return true;
+  ipcMain.handle('update:restart', () => restartToUpdate());
+  ipcMain.handle('update:postpone', () => {
+    updatePostponed = true;
   });
 }
 
@@ -1575,6 +1606,14 @@ app.on('before-quit', (event) => {
   fileShare.stopAll();
   Promise.race([signaling.stop(), new Promise((resolve) => setTimeout(resolve, 1500))])
     .finally(() => app.quit());
+});
+
+// Quem fecha o app com uma versao nova ja baixada abre a nova da proxima vez. Aqui nao ha ninguem
+// para responder ao pedido de permissao do Windows, entao a pasta protegida fica para a abertura.
+app.on('will-quit', () => {
+  if (updater) {
+    updater.apply({ waitPid: process.ppid, relaunch: false, elevate: false });
+  }
 });
 
 app.on('window-all-closed', () => app.quit());

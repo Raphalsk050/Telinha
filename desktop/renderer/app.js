@@ -2450,27 +2450,37 @@ async function saveName() {
 
 /* versao nova do app */
 
+const UPDATE_TEXTS = {
+  ready: (version) => `O Telinha ${version} está pronto. O app reinicia sozinho quando você não estiver em chamada.`,
+  blocked: (version) => `Faltou a permissão do Windows para trocar o Telinha pelo ${version}.`,
+};
+const UPDATE_ACTIONS = { ready: 'Reiniciar agora', blocked: 'Tentar de novo' };
+
 function handleUpdate(update) {
+  const previous = state.update;
   state.update = update;
   el.settingsVersion.textContent = `Telinha ${update.current}`;
-  const ready = update.status === 'ready';
-  if (!ready && update.status !== 'available') {
+  if (update.status === 'downloading') {
+    el.updateText.textContent = `Baixando o Telinha ${update.version}… ${Math.floor(update.progress * 100)}%`;
+    el.updateAction.hidden = true;
+    el.updateLater.hidden = true;
+    el.updateNotice.hidden = false;
+    return;
+  }
+  const text = UPDATE_TEXTS[update.status];
+  if (!text) {
     el.updateNotice.hidden = true;
     return;
   }
-  el.updateText.textContent = ready
-    ? `O Telinha ${update.version} já foi baixado. Reinicie para atualizar.`
-    : `O Telinha ${update.version} saiu, mas não deu para atualizar sozinho.`;
-  el.updateAction.textContent = ready ? 'Reiniciar agora' : 'Baixar';
-  el.updateNotice.hidden = false;
-}
-
-function runUpdateAction() {
-  if (state.update && state.update.status === 'ready') {
-    api.restartToUpdate();
-  } else if (state.update && state.update.page) {
-    api.openExternal(state.update.page);
+  // "Depois" vale ate o aviso mudar de assunto.
+  if (previous && previous.status === update.status && previous.version === update.version) {
+    return;
   }
+  el.updateText.textContent = text(update.version);
+  el.updateAction.textContent = UPDATE_ACTIONS[update.status];
+  el.updateAction.hidden = false;
+  el.updateLater.hidden = false;
+  el.updateNotice.hidden = false;
 }
 
 /* menu de contexto, volumes, foco e tela cheia */
@@ -3547,9 +3557,10 @@ function bindEvents() {
   }
 
   el.settingsClose.addEventListener('click', closeSettings);
-  el.updateAction.addEventListener('click', runUpdateAction);
+  el.updateAction.addEventListener('click', () => api.restartToUpdate());
   el.updateLater.addEventListener('click', () => {
     el.updateNotice.hidden = true;
+    api.postponeUpdate();
   });
   el.settingsNameSave.addEventListener('click', saveName);
   el.settingsName.addEventListener('keydown', (event) => {

@@ -2,23 +2,31 @@
 
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
+const { spawn } = require('node:child_process');
 
 const REPOSITORY = 'Raphalsk050/Telinha';
-const RELEASE_URL = `https://api.github.com/repos/${REPOSITORY}/releases/latest`;
-const RELEASE_PAGE_PREFIX = `https://github.com/${REPOSITORY}/releases/`;
-const DOWNLOAD_PREFIX = `${RELEASE_PAGE_PREFIX}download/`;
+const RELEASE_API = `https://api.github.com/repos/${REPOSITORY}/releases/latest`;
+const RELEASE_PAGE = `https://github.com/${REPOSITORY}/releases/latest`;
+const DOWNLOAD_PREFIX = `https://github.com/${REPOSITORY}/releases/download/`;
 const ASSET_NAME = 'Telinha.exe';
 const USER_AGENT = 'Telinha-Updater';
 const FIRST_CHECK_MS = 10 * 1000;
-const CHECK_INTERVAL_MS = 2 * 60 * 60 * 1000;
-const API_TIMEOUT_MS = 15000;
+const CHECK_INTERVAL_MS = 60 * 1000;
+const RETRY_AFTER_FAILURE_MS = 10 * 60 * 1000;
+const REQUEST_TIMEOUT_MS = 15000;
 const STALL_TIMEOUT_MS = 60000;
 const MAX_BYTES = 1024 * 1024 * 1024;
 const VERSION_PATTERN = /^v?(\d+)\.(\d+)\.(\d+)$/;
+const TAG_LOCATION_PATTERN = /\/releases\/tag\/(v?\d+\.\d+\.\d+)$/;
 const DIGEST_PATTERN = /^sha256:([a-f0-9]{64})$/;
+const STAGED_PATTERN = /^Telinha-(\d+\.\d+\.\d+)\.exe$/;
+const APPLIED_FILE = 'applied.txt';
+const FAILED_FILE = 'failed.txt';
+const HELPER_NAME = 'telinha-helper.exe';
 
 function parseVersion(text) {
   const match = VERSION_PATTERN.exec(String(text ?? '').trim());
@@ -40,7 +48,6 @@ function pickUpdate(release, currentVersion) {
   if (!current || !version || release.draft || release.prerelease || !isNewer(version, current)) {
     return null;
   }
-  const label = version.join('.');
   const assets = Array.isArray(release.assets) ? release.assets : [];
   const asset = assets.find((item) => item && item.name === ASSET_NAME);
   const url = String(asset?.browser_download_url ?? '');
@@ -48,20 +55,15 @@ function pickUpdate(release, currentVersion) {
     || asset.size <= 0 || asset.size > MAX_BYTES) {
     return null;
   }
-  const page = String(release.html_url ?? '');
   return {
-    version: label,
+    version: version.join('.'),
     url,
     size: asset.size,
     sha256: DIGEST_PATTERN.exec(String(asset.digest ?? ''))?.[1] ?? null,
-    page: page.startsWith(RELEASE_PAGE_PREFIX) ? page : `${RELEASE_PAGE_PREFIX}latest`,
   };
 }
 
 async function download(update, destination, { fetchImpl, onProgress }) {
-  // Abrir o arquivo antes mostra logo se a pasta do app nao deixa escrever.
-  fs.closeSync(fs.openSync(destination, 'w'));
-
   const controller = new AbortController();
   const stall = setTimeout(() => controller.abort(), STALL_TIMEOUT_MS);
   const hash = crypto.createHash('sha256');
@@ -98,29 +100,52 @@ async function download(update, destination, { fetchImpl, onProgress }) {
   }
 }
 
-// O Windows nao deixa escrever por cima de um executavel aberto, mas deixa trocar o nome dele.
-// O antigo sai do caminho e o novo assume o lugar, entao atalhos continuam valendo.
-function swapIn(target, downloaded) {
-  const old = `${target}.old`;
-  fs.rmSync(old, { force: true });
-  fs.renameSync(target, old);
-  try {
-    fs.renameSync(downloaded, target);
-  } catch (error) {
-    fs.renameSync(old, target);
-    throw error;
-  }
+// Quem troca o executavel e o proprio telinha.exe, no modo apply-update (tools/telinha), depois
+// que o app fecha. Ele roda de uma copia em stageDir porque o original mora na pasta temporaria
+// que o portatil apaga ao sair, e "detached" tira ele do grupo que o Node mata junto com o app.
+function applyStaged({
+  helper, source, target, version, waitPid, appliedFile, failedFile, relaunch, elevate,
+}) {
+  const runner = path.join(path.dirname(source), HELPER_NAME);
+  fs.copyFileSync(helper, runner);
+  const child = spawn(runner, ['apply-update'], {
+    cwd: path.dirname(source),
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+    env: {
+      ...process.env,
+      TELINHA_UPDATE_SOURCE: source,
+      TELINHA_UPDATE_TARGET: target,
+      TELINHA_UPDATE_VERSION: version,
+      TELINHA_UPDATE_PID: String(waitPid),
+      TELINHA_UPDATE_APPLIED: appliedFile,
+      TELINHA_UPDATE_FAILED: failedFile,
+      TELINHA_UPDATE_RELAUNCH: relaunch ? '1' : '0',
+      TELINHA_UPDATE_ELEVATE: elevate ? '1' : '0',
+    },
+  });
+  child.unref();
+  return child;
 }
 
+// A versao nova e baixada para stageDir e fica "ready". Trocar o executavel so da depois que o
+// app fecha, entao quem chama apply() fecha o app em seguida.
 class Updater extends EventEmitter {
-  constructor({ currentVersion, target, appliedFile = null, fetchImpl = fetch }) {
+  constructor({
+    currentVersion, target, stageDir, helper, fetchImpl = fetch, apply = applyStaged,
+  }) {
     super();
     this.currentVersion = currentVersion;
     this.target = target;
-    this.appliedFile = appliedFile;
+    this.stageDir = stageDir;
+    this.helper = helper;
     this.fetchImpl = fetchImpl;
-    this.state = { status: 'idle', version: null, progress: 0, page: null };
+    this.applyImpl = apply;
+    this.state = { status: 'idle', version: null, progress: 0 };
     this.busy = false;
+    this.applying = false;
+    this.retryAt = 0;
     this.timers = [];
   }
 
@@ -144,37 +169,38 @@ class Updater extends EventEmitter {
     this.timers = [];
   }
 
-  removeLeftovers() {
-    for (const leftover of [`${this.target}.old`, `${this.target}.download`]) {
-      try {
-        fs.rmSync(leftover, { force: true });
-      } catch {
-        // o executavel antigo ainda pode estar fechando, a proxima abertura apaga
-      }
-    }
+  stagedFile(version) {
+    return path.join(this.stageDir, `Telinha-${version}.exe`);
   }
 
-  // Uma release publicada sem subir a versao do app traria um executavel que continua dizendo a
-  // versao antiga. Sem lembrar o que ja foi trocado, ele seria baixado de novo a cada abertura.
-  alreadyApplied(version) {
-    if (!this.appliedFile) {
-      return false;
-    }
+  readMark(name) {
     try {
-      return fs.readFileSync(this.appliedFile, 'utf8').trim() === version;
+      return fs.readFileSync(path.join(this.stageDir, name), 'utf8').trim();
     } catch {
-      return false;
+      return '';
     }
   }
 
-  rememberApplied(version) {
-    if (!this.appliedFile) {
+  // Sobra de download interrompido e versao baixada que ja nao e mais nova que a aberta.
+  removeLeftovers() {
+    const current = parseVersion(this.currentVersion);
+    let names = [];
+    try {
+      fs.mkdirSync(this.stageDir, { recursive: true });
+      names = fs.readdirSync(this.stageDir);
+    } catch {
       return;
     }
-    try {
-      fs.writeFileSync(this.appliedFile, version);
-    } catch {
-      // sem a anotacao, o pior caso e baixar a mesma versao mais uma vez
+    for (const name of names) {
+      const staged = STAGED_PATTERN.exec(name);
+      const stale = staged && current && !isNewer(parseVersion(staged[1]), current);
+      if (name.endsWith('.part') || name === HELPER_NAME || stale) {
+        try {
+          fs.rmSync(path.join(this.stageDir, name), { force: true });
+        } catch {
+          // fica para a proxima abertura
+        }
+      }
     }
   }
 
@@ -183,14 +209,24 @@ class Updater extends EventEmitter {
     this.emit('changed', this.snapshot());
   }
 
-  async latest() {
-    const response = await this.fetchImpl(RELEASE_URL, {
-      signal: AbortSignal.timeout(API_TIMEOUT_MS),
+  // O redirecionamento da pagina da ultima release diz a tag sem gastar o limite por hora da API,
+  // entao da para conferir a cada minuto.
+  async latestVersion() {
+    const response = await this.fetchImpl(RELEASE_PAGE, {
+      method: 'HEAD',
+      redirect: 'manual',
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      headers: { 'user-agent': USER_AGENT },
+    });
+    const tag = TAG_LOCATION_PATTERN.exec(String(response.headers.get('location') ?? ''));
+    return tag ? parseVersion(tag[1]) : null;
+  }
+
+  async describe() {
+    const response = await this.fetchImpl(RELEASE_API, {
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       headers: { 'user-agent': USER_AGENT, accept: 'application/vnd.github+json' },
     });
-    if (response.status === 404) {
-      return null;
-    }
     if (!response.ok) {
       throw new Error(`o GitHub respondeu ${response.status}`);
     }
@@ -198,48 +234,95 @@ class Updater extends EventEmitter {
   }
 
   async check() {
-    if (this.busy || this.state.status === 'ready') {
+    if (this.busy || this.applying || this.state.status === 'ready' || Date.now() < this.retryAt) {
       return;
     }
     this.busy = true;
-    let update = null;
     try {
-      update = await this.latest();
-      if (update && this.alreadyApplied(update.version)) {
-        update = null;
-      }
-      if (!update) {
+      const latest = await this.latestVersion();
+      const current = parseVersion(this.currentVersion);
+      if (!latest || !current || !isNewer(latest, current)) {
         return;
       }
-      const partial = `${this.target}.download`;
-      let shown = -1;
-      this.set({ status: 'downloading', version: update.version, progress: 0, page: update.page });
-      await download(update, partial, {
-        fetchImpl: this.fetchImpl,
-        onProgress: (progress) => {
-          const percent = Math.floor(progress * 100);
-          if (percent !== shown) {
-            shown = percent;
-            this.set({ progress });
-          }
-        },
+      const version = latest.join('.');
+      // Uma release publicada sem subir a versao traria um executavel que continua dizendo a
+      // versao antiga, e ele seria baixado e trocado de novo sem parar.
+      if (this.readMark(APPLIED_FILE) === version) {
+        return;
+      }
+      if (!fs.existsSync(this.stagedFile(version))) {
+        await this.fetchRelease(version);
+      }
+      this.set({
+        status: this.readMark(FAILED_FILE) === version ? 'blocked' : 'ready', version, progress: 1,
       });
-      swapIn(this.target, partial);
-      this.rememberApplied(update.version);
-      this.set({ status: 'ready', progress: 1 });
     } catch (error) {
-      // Com a versao nova conhecida mas sem conseguir trocar o arquivo, o app avisa e a pessoa
-      // baixa pela pagina da release.
-      this.set(update
-        ? { status: 'available', progress: 0 }
-        : { status: 'idle', version: null, progress: 0, page: null });
+      this.retryAt = Date.now() + RETRY_AFTER_FAILURE_MS;
+      this.set({ status: 'idle', version: null, progress: 0 });
       this.emit('failed', error);
     } finally {
       this.busy = false;
     }
   }
+
+  async fetchRelease(version) {
+    const update = await this.describe();
+    if (!update || update.version !== version) {
+      throw new Error('a release mudou no meio da conferida');
+    }
+    const partial = `${this.stagedFile(version)}.part`;
+    let shown = -1;
+    this.set({ status: 'downloading', version, progress: 0 });
+    await download(update, partial, {
+      fetchImpl: this.fetchImpl,
+      onProgress: (progress) => {
+        const percent = Math.floor(progress * 100);
+        if (percent !== shown) {
+          shown = percent;
+          this.set({ progress });
+        }
+      },
+    });
+    fs.renameSync(partial, this.stagedFile(version));
+  }
+
+  // relaunch abre o app de novo depois da troca. elevate deixa pedir a permissao do Windows quando
+  // a pasta do executavel e protegida, e so faz sentido com a pessoa na frente do computador.
+  apply({ waitPid, relaunch, elevate }) {
+    const { status, version } = this.state;
+    // Depois de uma permissao negada, so uma tentativa com a pessoa presente vale a pena.
+    if (this.applying || (status !== 'ready' && !(status === 'blocked' && elevate))) {
+      return false;
+    }
+    if (elevate) {
+      try {
+        fs.rmSync(path.join(this.stageDir, FAILED_FILE), { force: true });
+      } catch {
+        // a troca nova escreve por cima se falhar de novo
+      }
+    }
+    try {
+      this.applyImpl({
+        helper: this.helper,
+        source: this.stagedFile(version),
+        target: this.target,
+        version,
+        waitPid,
+        appliedFile: path.join(this.stageDir, APPLIED_FILE),
+        failedFile: path.join(this.stageDir, FAILED_FILE),
+        relaunch,
+        elevate,
+      });
+    } catch (error) {
+      // sem ajudante o app segue aberto na versao atual
+      this.emit('failed', error);
+      return false;
+    }
+    this.applying = true;
+    return true;
+  }
 }
 
 module.exports = {
-  Updater, isNewer, parseVersion, pickUpdate, swapIn,
+  Updater, applyStaged, isNewer, parseVersion, pickUpdate,
 };

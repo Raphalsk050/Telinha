@@ -5,7 +5,8 @@ target_link_libraries(telinha PRIVATE Telinha::App)
 set_target_properties(telinha PROPERTIES OUTPUT_NAME telinha)
 
 if(WIN32)
-    target_link_libraries(telinha PRIVATE winmm dbghelp)
+    target_sources(telinha PRIVATE apply_update.cpp)
+    target_link_libraries(telinha PRIVATE winmm dbghelp shell32)
 endif()
 
 telinha_apply_target_defaults(telinha)

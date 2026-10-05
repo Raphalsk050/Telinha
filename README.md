@@ -65,6 +65,9 @@ above the last release, and every CI job green, tags it and publishes a GitHub
 release with `Telinha.exe` and those notes. New notes under an unchanged
 version just wait.
 
-The portable app checks the latest release on start and every two hours,
-downloads a newer one in the background, swaps it in place of the file it was
-opened from, and asks to restart.
+The portable app looks for a newer release every minute and downloads it to
+its data folder. Once no call or share is running it closes, `telinha.exe
+apply-update` copies the download over the file the app was opened from, and
+the app reopens. In a protected folder such as `C:\` that copy needs the
+Windows permission prompt. Closing the app with a download waiting applies it
+too.

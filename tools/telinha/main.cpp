@@ -26,6 +26,8 @@
 #include <dbghelp.h>
 #include <shellapi.h>
 #include <timeapi.h>
+
+#include "apply_update.hpp"
 #endif
 
 namespace {
@@ -448,6 +450,9 @@ int main(int argc, char** argv)
 
 #if TL_PLATFORM_WINDOWS
     SetUnhandledExceptionFilter(report_fatal_exception);
+    if (argc == 2 && std::strcmp(argv[1], "apply-update") == 0) {
+        return apply_update();
+    }
     timeBeginPeriod(1);
 #endif
 

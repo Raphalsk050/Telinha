@@ -7,6 +7,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Telinha</title>
   <link rel="stylesheet" href="styles.css">
+  <script src="appearance.js"></script>
 </head>
 <body>
   <div class="app">
@@ -462,6 +463,57 @@
           <p id="settings-camera-status" class="muted small"></p>
         </div>
       </div>
+
+      <h4 class="section-title">Tema</h4>
+      <div class="theme-swatches" role="radiogroup" aria-label="Tema">
+        <label class="theme-swatch"><input type="radio" name="appearance-theme" value="light"><span class="theme-dot light"></span><span>Claro</span></label>
+        <label class="theme-swatch"><input type="radio" name="appearance-theme" value="ash"><span class="theme-dot ash"></span><span>Cinza</span></label>
+        <label class="theme-swatch"><input type="radio" name="appearance-theme" value="dark"><span class="theme-dot dark"></span><span>Escuro</span></label>
+        <label class="theme-swatch"><input type="radio" name="appearance-theme" value="onyx"><span class="theme-dot onyx"></span><span>Ônix</span></label>
+        <label class="theme-swatch"><input type="radio" name="appearance-theme" value="system"><span class="theme-dot system"></span><span>Igual ao computador</span></label>
+      </div>
+      <label id="appearance-dark-sidebar-row" class="check appearance-check"><input id="appearance-dark-sidebar" type="checkbox"><span>Manter a barra lateral escura no tema claro</span></label>
+
+      <h4 class="section-title">Temas coloridos</h4>
+      <div id="appearance-color-themes" class="theme-swatches" role="radiogroup" aria-label="Temas coloridos">
+        <label class="theme-swatch"><input type="radio" name="appearance-theme" value="custom"><span id="appearance-custom-dot" class="theme-dot"></span><span>Personalizado</span></label>
+      </div>
+      <div id="appearance-custom" class="custom-theme" hidden>
+        <div class="segmented" role="radiogroup" aria-label="Base do tema">
+          <label><input type="radio" name="appearance-custom-base" value="dark"><span>Base escura</span></label>
+          <label><input type="radio" name="appearance-custom-base" value="light"><span>Base clara</span></label>
+        </div>
+        <div class="custom-colors-row">
+          <div id="appearance-custom-colors" class="custom-colors"></div>
+          <button id="appearance-custom-add" class="button small" type="button">Adicionar cor</button>
+          <button id="appearance-custom-surprise" class="button small" type="button">Me surpreenda</button>
+        </div>
+        <label id="appearance-custom-angle-row" class="slider-field"><span>Direção do degradê</span><output id="appearance-custom-angle-value"></output>
+          <input id="appearance-custom-angle" type="range" min="0" max="360" step="5"></label>
+        <label class="slider-field"><span>Intensidade das cores</span><output id="appearance-custom-intensity-value"></output>
+          <input id="appearance-custom-intensity" type="range" min="0" max="100" step="5"></label>
+      </div>
+      <label id="appearance-motion-row" class="check appearance-check"><input id="appearance-motion" type="checkbox"><span>Degradê em movimento</span></label>
+
+      <h4 class="section-title">Densidade da interface</h4>
+      <div class="segmented" role="radiogroup" aria-label="Densidade da interface">
+        <label><input type="radio" name="appearance-density" value="compact"><span>Compacta</span></label>
+        <label><input type="radio" name="appearance-density" value="default"><span>Padrão</span></label>
+        <label><input type="radio" name="appearance-density" value="spacious"><span>Espaçosa</span></label>
+      </div>
+
+      <h4 class="section-title">Mensagens</h4>
+      <div class="segmented" role="radiogroup" aria-label="Exibição das mensagens">
+        <label><input type="radio" name="appearance-messages" value="cozy"><span>Confortável</span></label>
+        <label><input type="radio" name="appearance-messages" value="compact"><span>Compacta</span></label>
+      </div>
+      <label class="slider-field"><span>Tamanho da fonte do chat</span><output id="appearance-chat-font-value"></output>
+        <input id="appearance-chat-font" type="range" min="12" max="24" step="0.5"></label>
+      <label class="slider-field"><span>Espaço entre grupos de mensagens</span><output id="appearance-message-gap-value"></output>
+        <input id="appearance-message-gap" type="range" min="0" max="24" step="4"></label>
+      <label class="slider-field"><span>Zoom</span><output id="appearance-zoom-value"></output>
+        <input id="appearance-zoom" type="range" min="50" max="200" step="10"></label>
+      <button id="appearance-reset" class="button small appearance-reset" type="button">Voltar a aparência ao padrão</button>
 
       <p id="settings-version" class="muted small settings-version"></p>
     </div>

@@ -52,6 +52,8 @@ const RELAY_ACK_TIMEOUT_MS = 30000;
 const PROGRESS_INTERVAL_MS = 150;
 const COPY_CHUNK_BYTES = 1024 * 1024;
 const MAX_URL_LENGTH = 4096;
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 2;
 const UPDATE_WATCH_MS = 3000;
 const UPDATE_IDLE_MS = 15000;
 const IMAGE_EXTENSIONS = new Map([
@@ -1474,6 +1476,12 @@ function registerIpc() {
   });
   ipcMain.handle('clipboard:read', () => clipboard.readText());
 
+  ipcMain.handle('app:set-zoom', (_event, factor) => {
+    const value = Number(factor);
+    if (mainWindow && !mainWindow.isDestroyed() && Number.isFinite(value)) {
+      mainWindow.webContents.setZoomFactor(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value)));
+    }
+  });
   ipcMain.handle('update:state', () => updateView());
   ipcMain.handle('update:restart', () => restartToUpdate());
   ipcMain.handle('update:postpone', () => {

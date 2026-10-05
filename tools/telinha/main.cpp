@@ -1,5 +1,6 @@
 #include <csignal>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -22,6 +23,7 @@
 #if TL_PLATFORM_WINDOWS
 #include <windows.h>
 
+#include <dbghelp.h>
 #include <shellapi.h>
 #include <timeapi.h>
 #endif
@@ -36,6 +38,54 @@ extern "C" void handle_interrupt(int) noexcept
 }
 
 #if TL_PLATFORM_WINDOWS
+// O app abre este processo com os avisos de erro do Windows desligados, entao uma falha fatal nao
+// deixava rastro nenhum. Aqui ela vira uma linha no log e um despejo para abrir no depurador.
+LONG WINAPI report_fatal_exception(EXCEPTION_POINTERS* info) noexcept
+{
+    const void* const address = info->ExceptionRecord->ExceptionAddress;
+    char module_path[MAX_PATH] = "?";
+    HMODULE module = nullptr;
+    if (GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            static_cast<LPCSTR>(address), &module) != 0) {
+        GetModuleFileNameA(module, module_path, MAX_PATH);
+    }
+    const char* const slash = std::strrchr(module_path, '\\');
+    const auto offset = static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(address) -
+                                                        reinterpret_cast<std::uintptr_t>(module));
+
+    char dump_path[MAX_PATH] = "";
+    char base[MAX_PATH] = "";
+    const DWORD base_length = GetEnvironmentVariableA("LOCALAPPDATA", base, MAX_PATH);
+    if (base_length > 0 && base_length < MAX_PATH - 48) {
+        char folder[MAX_PATH] = "";
+        std::snprintf(folder, sizeof(folder), "%s\\Telinha", base);
+        CreateDirectoryA(folder, nullptr);
+        std::snprintf(folder, sizeof(folder), "%s\\Telinha\\crashes", base);
+        CreateDirectoryA(folder, nullptr);
+        std::snprintf(dump_path, sizeof(dump_path), "%s\\telinha-last.dmp", folder);
+
+        const HANDLE file = CreateFileA(dump_path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                                        FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file != INVALID_HANDLE_VALUE) {
+            MINIDUMP_EXCEPTION_INFORMATION exception = {};
+            exception.ThreadId = GetCurrentThreadId();
+            exception.ExceptionPointers = info;
+            MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), file, MiniDumpNormal,
+                              &exception, nullptr, nullptr);
+            CloseHandle(file);
+        } else {
+            dump_path[0] = 0;
+        }
+    }
+
+    std::fprintf(stderr, "telinha: falha fatal 0x%08lX em %s+0x%llX, despejo em %s\n",
+                 info->ExceptionRecord->ExceptionCode, slash != nullptr ? slash + 1 : module_path,
+                 offset, dump_path[0] != 0 ? dump_path : "lugar nenhum");
+    std::fflush(stderr);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
 bool launched_from_explorer() noexcept
 {
     DWORD owners[4] = {};
@@ -397,6 +447,7 @@ int main(int argc, char** argv)
 #endif
 
 #if TL_PLATFORM_WINDOWS
+    SetUnhandledExceptionFilter(report_fatal_exception);
     timeBeginPeriod(1);
 #endif
 

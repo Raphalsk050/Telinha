@@ -263,7 +263,19 @@ void D3D11TextureRing::destroy() noexcept
             }
         }
     }
-    device_ = nullptr;
+    device_.Reset();
+}
+
+void D3D11TextureRing::rebind(ID3D11Device* device) noexcept
+{
+    if (textures_ == nullptr) {
+        return;
+    }
+    for (std::uint32_t i = 0; i < policy_.capacity(); ++i) {
+        retire(i);
+    }
+    policy_.forget_textures();
+    device_ = device;
 }
 
 void D3D11TextureRing::set_layout(const SurfaceLayout& layout) noexcept

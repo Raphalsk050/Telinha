@@ -27,6 +27,7 @@ public:
 
 private:
     void resolve_layout_from_monitor() noexcept;
+    [[nodiscard]] Outcome replace_device() noexcept;
     [[nodiscard]] Outcome create_duplication() noexcept;
     void destroy_duplication() noexcept;
     [[nodiscard]] Outcome adopt_duplication_layout(bool& layout_changed) noexcept;

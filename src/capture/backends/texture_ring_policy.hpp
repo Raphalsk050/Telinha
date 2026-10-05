@@ -69,6 +69,8 @@ public:
 
     [[nodiscard]] TextureLease lease() noexcept;
     void mark_created(TextureHandle handle) noexcept;
+    // Every slot asks for a new texture on its next lease, as after the device was replaced.
+    void forget_textures() noexcept;
     [[nodiscard]] bool give_back(TextureHandle handle) noexcept;
 
     [[nodiscard]] bool leased(TextureHandle handle) const noexcept;

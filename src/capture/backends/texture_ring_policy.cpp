@@ -89,6 +89,13 @@ void TextureRingPolicy::mark_created(TextureHandle handle) noexcept
     ++statistics_.creations;
 }
 
+void TextureRingPolicy::forget_textures() noexcept
+{
+    for (std::uint32_t i = 0; i < capacity_; ++i) {
+        slots_[i].has_texture = false;
+    }
+}
+
 bool TextureRingPolicy::give_back(TextureHandle handle) noexcept
 {
     if (!leased(handle)) {

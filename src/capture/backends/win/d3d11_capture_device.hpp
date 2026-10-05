@@ -53,6 +53,8 @@ public:
     [[nodiscard]] Outcome initialize(LinearArena& arena, ID3D11Device* device,
                                      std::uint32_t capacity) noexcept;
     void destroy() noexcept;
+    // Drops every texture and creates the next ones on this device.
+    void rebind(ID3D11Device* device) noexcept;
 
     void set_layout(const SurfaceLayout& layout) noexcept;
     [[nodiscard]] const SurfaceLayout& layout() const noexcept { return policy_.layout(); }
@@ -65,7 +67,7 @@ public:
 private:
     void retire(std::uint32_t slot) noexcept;
 
-    ID3D11Device* device_ = nullptr;
+    ComPtr<ID3D11Device> device_;
     ID3D11Texture2D** textures_ = nullptr;
     TextureRingPolicy policy_;
 };

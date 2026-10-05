@@ -20,6 +20,8 @@ constexpr std::uint32_t kMaxBitrateKbps = 4'000'000;
 constexpr std::uint32_t kEncoderFullWaitMs = 50;
 constexpr std::uint32_t kMaxPacketsPerDrain = 32;
 constexpr std::uint32_t kExcludeAttempts = 3;
+constexpr std::uint32_t kEncoderReopenAttempts = 20;
+constexpr Nanoseconds kEncoderReopenRetryNs = 150 * kNanosecondsPerMillisecond;
 constexpr Nanoseconds kExcludeRetryNs = 300 * kNanosecondsPerMillisecond;
 constexpr const char* kAudioWithheldMessage =
     "nao deu para tirar o som do Telinha da captura, entao a transmissao segue sem o som do "
@@ -30,6 +32,15 @@ constexpr const char* kAudioLeakMessage =
 void sleep_ns(Nanoseconds duration) noexcept
 {
     std::this_thread::sleep_for(std::chrono::nanoseconds(duration));
+}
+
+const char* to_machine_kind(capture::CaptureTargetKind kind) noexcept
+{
+    switch (kind) {
+        case capture::CaptureTargetKind::Window: return "window";
+        case capture::CaptureTargetKind::Device: return "device";
+        default: return "monitor";
+    }
 }
 
 void say_step(const char* text) noexcept
@@ -279,8 +290,9 @@ Outcome SenderSession::open_encoder(const capture::CaptureSourceInfo& info)
     return ok();
 }
 
-// Uma janela em tela cheia exclusiva passa a vir do monitor, por outro dispositivo e noutro
-// tamanho, e o encoder aberto para a janela nao serve mais.
+// A captura passa a vir de outro dispositivo quando uma janela entra em tela cheia exclusiva e
+// quando o Windows troca o modo da tela, como no alt+tab de um jogo. O encoder aberto para o
+// dispositivo antigo nao serve mais.
 void SenderSession::follow_capture_source()
 {
     const capture::CaptureSourceInfo info = pipeline_->info();
@@ -290,10 +302,25 @@ void SenderSession::follow_capture_source()
 
     encoder_->stop();
     encoder_.reset();
-    const Outcome opened = open_encoder(info);
+    // Logo depois da troca de modo a placa de video as vezes ainda recusa um encoder novo.
+    Outcome opened = open_encoder(info);
+    for (std::uint32_t attempt = 1;
+         !opened.ok() && attempt < kEncoderReopenAttempts && !stop_.load(std::memory_order_relaxed);
+         ++attempt) {
+        encoder_.reset();
+        sleep_ns(kEncoderReopenRetryNs);
+        opened = open_encoder(pipeline_->info());
+    }
     if (!opened.ok()) {
+        encoder_.reset();
         TL_LOG_ERROR("emissor: nao consegui reabrir o encoder para a nova captura (%s)",
                      to_string(opened.status()));
+        if (machine_events_enabled()) {
+            MachineEvent("error")
+                .text("stage", "encoder")
+                .text("status", to_string(opened.status()))
+                .text("message", "a tela mudou e nao deu para reabrir o encoder de video");
+        }
         stop_.store(true, std::memory_order_relaxed);
         return;
     }
@@ -301,7 +328,7 @@ void SenderSession::follow_capture_source()
     if (machine_events_enabled()) {
         const encode::VideoEncoderInfo encoder_info = encoder_->info();
         MachineEvent("target")
-            .text("kind", "window")
+            .text("kind", to_machine_kind(info.target.kind))
             .integer("handle", info.target.handle)
             .integer("width", encoder_info.width)
             .integer("height", encoder_info.height);
@@ -1214,11 +1241,20 @@ void SenderSession::pump_video()
     }
 
     if (!captured.ok()) {
-        if (captured.status() == Status::ConfigurationChanged) {
+        if (captured.status() == Status::ConfigurationChanged ||
+            captured.status() == Status::DeviceLost) {
             follow_capture_source();
         } else if (captured.status() != Status::Timeout) {
             TL_LOG_WARN("emissor: captura falhou (%s)", to_string(captured.status()));
         }
+        return;
+    }
+
+    // A captura pode voltar de uma falha ja em outro dispositivo, sem ter avisado da troca.
+    if (pipeline_->info().native_device != encoder_device_) {
+        pipeline_->keep_dirty();
+        pipeline_->release();
+        follow_capture_source();
         return;
     }
 
@@ -1385,6 +1421,9 @@ void SenderSession::report(Nanoseconds local_now_ns)
         loss = network.loss_ratio();
     }
 
+    if (!encoder_) {
+        return;
+    }
     if (machine_events_enabled()) {
         const encode::VideoEncoderInfo encoder_info = encoder_->info();
         MachineEvent event("stats");

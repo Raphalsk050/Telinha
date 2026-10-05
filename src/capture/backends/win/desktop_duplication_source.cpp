@@ -182,12 +182,23 @@ void DesktopDuplicationSource::destroy_duplication() noexcept
     duplication_.Reset();
 }
 
+// The frames handed out live in the ring, and a texture from the old device cannot receive a copy
+// on the new one.
+Outcome DesktopDuplicationSource::replace_device() noexcept
+{
+    forget_desktop();
+    ring_.rebind(nullptr);
+    TL_TRY(device_.create_for_monitor(monitor_));
+    ring_.rebind(device_.device());
+    return ok();
+}
+
 Outcome DesktopDuplicationSource::create_duplication() noexcept
 {
     destroy_duplication();
 
     if (!device_.valid() || device_.output() == nullptr) {
-        TL_TRY(device_.create_for_monitor(monitor_));
+        TL_TRY(replace_device());
     }
 
     HRESULT hr = device_.output()->DuplicateOutput(device_.device(), &duplication_);
@@ -196,7 +207,7 @@ Outcome DesktopDuplicationSource::create_duplication() noexcept
                     static_cast<std::int32_t>(hr));
     }
     if (hr == DXGI_ERROR_NOT_FOUND || hr == DXGI_ERROR_DEVICE_REMOVED) {
-        TL_TRY(device_.create_for_monitor(monitor_));
+        TL_TRY(replace_device());
         hr = device_.output()->DuplicateOutput(device_.device(), &duplication_);
     }
     if (FAILED(hr)) {

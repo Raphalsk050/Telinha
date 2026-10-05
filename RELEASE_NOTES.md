@@ -1,19 +1,19 @@
 # Telinha release notes
 ## Features
 
-None.
+1. Themes: Light, Ash, Dark and Onyx, or follow the computer. The light theme can keep a dark sidebar.
+2. Color themes: fourteen gradients over a dark or a light base, plus a custom one with up to five colors, a direction and an intensity. The gradient can also drift slowly.
+3. Name styles: solid, gradient, neon or prism colors on your name, seen by everyone you talk to.
+4. Profile card: click a name or an avatar to open it. Yours can carry a banner image, two theme colors and a short "about me".
+5. Interface density, cozy or compact messages, chat font size, space between message groups and zoom from 50% to 200%.
 
 ## Improvements
 
-1. Updates install themselves: the app downloads the new version, swaps Telinha.exe where it is and reopens as soon as no call or share is running.
-2. New versions are looked for every minute, and the download shows its progress.
-3. When the share program crashes it now leaves a log line and a dump file to investigate.
+1. The channel edit button uses the same gear as the settings button.
 
 ## Fixes
 
-1. A share reaches the frame rate it was asked for. Asking for 120 fps used to give about 64, and 60 fps about 41.
-2. Fixed a crash that could stop a share when the screen changes mode, as when alt-tabbing out of a fullscreen game.
-3. Watching a share that is not 16:9 in fullscreen shows the whole picture instead of zooming into it.
+None.
 
 Notes:
-Versions 0.1.0 and 0.2.0 cannot replace Telinha.exe by themselves, so download this release by hand once. With Telinha.exe in a protected folder such as C:\, Windows asks for permission on every update; in a regular folder, like the Desktop, nothing is asked.
+Name styles, banners and profile themes only show up for people on this version or newer.

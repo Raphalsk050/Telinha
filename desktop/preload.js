@@ -43,6 +43,11 @@ contextBridge.exposeInMainWorld('telinha', {
   removeAvatar: () => invoke('profile:remove-avatar'),
   recentAvatars: () => invoke('profile:recent-avatars'),
   useRecentAvatar: (hash) => invoke('profile:use-recent-avatar', hash),
+  setProfileStyle: (style) => invoke('profile:set-style', style),
+  setBanner: (banner) => invoke('profile:set-banner', banner),
+  removeBanner: () => invoke('profile:remove-banner'),
+  bannersSnapshot: () => invoke('banners:snapshot'),
+  onBanners: (listener) => subscribe('banners:changed', listener),
   avatarsSnapshot: () => invoke('avatars:snapshot'),
   onAvatars: (listener) => subscribe('avatars:changed', listener),
 

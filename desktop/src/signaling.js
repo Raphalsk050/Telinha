@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 const { openMessage, sealMessage } = require('./contacts');
+const { cleanStyle, hasStyle } = require('./profile');
 
 const DEFAULT_BROKERS = [
   'wss://broker.hivemq.com:8884/mqtt',
@@ -43,10 +44,12 @@ function describePeer(message) {
       liveName: text(message.voice.liveName, 80),
     }
     : null;
+  const style = cleanStyle(message.style);
   return {
     name: text(message.name, 40),
     memberId: MEMBER_ID_PATTERN.test(String(message.memberId)) ? message.memberId : null,
     voice,
+    ...(hasStyle(style) ? { style } : {}),
   };
 }
 

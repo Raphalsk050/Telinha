@@ -442,6 +442,33 @@
         <button id="settings-name-save" class="button primary" type="button">Salvar</button>
       </div>
 
+      <h4 class="section-title">Estilo do nome</h4>
+      <div class="profile-style">
+        <div class="profile-style-options">
+          <div class="segmented" role="radiogroup" aria-label="Estilo do nome">
+        <label><input type="radio" name="profile-name-effect" value="none"><span>Nenhum</span></label>
+        <label><input type="radio" name="profile-name-effect" value="solid"><span>Sólido</span></label>
+        <label><input type="radio" name="profile-name-effect" value="gradient"><span>Degradê</span></label>
+        <label><input type="radio" name="profile-name-effect" value="neon"><span>Neon</span></label>
+        <label><input type="radio" name="profile-name-effect" value="prism"><span>Prisma</span></label>
+          </div>
+          <div class="custom-colors-row">
+            <div id="profile-name-colors" class="custom-colors"></div>
+            <button id="profile-name-add" class="button small" type="button">Adicionar cor</button>
+          </div>
+          <label class="check appearance-check"><input id="profile-theme-on" type="checkbox"><span>Colorir meu cartão de perfil</span></label>
+          <div class="custom-colors-row"><div id="profile-theme-colors" class="custom-colors"></div></div>
+          <div class="custom-colors-row">
+            <button id="profile-banner-change" class="button small" type="button">Mudar banner</button>
+            <button id="profile-banner-remove" class="button ghost small" type="button" hidden>Remover banner</button>
+            <input id="profile-banner-file" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+          </div>
+          <textarea id="profile-bio" class="input profile-bio" maxlength="190" rows="3" placeholder="Sobre mim" aria-label="Sobre mim"></textarea>
+          <p class="muted small">Quem estiver em uma conversa com você vê seu nome e seu cartão assim.</p>
+        </div>
+        <div id="profile-preview" class="profile-card profile-preview"></div>
+      </div>
+
       <h4 class="section-title">Voz</h4>
       <div class="device-grid">
         <label class="field"><span>Microfone</span><select id="settings-mic" class="input select"></select></label>
@@ -708,10 +735,13 @@
     <button id="update-later" class="button ghost small" type="button">Depois</button>
   </div>
 
+  <div id="profile-card" class="profile-card profile-popout" hidden></div>
+
   <div id="toast" class="toast" role="status" hidden></div>
 
   <script src="debug.js"></script>
   <script src="files.js"></script>
+  <script src="namestyle.js"></script>
   <script src="chat.js"></script>
   <script src="share.js"></script>
   <script src="call.js"></script>

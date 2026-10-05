@@ -723,12 +723,22 @@ const Chat = (() => {
     const name = document.createElement('span');
     name.className = 'message-author';
     name.textContent = author;
+    NameStyle.paint(name, NameStyle.of(conversation && conversation.memberFor ? conversation.memberFor(first) : first.memberId));
     const time = document.createElement('span');
     time.className = 'message-time';
     time.textContent = formatTime(first.sentAt);
     head.append(name, time);
     body.append(head);
     item.append(avatar, body);
+    // O retrato e o nome abrem o cartao de perfil de quem escreveu.
+    for (const node of [avatar, name]) {
+      node.classList.add('message-person');
+      node.addEventListener('click', (event) => {
+        if (conversation && conversation.onPerson) {
+          conversation.onPerson(event, first, node);
+        }
+      });
+    }
     return { item, body };
   }
 

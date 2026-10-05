@@ -1698,6 +1698,112 @@ body.resizing, body.resizing * { cursor: ns-resize !important; user-select: none
   cursor: pointer;
 }
 
+/* estilo do nome e cartao de perfil: as variaveis --name-* e --card-flow vem de namestyle.js */
+
+/* O estilo do nome vale onde o nome aparecer, por cima da cor que aquele lugar daria a ele. */
+:root .name-solid { color: var(--name-color) !important; }
+:root .name-neon { color: var(--name-color) !important; text-shadow: 0 0 6px var(--name-color), 0 0 14px var(--name-color); }
+
+:root .name-gradient, :root .name-prism {
+  background-image: var(--name-flow);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent !important;
+}
+
+/* No meio da conversa o efeito so se mexe com o mouse em cima, para nao distrair da leitura. */
+.name-gradient:hover, .name-prism:hover, .name-gradient.name-moving, .name-prism.name-moving {
+  animation: name-flow 3s linear infinite;
+}
+
+.name-neon:hover, .name-neon.name-moving { animation: name-glow 1.4s ease-in-out infinite alternate; }
+
+@keyframes name-flow {
+  to { background-position: -200% 0; }
+}
+
+@keyframes name-glow {
+  from { text-shadow: 0 0 4px var(--name-color), 0 0 8px var(--name-color); }
+  to { text-shadow: 0 0 9px var(--name-color), 0 0 22px var(--name-color); }
+}
+
+.profile-style { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+.profile-style-options { flex: 1; min-width: 260px; }
+
+.profile-card {
+  width: 300px;
+  flex: none;
+  padding: 3px;
+  border-radius: 14px;
+  background: var(--line-soft);
+  color: var(--text);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.5);
+  --card-surface: var(--float);
+}
+
+.profile-popout { position: fixed; z-index: 30; }
+.profile-card-inner { border-radius: 11px; overflow: hidden; background: var(--card-surface); }
+.profile-card-banner { height: 60px; background: var(--accent); }
+.profile-card-banner.has-image { height: 105px; }
+.profile-card-banner img { display: block; width: 100%; height: 100%; object-fit: cover; }
+
+/* O anel do retrato tem a cor do fundo do cartao, como se o retrato estivesse recortado do banner. */
+.profile-card-avatar {
+  position: relative;
+  width: 88px;
+  height: 88px;
+  margin: -46px 0 0 14px;
+  padding: 6px;
+  border-radius: 50%;
+  background: var(--card-surface);
+}
+
+.profile-card-avatar .avatar { width: 76px; height: 76px; font-size: 30px; }
+.profile-card-avatar .presence { right: 2px; bottom: 2px; width: 20px; height: 20px; border: 4px solid var(--card-surface); background: #80848e; }
+.profile-card-avatar .presence.online { background: var(--green); }
+.profile-card-body { display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 6px 16px 16px; }
+.profile-card-name { align-self: flex-start; max-width: 100%; font-size: 20px; line-height: 1.2; color: var(--strong); overflow-wrap: anywhere; }
+.profile-card-activity { font-size: 13px; color: var(--muted); }
+.profile-card-section { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+.profile-card-label { display: block; margin-bottom: 4px; font-size: 12px; font-weight: 700; color: var(--strong); }
+.profile-card-bio { margin: 0; font-size: 14px; line-height: 1.35; white-space: pre-wrap; overflow-wrap: anywhere; }
+.profile-card-edit { margin-top: 14px; width: 100%; background: var(--accent); }
+.profile-card-edit:hover:not(:disabled) { background: var(--accent-hover); }
+
+/* Com tema, as duas cores viram a moldura e o brilho, e o miolo fica escurecido para o texto se ler
+   sobre qualquer cor. --card-a e --card-b vem de namestyle.js. */
+.profile-card.themed {
+  --card-flow: linear-gradient(165deg, var(--card-a), var(--card-b));
+  --card-surface: color-mix(in srgb, var(--card-a) 28%, #0b0b0e);
+  background: var(--card-flow);
+  color: #e6e7ea;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.5), 0 0 26px -8px var(--card-a);
+}
+
+.profile-card.themed .profile-card-inner {
+  background: linear-gradient(rgb(8 8 11 / 0.66), rgb(8 8 11 / 0.66)), var(--card-flow);
+}
+
+.profile-card.themed .profile-card-banner:not(.has-image) { background: var(--card-flow); }
+.profile-card.themed .profile-card-name { color: #ffffff; }
+.profile-card.themed .profile-card-activity { color: rgb(255 255 255 / 0.72); }
+.profile-card.themed .profile-card-label { color: #ffffff; }
+.profile-card.themed .profile-card-section { border-top-color: rgb(255 255 255 / 0.16); }
+.profile-card.themed .profile-card-edit { background: color-mix(in srgb, var(--card-a) 78%, #000000); }
+.profile-card.themed .profile-card-edit:hover:not(:disabled) { background: var(--card-a); }
+
+.profile-preview { box-shadow: 0 4px 14px rgb(0 0 0 / 0.35); }
+.profile-bio { display: block; width: 100%; min-height: 64px; margin-top: 12px; resize: vertical; line-height: 1.35; }
+.message-person { cursor: pointer; }
+.message-author.message-person:hover { text-decoration: underline; }
+
+.member { cursor: pointer; }
+
+@media (prefers-reduced-motion: reduce) {
+  .name-gradient, .name-prism, .name-neon { animation: none !important; }
+}
+
 /* temas de cor: o degrade fica atras do app inteiro e cada regiao vira um veu sobre ele. As
    variaveis --gradient, --tint e --veil-* vem de appearance.js. */
 

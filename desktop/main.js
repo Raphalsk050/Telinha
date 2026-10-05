@@ -15,7 +15,7 @@ const { ContactStore, cleanName } = require('./src/contacts');
 const { AvatarStore, decodeAvatar } = require('./src/avatars');
 const { FileShare } = require('./src/fileshare');
 const { LinkPreviews } = require('./src/linkpreview');
-const { MEMBER_ID_PATTERN, ProfileStore } = require('./src/profile');
+const { MEMBER_ID_PATTERN, ProfileStore, hasStyle } = require('./src/profile');
 const { ServerStore } = require('./src/servers');
 const { PEER_ID_PATTERN, Signaling } = require('./src/signaling');
 const { SoundStore } = require('./src/sounds');
@@ -73,6 +73,7 @@ let fileShare = null;
 let linkPreviews = null;
 let sounds = null;
 let avatars = null;
+let banners = null;
 let signaling = null;
 let streams = null;
 let manual = null;
@@ -337,6 +338,8 @@ function profileView() {
     memberId: profile.memberId,
     instanceId: signaling.instanceId,
     avatar: profile.avatarUrl(),
+    banner: profile.bannerUrl(),
+    style: profile.style,
   };
 }
 
@@ -362,6 +365,12 @@ function sendVoice() {
 
 function presenceFor(spaceId) {
   const payload = { name: profile.name, memberId: profile.memberId, avatarHash: profile.avatarHash };
+  if (hasStyle(profile.style)) {
+    payload.style = profile.style;
+  }
+  if (profile.bannerHash) {
+    payload.bannerHash = profile.bannerHash;
+  }
   if (voice && voice.spaceId === spaceId) {
     const { outgoing } = streams;
     const live = Boolean(outgoing && outgoing.state === 'live' && outgoing.spaceId === spaceId
@@ -400,23 +409,30 @@ function handleAvatarPresence(spaceId, peerId, message) {
     sendToWindow('avatars:changed', { memberId, contactId: spaceId, url: avatars.url(memberId) });
   }
 
-  const hash = typeof message.avatarHash === 'string' ? message.avatarHash.slice(0, 64) : '';
+  wantPeerImage(spaceId, peerId, memberId, message.avatarHash, avatars, 'avatars:changed', null);
+  wantPeerImage(spaceId, peerId, memberId, message.bannerHash, banners, 'banners:changed', 'banner');
+}
+
+// O banner do perfil viaja como o avatar: a presenca diz so o resumo da imagem, e quem ainda nao
+// a tem pede. Um app antigo nao conhece o pedido de banner e simplesmente nao responde.
+function wantPeerImage(spaceId, peerId, memberId, announced, images, channel, kind) {
+  const hash = typeof announced === 'string' ? announced.slice(0, 64) : '';
   if (!hash) {
-    if (avatars.remove(memberId)) {
-      sendToWindow('avatars:changed', { memberId, url: null });
+    if (images.remove(memberId)) {
+      sendToWindow(channel, { memberId, url: null });
     }
     return;
   }
-  if (avatars.hashFor(memberId) === hash) {
+  if (images.hashFor(memberId) === hash) {
     return;
   }
-  const key = `${memberId}:${hash}`;
+  const key = `${kind ?? 'avatar'}:${memberId}:${hash}`;
   const now = Date.now();
   if (now - (avatarRequests.get(key) ?? 0) < 60000) {
     return;
   }
   avatarRequests.set(key, now);
-  signaling.publish(spaceId, 'avatar-request', { to: peerId, hash });
+  signaling.publish(spaceId, 'avatar-request', kind ? { to: peerId, hash, kind } : { to: peerId, hash });
 }
 
 function storeAvatar(spaceId, message) {
@@ -432,8 +448,10 @@ function storeAvatar(spaceId, message) {
   if (!avatar || avatar.hash !== message.hash) {
     return;
   }
-  if (avatars.put(memberId, avatar)) {
-    sendToWindow('avatars:changed', { memberId, url: avatars.url(memberId) });
+  const banner = message.kind === 'banner';
+  const images = banner ? banners : avatars;
+  if (images.put(memberId, avatar)) {
+    sendToWindow(banner ? 'banners:changed' : 'avatars:changed', { memberId, url: images.url(memberId) });
   }
 }
 
@@ -843,13 +861,16 @@ async function prepareOutgoingFile(key, file, uploadId) {
 
 function handleSignalingMessage({ spaceId, message }) {
   if (message.type === 'avatar-request') {
-    if (message.to === signaling.instanceId && profile.avatar && message.hash === profile.avatarHash) {
+    const banner = message.kind === 'banner';
+    const image = banner ? profile.banner : profile.avatar;
+    if (message.to === signaling.instanceId && image && message.hash === image.hash) {
       signaling.publish(spaceId, 'avatar', {
         to: message.from,
         memberId: profile.memberId,
-        hash: profile.avatarHash,
-        mime: profile.avatar.mime,
-        data: profile.avatar.data,
+        hash: image.hash,
+        mime: image.mime,
+        data: image.data,
+        ...(banner ? { kind: 'banner' } : {}),
       });
     }
     return;
@@ -1061,6 +1082,32 @@ function registerIpc() {
       }
       signaling.publishPresence(true);
       sendServers();
+      sendToWindow('profile:changed', profileView());
+    }
+    return profileView();
+  });
+
+  ipcMain.handle('profile:set-banner', (_event, request) => {
+    const banner = decodeAvatar(request && request.mime, request && request.data);
+    if (!banner) {
+      throw new Error('essa imagem nao pode ser usada como banner');
+    }
+    profile.setBanner(banner);
+    signaling.publishPresence(true);
+    sendToWindow('profile:changed', profileView());
+    return profileView();
+  });
+  ipcMain.handle('profile:remove-banner', () => {
+    if (profile.removeBanner()) {
+      signaling.publishPresence(true);
+      sendToWindow('profile:changed', profileView());
+    }
+    return profileView();
+  });
+  ipcMain.handle('banners:snapshot', () => banners.snapshot().members);
+  ipcMain.handle('profile:set-style', (_event, style) => {
+    if (profile.setStyle(style)) {
+      signaling.publishPresence(true);
       sendToWindow('profile:changed', profileView());
     }
     return profileView();
@@ -1544,6 +1591,7 @@ app.whenReady().then(() => {
   linkPreviews = new LinkPreviews();
   sounds = new SoundStore(path.join(userData, 'sounds')).load();
   avatars = new AvatarStore(path.join(userData, 'avatars')).load();
+  banners = new AvatarStore(path.join(userData, 'banners')).load();
 
   signaling = new Signaling({ spaces, profileName: profile.name, presenceFor });
   streams = new StreamManager({

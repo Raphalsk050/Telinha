@@ -241,6 +241,7 @@ const state = {
   sounds: [],
   avatars: new Map(),
   contactMembers: new Map(),
+  banners: new Map(),
   update: null,
 };
 
@@ -334,6 +335,13 @@ function avatarUrlFor(memberId) {
     return state.profile.avatar || null;
   }
   return state.avatars.get(memberId) || null;
+}
+
+function bannerUrlFor(memberId) {
+  if (!memberId) {
+    return null;
+  }
+  return memberId === state.profile.memberId ? state.profile.banner || null : state.banners.get(memberId) || null;
 }
 
 function avatarNode(name, online, size = '', memberId = null) {
@@ -508,6 +516,11 @@ function conversationFor(nav) {
       avatarFor: (message) => (message.mine
         ? state.profile.avatar
         : avatarUrlFor(state.contactMembers.get(contact.id))),
+      // Numa conversa direta quem escreve e sempre voce ou o contato, seja o que for que a mensagem diga.
+      memberFor: (message) => (message.mine ? state.profile.memberId : state.contactMembers.get(contact.id) ?? null),
+      onPerson: (event, message, anchor) => (message.mine
+        ? openProfile(event, state.profile.memberId, state.profile.name, anchor)
+        : openProfile(event, state.contactMembers.get(contact.id) ?? null, contact.name, anchor)),
       hint: () => chatHint(contact),
       onInvite: (code) => joinServer(code),
     };
@@ -533,6 +546,10 @@ function conversationFor(nav) {
     placeholder: text ? `Conversar em #${channel.name}` : `Conversar em ${channel.name}`,
     authorFor: (message) => names.get(message.memberId) ?? message.author,
     avatarFor: (message) => (message.mine ? state.profile.avatar : avatarUrlFor(message.memberId)),
+    memberFor: (message) => (message.mine ? state.profile.memberId : message.memberId ?? null),
+    onPerson: (event, message, anchor) => (message.mine
+      ? openProfile(event, state.profile.memberId, state.profile.name, anchor)
+      : openProfile(event, message.memberId ?? null, names.get(message.memberId) ?? message.author, anchor)),
     hint: () => (state.signaling.connected
       ? ''
       : 'Sem conexão com o servidor de contatos. As mensagens não vão chegar agora.'),
@@ -678,6 +695,7 @@ function renderContacts() {
     const info = make('span', 'nav-info');
     const name = make('span', 'nav-name', contact.name);
     name.title = contact.name;
+    NameStyle.paint(name, NameStyle.of(state.contactMembers.get(contact.id)));
     info.append(name, make('span', 'nav-sub', status));
     button.append(avatarNode(contact.name, status !== 'offline', '', state.contactMembers.get(contact.id)), info);
     if (unread > 0) {
@@ -829,6 +847,7 @@ function renderCallPanel() {
 function renderUserPanel() {
   const connected = Boolean(state.signaling.connected);
   el.userName.textContent = state.profile.name;
+  NameStyle.paint(el.userName, state.profile.style);
   el.userInitial.textContent = initial(state.profile.name);
   el.userInitial.parentElement.style.background = Call.avatarColor(state.profile.name);
   el.userInitial.hidden = Boolean(state.profile.avatar);
@@ -1043,19 +1062,63 @@ function renderLobby(room, people) {
   state.lobbyRoom = room;
 }
 
+function placeActivity(spaceId, roomId, live) {
+  const server = findServer(spaceId);
+  if (!server) {
+    return live ? 'Transmitindo numa chamada' : 'Em chamada';
+  }
+  const channel = findChannel(server, roomId);
+  const place = channel ? channel.name : 'uma sala';
+  return live ? `Transmitindo em ${place}` : `Na sala ${place}`;
+}
+
+// O que a pessoa esta fazendo agora, olhando todos os lugares em que ela aparece online.
+function personActivity(memberId) {
+  if (memberId && memberId === state.profile.memberId) {
+    return state.voice ? placeActivity(state.voice.spaceId, state.voice.roomId, outgoingLive()) : 'Online';
+  }
+  let online = false;
+  for (const [spaceId, peers] of state.presence) {
+    for (const peer of peers) {
+      if (memberId && peer.memberId === memberId) {
+        online = true;
+        if (peer.voice) {
+          return placeActivity(spaceId, peer.voice.roomId, peer.voice.live);
+        }
+      }
+    }
+  }
+  return online ? 'Online' : 'Offline';
+}
+
+function openProfile(event, memberId, name, anchor = null) {
+  const self = Boolean(memberId) && memberId === state.profile.memberId;
+  const activity = personActivity(memberId);
+  NameStyle.openCard(event, {
+    name,
+    memberId,
+    anchor,
+    activity,
+    avatar: avatarNode(name, activity !== 'Offline', 'avatar-large', memberId),
+    banner: bannerUrlFor(memberId),
+    onEdit: self ? openSettings : null,
+  });
+}
+
 function memberRow(server, member, online) {
   const row = make('div', online ? 'member' : 'member offline');
   row.addEventListener('contextmenu', (event) => {
     event.preventDefault();
     openPersonMenu(event, personFromMember(server, member));
   });
+  row.addEventListener('click', (event) => openProfile(event, member.memberId ?? null, member.name));
   row.append(avatarNode(member.name, online, '', member.memberId));
   const info = make('div', 'member-info');
-  info.append(make('span', 'member-name', member.self ? `${member.name} (você)` : member.name));
+  const name = make('span', 'member-name', member.self ? `${member.name} (você)` : member.name);
+  NameStyle.paint(name, NameStyle.of(member.memberId));
+  info.append(name);
   if (member.voice) {
-    const channel = findChannel(server, member.voice.roomId);
-    const place = channel ? channel.name : 'uma sala';
-    info.append(make('span', 'member-activity', member.voice.live ? `Transmitindo em ${place}` : `Na sala ${place}`));
+    info.append(make('span', 'member-activity', placeActivity(server.id, member.voice.roomId, member.voice.live)));
   }
   row.append(info);
   return row;
@@ -2428,6 +2491,7 @@ async function openSettings() {
   renderSettingsAvatar();
   el.settingsCameraStatus.textContent = '';
   stopSettingsPreview();
+  NameStyle.refreshEditor();
   el.settingsDialog.hidden = false;
   await fillDevices();
   await restartMicTest();
@@ -3287,8 +3351,26 @@ function bindSoundboard() {
 
 /* eventos */
 
+// O estilo de cada pessoa vem junto da presenca dela.
+function rememberStyles(peers) {
+  let changed = false;
+  for (const peer of peers) {
+    changed = NameStyle.remember(peer.memberId, peer.style) || changed;
+  }
+  return changed;
+}
+
+function adoptProfile(profile) {
+  state.profile = profile;
+  NameStyle.remember(profile.memberId, profile.style);
+  NameStyle.refreshEditor();
+}
+
 function handlePresence({ spaceId, peers }) {
   state.presence.set(spaceId, peers);
+  if (rememberStyles(peers)) {
+    refreshConversation();
+  }
   Call.setPresence(spaceId, peers);
   const call = state.incomingCall;
   if (call && call.contactId === spaceId
@@ -3627,7 +3709,7 @@ function subscribeEvents() {
   api.onContacts(handleContacts);
   api.onServers(handleServers);
   api.onProfile((profile) => {
-    state.profile = profile;
+    adoptProfile(profile);
     renderSettingsAvatar();
     refreshConversation();
     render();
@@ -3658,6 +3740,13 @@ function subscribeEvents() {
   api.onStreamOffer((payload) => StreamView.handleOffer(payload));
   api.onStreamThumb(handleStreamThumb);
   api.onUpdate(handleUpdate);
+  api.onBanners(({ memberId, url }) => {
+    if (url) {
+      state.banners.set(memberId, url);
+    } else {
+      state.banners.delete(memberId);
+    }
+  });
   api.onAvatars(({ memberId, contactId, url }) => {
     if (contactId) {
       state.contactMembers.set(contactId, memberId);
@@ -3681,6 +3770,20 @@ function subscribeEvents() {
 
 async function init() {
   state.profile = await api.profile();
+  NameStyle.remember(state.profile.memberId, state.profile.style);
+  NameStyle.bindEditor({
+    style: () => state.profile.style,
+    save: (style) => api.setProfileStyle(style),
+    setBanner: (banner) => api.setBanner(banner),
+    removeBanner: () => api.removeBanner(),
+    fail: toast,
+    person: () => ({
+      name: state.profile.name,
+      activity: personActivity(state.profile.memberId),
+      avatar: avatarNode(state.profile.name, true, 'avatar-large', state.profile.memberId),
+      banner: state.profile.banner || null,
+    }),
+  });
   Call.init(state.profile.instanceId);
   Chat.bind({ profileName: () => state.profile.name });
   FileTransfer.bind();
@@ -3705,6 +3808,7 @@ async function init() {
     }),
     api.presenceSnapshot().then((presence) => {
       for (const [spaceId, peers] of Object.entries(presence)) {
+        rememberStyles(peers);
         state.presence.set(spaceId, peers);
         Call.setPresence(spaceId, peers);
       }
@@ -3719,6 +3823,11 @@ async function init() {
       state.sounds = sounds;
     }),
     api.updateState().then(handleUpdate),
+    api.bannersSnapshot().then((banners) => {
+      for (const [memberId, url] of Object.entries(banners ?? {})) {
+        state.banners.set(memberId, url);
+      }
+    }),
     api.avatarsSnapshot().then((avatarSnapshot) => {
       for (const [memberId, url] of Object.entries(avatarSnapshot.members)) {
         state.avatars.set(memberId, url);

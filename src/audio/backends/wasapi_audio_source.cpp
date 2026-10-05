@@ -279,7 +279,10 @@ Outcome WasapiAudioSource::open(const AudioCaptureTarget& target,
         TL_TRY(open_capture_endpoint(target.device_id));
     } else if (target.scope == AudioCaptureScope::ProcessLoopback &&
                info_.process_loopback_supported) {
-        const std::uint32_t root = resolve_process_tree_root(target.process_id);
+        // Na exclusao o pid pedido ja e a raiz. Subir ate um lancador de mesmo nome, como o
+        // portatil renomeado para Telinha.exe, faz o Windows deixar passar o som dos filhos.
+        const std::uint32_t root =
+            excluding ? target.process_id : resolve_process_tree_root(target.process_id);
         const Outcome activated = open_process_loopback(root, target.process_loopback_mode);
         if (activated.ok()) {
             info_.target = AudioCaptureTarget::process_loopback(root, target.process_loopback_mode);

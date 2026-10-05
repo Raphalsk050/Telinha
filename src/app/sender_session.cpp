@@ -1222,7 +1222,13 @@ void SenderSession::pump_video()
         return;
     }
 
-    next_frame_ns_ = now_ns() + kNanosecondsPerSecond * 1000u / frame_rate_millihertz();
+    // O proximo quadro e marcado a partir do horario deste, nao de quando ele chegou: senao a
+    // espera pela tela se soma ao intervalo e a taxa fica bem abaixo da pedida.
+    const Nanoseconds captured_ns = now_ns();
+    next_frame_ns_ += kNanosecondsPerSecond * 1000u / frame_rate_millihertz();
+    if (next_frame_ns_ < captured_ns) {
+        next_frame_ns_ = captured_ns;
+    }
     capture_ns_.record(capture_elapsed);
     counters_.frames_captured.fetch_add(1, std::memory_order_relaxed);
 
@@ -1384,6 +1390,7 @@ void SenderSession::report(Nanoseconds local_now_ns)
         MachineEvent event("stats");
         event.text("role", "sender")
             .integer("frames", counters_.frames_sent.load(std::memory_order_relaxed))
+            .integer("captured", counters_.frames_captured.load(std::memory_order_relaxed))
             .integer("audio_blocks", counters_.audio_blocks.load(std::memory_order_relaxed))
             .integer("width", encoder_info.width)
             .integer("height", encoder_info.height)

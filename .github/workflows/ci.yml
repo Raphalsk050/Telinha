@@ -155,9 +155,51 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: telinha-app-windows-x64
-          path: desktop/dist/Telinha-*-portable.exe
+          path: desktop/dist/Telinha.exe
           if-no-files-found: error
           compression-level: 0
+
+  plan:
+    name: release plan
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      release: ${{ steps.plan.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check the release notes and the version
+        id: plan
+        run: node desktop/scripts/release.js plan >> "$GITHUB_OUTPUT"
+
+  # Publishes version.json as a release once it is above the last one and everything else passed.
+  release:
+    name: release
+    if: >
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      needs.plan.outputs.release == 'true'
+    needs: [plan, linux, sanitizers, windows, package, format]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: telinha-app-windows-x64
+          path: dist
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: >
+          gh release create "v$VERSION" dist/Telinha.exe
+          --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA"
+          --title "Telinha $VERSION" --notes-file RELEASE_NOTES.md
 
   format:
     name: format

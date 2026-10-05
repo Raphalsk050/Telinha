@@ -46,7 +46,7 @@ encoded stream out to every viewer, and each viewer runs its own
 Screen streams bind their local ports inside 50000-50019 and calls inside
 50020-50039. When two networks cannot reach each other directly, forwarding UDP
 50000-50039 on the router is usually enough, unless that connection sits behind
-carrier grade NAT. `dist` writes a portable `Telinha-<version>-portable.exe` with
+carrier grade NAT. `dist` writes a portable `Telinha.exe` with
 `telinha.exe` bundled inside to `desktop/dist`.
 
 On Windows, `.\build.ps1` builds `telinha.exe` on every core and runs `dist` in
@@ -56,3 +56,15 @@ one go. `-Run` starts the app from the build instead of packaging it, and
 CI builds the same portable app on every push to `main`, and on demand from
 the Actions tab with "Run workflow". It is attached to the run as the
 `telinha-app-windows-x64` artifact.
+
+The app version lives in `version.json` and is only ever changed by hand.
+`RELEASE_NOTES.md` lists what changed since the last release, in English, under
+the fixed Features, Improvements and Fixes headings, with `None.` under an empty
+one and an optional `Notes:` block at the end. A push to `main` with a version
+above the last release, and every CI job green, tags it and publishes a GitHub
+release with `Telinha.exe` and those notes. New notes under an unchanged
+version just wait.
+
+The portable app checks the latest release on start and every two hours,
+downloads a newer one in the background, swaps it in place of the file it was
+opened from, and asks to restart.

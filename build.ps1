@@ -1,7 +1,7 @@
 <#
 Compila o telinha.exe e gera o app do Telinha usando todos os nucleos da maquina.
 
-  .\build.ps1            telinha.exe + desktop\dist\Telinha-<versao>-portable.exe
+  .\build.ps1            telinha.exe + desktop\dist\Telinha.exe
   .\build.ps1 -Run       telinha.exe + abre o app direto, sem empacotar (o jeito mais rapido de testar)
   .\build.ps1 -ExeOnly   so o telinha.exe
 #>
@@ -102,8 +102,7 @@ try {
     Write-Host "`nPronto em $(Format-Elapsed $total)" -ForegroundColor Green
     Write-Host "  telinha.exe: $exe"
     if (-not $ExeOnly) {
-        $portable = Get-ChildItem (Join-Path $desktop 'dist\*.exe') | Sort-Object LastWriteTime | Select-Object -Last 1
-        Write-Host "  app:         $($portable.FullName)"
+        Write-Host "  app:         $(Join-Path $desktop 'dist\Telinha.exe')"
     }
 }
 finally {

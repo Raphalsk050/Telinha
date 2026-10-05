@@ -1,2 +1,3 @@
 telinha_add_test(telinha_foundation_tests
-    foundation_contract_tests.cpp)
+    foundation_contract_tests.cpp
+    leak_marker_tests.cpp)

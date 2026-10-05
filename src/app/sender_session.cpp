@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "telinha/app/machine_events.hpp"
+#include "telinha/audio/leak_marker.hpp"
 #include "telinha/core/log.hpp"
 
 namespace tl::app {
@@ -23,6 +24,8 @@ constexpr Nanoseconds kExcludeRetryNs = 300 * kNanosecondsPerMillisecond;
 constexpr const char* kAudioWithheldMessage =
     "nao deu para tirar o som do Telinha da captura, entao a transmissao segue sem o som do "
     "computador";
+constexpr const char* kAudioLeakMessage =
+    "o som do Telinha estava vazando para quem assiste, entao o som do computador foi cortado";
 
 void sleep_ns(Nanoseconds duration) noexcept
 {
@@ -326,6 +329,8 @@ void SenderSession::close_video() noexcept
 Outcome SenderSession::open_audio()
 {
     audio_withheld_ = false;
+    audio_leaking_.store(false, std::memory_order_relaxed);
+    audio_leak_announced_ = false;
     if (options_.audio_scope == AudioScope::None) {
         return ok();
     }
@@ -439,9 +444,30 @@ void SenderSession::announce_audio_withheld() noexcept
             .text("message", kAudioWithheldMessage);
         return;
     }
-    std::printf("\nATENCAO: nao deu para deixar o som do processo %u de fora, entao a transmissao "
-                "segue sem o som do computador.\n\n",
-                options_.audio_exclude_process_id);
+    std::printf(
+        "\nATENCAO: nao deu para deixar o som do processo %u de fora, entao a transmissao "
+        "segue sem o som do computador.\n\n",
+        options_.audio_exclude_process_id);
+    std::fflush(stdout);
+}
+
+// A thread de audio so levanta a bandeira. O aviso sai daqui, da mesma thread dos outros eventos.
+void SenderSession::announce_audio_leak() noexcept
+{
+    if (audio_leak_announced_ || !audio_leaking_.load(std::memory_order_relaxed)) {
+        return;
+    }
+    audio_leak_announced_ = true;
+    TL_LOG_WARN("emissor: a marca do Telinha apareceu na captura, o som do computador foi cortado");
+    if (machine_events_enabled()) {
+        MachineEvent("audio")
+            .text("scope", "none")
+            .integer("pid", 0)
+            .text("device", "")
+            .text("message", kAudioLeakMessage);
+        return;
+    }
+    std::printf("\nATENCAO: %s.\n\n", kAudioLeakMessage);
     std::fflush(stdout);
 }
 
@@ -1233,6 +1259,10 @@ void SenderSession::pump_video()
 void SenderSession::audio_thread_main()
 {
     audio::AudioLease lease(*audio_source_);
+    // So quem tira o Telinha da captura precisa conferir se ele ficou mesmo de fora.
+    const bool guards_leak =
+        options_.audio_scope == AudioScope::System && options_.audio_exclude_process_id != 0;
+    audio::LeakMarkerDetector leak_marker;
 
     while (!stop_.load(std::memory_order_relaxed) && !audio_stop_.load(std::memory_order_relaxed)) {
         audio::CapturedAudio captured;
@@ -1263,6 +1293,14 @@ void SenderSession::audio_thread_main()
             }
             interleaved = audio_scratch_.get();
         } else {
+            continue;
+        }
+
+        if (guards_leak &&
+            leak_marker.feed(interleaved, frames, channels, captured.format.sample_rate)) {
+            audio_leaking_.store(true, std::memory_order_relaxed);
+        }
+        if (audio_leaking_.load(std::memory_order_relaxed)) {
             continue;
         }
 
@@ -1400,6 +1438,7 @@ Outcome SenderSession::run_multi()
 
         service_peers();
         pump_video();
+        announce_audio_leak();
         report(now_ns());
         Logger::instance().drain_to_stderr();
     }
@@ -1488,6 +1527,7 @@ Outcome SenderSession::run()
         }
 
         pump_video();
+        announce_audio_leak();
         report(now_ns());
         Logger::instance().drain_to_stderr();
     }

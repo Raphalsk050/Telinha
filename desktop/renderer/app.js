@@ -1455,6 +1455,78 @@ function describeError(event) {
   }
 }
 
+/* marca de vazamento */
+
+// O emissor corta o som do computador se ouvir esta marca na captura. Ela sai pela mesma saida
+// das vozes da chamada, entao so chega la quando o som do Telinha esta vazando para quem assiste.
+// O mesmo par de tons esta em include/telinha/audio/leak_marker.hpp.
+const LEAK_MARKER_HZ = [19000, 19600];
+const LEAK_MARKER_TONE_S = 0.2;
+const LEAK_MARKER_RAMP_S = 0.01;
+const LEAK_MARKER_GAIN = 0.02;
+const LEAK_MARKER_FIRST_MS = [1000, 4000];
+const LEAK_MARKER_INTERVAL_MS = 30000;
+let leakMarkerContext = null;
+
+function sharingScreen() {
+  const { manual } = state;
+  return outgoingLive() || Boolean(manual && manual.role === 'share' && manual.phase === 'live');
+}
+
+async function playLeakMarker() {
+  if (!sharingScreen()) {
+    return;
+  }
+  try {
+    if (!leakMarkerContext) {
+      leakMarkerContext = new AudioContext();
+    }
+    const context = leakMarkerContext;
+    const sinkId = Call.state().settings.speakerId;
+    if (typeof context.setSinkId === 'function' && context.sinkId !== sinkId) {
+      await context.setSinkId(sinkId);
+    }
+    await context.resume();
+
+    let start = context.currentTime + 0.05;
+    let last = null;
+    for (const frequency of LEAK_MARKER_HZ) {
+      const end = start + LEAK_MARKER_TONE_S;
+      const oscillator = new OscillatorNode(context, { frequency });
+      const gain = new GainNode(context, { gain: 0 });
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.linearRampToValueAtTime(LEAK_MARKER_GAIN, start + LEAK_MARKER_RAMP_S);
+      gain.gain.setValueAtTime(LEAK_MARKER_GAIN, end - LEAK_MARKER_RAMP_S);
+      gain.gain.linearRampToValueAtTime(0, end);
+      oscillator.connect(gain).connect(context.destination);
+      oscillator.start(start);
+      oscillator.stop(end);
+      start = end;
+      last = oscillator;
+    }
+    last.onended = () => context.suspend().catch(() => {});
+  } catch {
+    // sem saida de som nao ha o que vazar
+  }
+}
+
+// Logo que a transmissao entra no ar ou o som volta a ser o do computador, sem esperar o intervalo.
+function checkLeakSoon() {
+  for (const delay of LEAK_MARKER_FIRST_MS) {
+    setTimeout(playLeakMarker, delay);
+  }
+}
+
+// Com mensagem, foi o emissor que mexeu no som sozinho, e a pessoa precisa ver mesmo sem estar
+// olhando para a sala.
+function noteAudioChange(event) {
+  if (event.message) {
+    toast(audioFeedback(event));
+  } else if (event.scope === 'system') {
+    checkLeakSoon();
+  }
+}
+
 /* transmissoes em grupo */
 
 function handleStreamEvent({ source, event }) {
@@ -1501,6 +1573,7 @@ function handleStreamEvent({ source, event }) {
         api.streamSetQuality(state.pendingQuality);
       }
       state.pendingQuality = null;
+      checkLeakSoon();
       break;
     case 'target':
       if (info && info.pendingTarget) {
@@ -1523,6 +1596,7 @@ function handleStreamEvent({ source, event }) {
       }
       state.roomFeedback = audioFeedback(event);
       Share.streamFeedback(state.roomFeedback);
+      noteAudioChange(event);
       break;
     case 'command_failed':
       state.roomFeedback = describeCommandFailure(event);
@@ -1820,6 +1894,9 @@ function applyManualState(value) {
     manual.phase = 'live';
     manual.feedback = '';
     hideCodePanels();
+    if (first && manual.role === 'share') {
+      checkLeakSoon();
+    }
     if (first && manual.role === 'share' && manual.quality && manual.quality.preset !== 'auto') {
       api.setQuality(manual.quality);
     }
@@ -1885,6 +1962,7 @@ function handleManualEvent(event) {
       manual.feedback = audioFeedback(event);
       Share.streamFeedback(manual.feedback);
       Share.syncStream(streamAudioState(manual.target, manual.audio));
+      noteAudioChange(event);
       break;
     case 'fullscreen':
       manual.fullscreen = Boolean(event.enabled);
@@ -3564,6 +3642,7 @@ async function init() {
     sinkId: Call.state().settings.speakerId,
   });
   setInterval(updateVoiceTimers, 1000);
+  setInterval(playLeakMarker, LEAK_MARKER_INTERVAL_MS);
   bindEvents();
   subscribeEvents();
 

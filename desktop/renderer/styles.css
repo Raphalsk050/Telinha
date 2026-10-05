@@ -1080,7 +1080,8 @@ body.resizing, body.resizing * { cursor: ns-resize !important; user-select: none
   cursor: zoom-out;
 }
 
-.tile-viewer video { width: 100%; height: 100%; object-fit: contain; }
+/* Preso as bordas, senao um video mais alto que a tela cresce para fora dela e sai cortado. */
+.tile-viewer video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
 .tile-viewer .tile-label { left: 16px; bottom: 16px; font-size: 15px; }
 
 /* acabamento */

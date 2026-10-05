@@ -26,8 +26,7 @@ public:
           options_(options),
           window_(reinterpret_cast<HWND>(static_cast<std::uintptr_t>(target.handle))),
           windowed_(std::move(windowed))
-    {
-    }
+    {}
 
     ~WindowCaptureSource() override { stop(); }
 

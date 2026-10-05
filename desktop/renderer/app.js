@@ -22,7 +22,7 @@ const ICONS = {
   micOff: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 5.2 2M15 10V6a3 3 0 0 0-5.6-1.5M5 11a7 7 0 0 0 11.5 5.4M19 11a7 7 0 0 1-.6 2.8M12 18v3M4 4l16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   headphones: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 15v-3a8 8 0 0 1 16 0v3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M4 15h3v5H5a1 1 0 0 1-1-1zM17 15h3v4a1 1 0 0 1-1 1h-2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>',
   deaf: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 15v-3a8 8 0 0 1 13.7-5.6M20 12v3M4 15h3v5H5a1 1 0 0 1-1-1zM17 15h3v4a1 1 0 0 1-1 1h-2zM4 4l16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
-  gear: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1 7 17M17 7l2.1-2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  gear: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.23 4.92 10.61 2.1h2.78l.38 2.82a7.3 7.3 0 0 1 1.99.82l2.26-1.73 1.97 1.97-1.73 2.26a7.3 7.3 0 0 1 .82 1.99l2.82.38v2.78l-2.82.38a7.3 7.3 0 0 1-.82 1.99l1.73 2.26-1.97 1.97-2.26-1.73a7.3 7.3 0 0 1-1.99.82l-.38 2.82h-2.78l-.38-2.82a7.3 7.3 0 0 1-1.99-.82l-2.26 1.73-1.97-1.97 1.73-2.26a7.3 7.3 0 0 1-.82-1.99L2.1 13.39v-2.78l2.82-.38a7.3 7.3 0 0 1 .82-1.99L4.01 5.98l1.97-1.97 2.26 1.73a7.3 7.3 0 0 1 1.99-.82z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
   more: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="19" cy="12" r="2" fill="currentColor"/></svg>',
   invite: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 20c.8-4 3.6-6 7-6s6.2 2 7 6M19 8v6M16 11h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   members: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M2.5 20c.7-3.6 3.3-5.5 6.5-5.5s5.8 1.9 6.5 5.5M16 4.5a3.5 3.5 0 0 1 0 7M18 14.8c2 .7 3.1 2.4 3.5 5.2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
@@ -3464,6 +3464,7 @@ function bindEvents() {
   });
   el.settingsAvatarChange.addEventListener('click', openAvatarPicker);
   el.settingsAvatarRemove.addEventListener('click', removeAvatar);
+  el.userSettings.innerHTML = ICONS.gear;
   el.userSettings.addEventListener('click', openSettings);
   el.userMic.addEventListener('click', toggleMic);
   el.userDeaf.addEventListener('click', toggleDeaf);

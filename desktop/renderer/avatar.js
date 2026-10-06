@@ -1,11 +1,19 @@
 'use strict';
 
 const AvatarEditor = (() => {
-  const OUTPUT_SIZE = 256;
-  const VIEW_SIZE = 300;
-  const CROP_SIZE = 240;
   const MAX_ZOOM = 4;
   const MAX_BYTES = 180 * 1024;
+  // Cada tipo de imagem tem a sua moldura de corte. A pessoa arrasta e aproxima a imagem por tras
+  // dela, e o que sai tem sempre o tamanho de "output", seja qual for a imagem escolhida.
+  const FRAMES = {
+    avatar: {
+      view: [300, 300], crop: [240, 240], output: [256, 256], round: true, title: 'Editar imagem',
+    },
+    banner: {
+      view: [480, 220], crop: [440, 154], output: [600, 210], round: false, title: 'Recortar banner',
+    },
+  };
+  const CROP_CORNER = 8;
   const find = (id) => document.getElementById(id);
 
   const nodes = {
@@ -18,6 +26,7 @@ const AvatarEditor = (() => {
     recents: find('avatar-recents'),
     remove: find('avatar-remove'),
     editor: find('avatar-editor'),
+    editorTitle: find('avatar-editor-title'),
     editorClose: find('avatar-editor-close'),
     canvas: find('avatar-canvas'),
     zoom: find('avatar-zoom'),
@@ -31,6 +40,7 @@ const AvatarEditor = (() => {
   const view = {
     bitmap: null, zoom: 1, rotation: 0, panX: 0, panY: 0, drag: null,
   };
+  let frame = FRAMES.avatar;
   let options = null;
 
   function isOpen() {
@@ -51,8 +61,19 @@ const AvatarEditor = (() => {
     releaseBitmap();
   }
 
+  function useFrame(next) {
+    frame = next;
+    nodes.editorTitle.textContent = frame.title;
+    // So a largura e fixa: numa janela estreita a tela do corte encolhe sem deformar.
+    nodes.canvas.style.width = `${frame.view[0]}px`;
+    nodes.canvas.style.height = 'auto';
+    nodes.canvas.style.aspectRatio = `${frame.view[0]} / ${frame.view[1]}`;
+    nodes.editor.querySelector('.dialog').classList.toggle('crop-wide', frame.view[0] > 300);
+  }
+
   function openPicker(next) {
     options = next;
+    useFrame(FRAMES.avatar);
     nodes.pickerStatus.textContent = '';
     nodes.recents.replaceChildren(...next.recents.map((recent) => {
       const button = document.createElement('button');
@@ -80,52 +101,64 @@ const AvatarEditor = (() => {
     const rotated = view.rotation % 180 !== 0;
     const width = rotated ? view.bitmap.height : view.bitmap.width;
     const height = rotated ? view.bitmap.width : view.bitmap.height;
-    const scale = Math.max(CROP_SIZE / width, CROP_SIZE / height) * view.zoom;
+    const scale = Math.max(frame.crop[0] / width, frame.crop[1] / height) * view.zoom;
     return { width: width * scale, height: height * scale, scale };
   }
 
+  // A imagem nunca deixa um pedaco da moldura vazio.
   function clampPan() {
     const { width, height } = metrics();
-    const maxX = Math.max(0, (width - CROP_SIZE) / 2);
-    const maxY = Math.max(0, (height - CROP_SIZE) / 2);
+    const maxX = Math.max(0, (width - frame.crop[0]) / 2);
+    const maxY = Math.max(0, (height - frame.crop[1]) / 2);
     view.panX = Math.max(-maxX, Math.min(maxX, view.panX));
     view.panY = Math.max(-maxY, Math.min(maxY, view.panY));
   }
 
-  function paint(context, size, factor) {
+  function paint(context, width, height, factor) {
     const { scale } = metrics();
     context.save();
-    context.translate(size / 2 + view.panX * factor, size / 2 + view.panY * factor);
+    context.translate(width / 2 + view.panX * factor, height / 2 + view.panY * factor);
     context.rotate((view.rotation * Math.PI) / 180);
     context.scale(scale * factor, scale * factor);
     context.drawImage(view.bitmap, -view.bitmap.width / 2, -view.bitmap.height / 2);
     context.restore();
   }
 
+  function traceCrop(context, counterclockwise) {
+    const [viewWidth, viewHeight] = frame.view;
+    const [cropWidth, cropHeight] = frame.crop;
+    if (frame.round) {
+      context.arc(viewWidth / 2, viewHeight / 2, cropWidth / 2, 0, Math.PI * 2, counterclockwise);
+    } else {
+      context.roundRect((viewWidth - cropWidth) / 2, (viewHeight - cropHeight) / 2, cropWidth, cropHeight, CROP_CORNER);
+    }
+  }
+
   function draw() {
     if (!view.bitmap) {
       return;
     }
+    const [viewWidth, viewHeight] = frame.view;
     const ratio = window.devicePixelRatio || 1;
     const { canvas } = nodes;
-    canvas.width = Math.round(VIEW_SIZE * ratio);
-    canvas.height = Math.round(VIEW_SIZE * ratio);
+    canvas.width = Math.round(viewWidth * ratio);
+    canvas.height = Math.round(viewHeight * ratio);
     const context = canvas.getContext('2d');
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
     context.fillStyle = '#1e1f22';
-    context.fillRect(0, 0, VIEW_SIZE, VIEW_SIZE);
-    paint(context, VIEW_SIZE, 1);
+    context.fillRect(0, 0, viewWidth, viewHeight);
+    paint(context, viewWidth, viewHeight, 1);
 
     context.fillStyle = 'rgba(0, 0, 0, 0.55)';
     context.beginPath();
-    context.rect(0, 0, VIEW_SIZE, VIEW_SIZE);
-    context.arc(VIEW_SIZE / 2, VIEW_SIZE / 2, CROP_SIZE / 2, 0, Math.PI * 2, true);
+    context.rect(0, 0, viewWidth, viewHeight);
+    traceCrop(context, true);
     context.fill('evenodd');
 
     context.strokeStyle = '#ffffff';
     context.lineWidth = 3;
     context.beginPath();
-    context.arc(VIEW_SIZE / 2, VIEW_SIZE / 2, CROP_SIZE / 2, 0, Math.PI * 2);
+    traceCrop(context, false);
     context.stroke();
   }
 
@@ -138,14 +171,10 @@ const AvatarEditor = (() => {
     draw();
   }
 
-  async function loadFile(file) {
-    nodes.file.value = '';
-    if (!file) {
-      return;
-    }
+  // Devolve o motivo quando a imagem nao pode ser aberta.
+  async function edit(file) {
     if (!file.type.startsWith('image/')) {
-      nodes.pickerStatus.textContent = 'Escolha um arquivo de imagem.';
-      return;
+      return 'Escolha um arquivo de imagem.';
     }
     try {
       const bitmap = await createImageBitmap(file);
@@ -155,8 +184,26 @@ const AvatarEditor = (() => {
       nodes.picker.hidden = true;
       nodes.editor.hidden = false;
       resetView();
+      return '';
     } catch {
-      nodes.pickerStatus.textContent = 'Não consegui abrir essa imagem. Tente PNG, JPG, WebP ou GIF.';
+      return 'Não consegui abrir essa imagem. Tente PNG, JPG, WebP ou GIF.';
+    }
+  }
+
+  async function loadFile(file) {
+    nodes.file.value = '';
+    if (file) {
+      nodes.pickerStatus.textContent = await edit(file);
+    }
+  }
+
+  // Abre direto no corte, para uma imagem que a pessoa ja escolheu em outro lugar.
+  async function openCrop(file, next) {
+    options = next;
+    useFrame(FRAMES[next.frame]);
+    const problem = await edit(file);
+    if (problem && next.onError) {
+      next.onError(problem);
     }
   }
 
@@ -179,12 +226,13 @@ const AvatarEditor = (() => {
     }
     nodes.apply.disabled = true;
     try {
+      const [outputWidth, outputHeight] = frame.output;
       const canvas = document.createElement('canvas');
-      canvas.width = OUTPUT_SIZE;
-      canvas.height = OUTPUT_SIZE;
+      canvas.width = outputWidth;
+      canvas.height = outputHeight;
       const context = canvas.getContext('2d');
       context.imageSmoothingQuality = 'high';
-      paint(context, OUTPUT_SIZE, OUTPUT_SIZE / CROP_SIZE);
+      paint(context, outputWidth, outputHeight, outputWidth / frame.crop[0]);
 
       let blob = null;
       for (const quality of [0.9, 0.8, 0.65, 0.5]) {
@@ -242,7 +290,7 @@ const AvatarEditor = (() => {
     if (!view.drag) {
       return;
     }
-    const factor = VIEW_SIZE / nodes.canvas.getBoundingClientRect().width;
+    const factor = frame.view[0] / nodes.canvas.getBoundingClientRect().width;
     view.panX = view.drag.panX + (event.clientX - view.drag.x) * factor;
     view.panY = view.drag.panY + (event.clientY - view.drag.y) * factor;
     clampPan();
@@ -276,5 +324,5 @@ const AvatarEditor = (() => {
     }
   });
 
-  return { isOpen, openPicker };
+  return { isOpen, openPicker, openCrop };
 })();

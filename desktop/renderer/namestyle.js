@@ -13,10 +13,6 @@ const NameStyle = (() => {
   };
   const DEFAULT_COLORS = ['#5865f2', '#eb459e', '#19b8b0', '#f0b232', '#23a55a'];
   const EMPTY = { name: null, theme: null, bio: '' };
-  // O banner e guardado no dobro do tamanho em que aparece no cartao, para ficar nitido.
-  const BANNER_WIDTH = 600;
-  const BANNER_HEIGHT = 210;
-  const BANNER_QUALITY = 0.86;
 
   const known = load();
   let editor = null;
@@ -173,26 +169,6 @@ const NameStyle = (() => {
     card.style.top = `${Math.max(8, Math.min(anchor.top - 24, window.innerHeight - height - 8))}px`;
   }
 
-  // Corta a imagem pelo centro na proporcao do banner e devolve em JPEG.
-  async function bannerFrom(file) {
-    const picture = await createImageBitmap(file);
-    const scale = Math.max(BANNER_WIDTH / picture.width, BANNER_HEIGHT / picture.height);
-    const width = picture.width * scale;
-    const height = picture.height * scale;
-    const canvas = make('canvas');
-    canvas.width = BANNER_WIDTH;
-    canvas.height = BANNER_HEIGHT;
-    canvas.getContext('2d').drawImage(picture, (BANNER_WIDTH - width) / 2, (BANNER_HEIGHT - height) / 2, width, height);
-    picture.close();
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', BANNER_QUALITY));
-    const bytes = new Uint8Array(await blob.arrayBuffer());
-    let binary = '';
-    for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-      binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-    }
-    return { mime: 'image/jpeg', data: btoa(binary) };
-  }
-
   /* editor nas configuracoes */
 
   function find(id) {
@@ -312,16 +288,11 @@ const NameStyle = (() => {
 
     const picker = find('profile-banner-file');
     find('profile-banner-change').addEventListener('click', () => picker.click());
-    picker.addEventListener('change', async () => {
+    picker.addEventListener('change', () => {
       const [file] = picker.files;
       picker.value = '';
-      if (!file) {
-        return;
-      }
-      try {
-        await editor.setBanner(await bannerFrom(file));
-      } catch {
-        editor.fail('Não consegui usar essa imagem como banner.');
+      if (file) {
+        editor.cropBanner(file);
       }
     });
     find('profile-banner-remove').addEventListener('click', () => editor.removeBanner());

@@ -3774,9 +3774,19 @@ async function init() {
   NameStyle.bindEditor({
     style: () => state.profile.style,
     save: (style) => api.setProfileStyle(style),
-    setBanner: (banner) => api.setBanner(banner),
+    cropBanner: (file) => AvatarEditor.openCrop(file, {
+      frame: 'banner',
+      onError: toast,
+      onApply: async (mime, data) => {
+        try {
+          await api.setBanner({ mime, data });
+          toast('Banner atualizado.');
+        } catch (error) {
+          toast(cleanError(error));
+        }
+      },
+    }),
     removeBanner: () => api.removeBanner(),
-    fail: toast,
     person: () => ({
       name: state.profile.name,
       activity: personActivity(state.profile.memberId),

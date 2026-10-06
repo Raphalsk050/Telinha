@@ -1337,6 +1337,7 @@ body.resizing, body.resizing * { cursor: ns-resize !important; user-select: none
 .avatar.has-image { background: transparent !important; }
 .avatar-row { display: flex; align-items: center; gap: 12px; }
 .avatar-dialog { width: min(420px, 100%); }
+.avatar-dialog.crop-wide { width: min(560px, 100%); }
 
 .avatar-upload {
   width: 100%;
@@ -1745,7 +1746,8 @@ body.resizing, body.resizing * { cursor: ns-resize !important; user-select: none
 .profile-popout { position: fixed; z-index: 30; }
 .profile-card-inner { border-radius: 11px; overflow: hidden; background: var(--card-surface); }
 .profile-card-banner { height: 60px; background: var(--accent); }
-.profile-card-banner.has-image { height: 105px; }
+/* Na mesma proporcao em que o banner e recortado, para o cartao mostrar exatamente o que foi escolhido. */
+.profile-card-banner.has-image { height: auto; aspect-ratio: 600 / 210; }
 .profile-card-banner img { display: block; width: 100%; height: 100%; object-fit: cover; }
 
 /* O anel do retrato tem a cor do fundo do cartao, como se o retrato estivesse recortado do banner. */

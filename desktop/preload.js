@@ -81,6 +81,7 @@ contextBridge.exposeInMainWorld('telinha', {
   linkPreview: (url) => invoke('link:preview', url),
   openExternal: (url) => invoke('app:open-external', url),
   setZoom: (factor) => invoke('app:set-zoom', factor),
+  showLog: () => invoke('app:show-log'),
   downloadChatFile: (spaceId, channelId, fileId) => invoke('chat:download-file', { spaceId, channelId, fileId }),
   fileSignal: (id, sdp) => invoke('file:signal', { id, sdp }),
   fileRead: (id) => invoke('file:read', id),

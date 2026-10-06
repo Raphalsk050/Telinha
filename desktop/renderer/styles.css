@@ -1906,7 +1906,7 @@ body.resizing, body.resizing * { cursor: ns-resize !important; user-select: none
   font-size: 14px;
 }
 
-.settings-version { margin: 16px 0 0; text-align: right; }
+.settings-version { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin: 16px 0 0; }
 
 .toast {
   position: fixed;

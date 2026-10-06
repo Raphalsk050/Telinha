@@ -33,6 +33,7 @@ const {
   resolveTelinhaExe,
 } = require('./src/telinha-process');
 const { Updater } = require('./src/updater');
+const { AppLog, describeError } = require('./src/applog');
 
 const DM_ROOM = 'dm';
 const AUDIO_SCOPES = new Set(['system', 'process', 'device', 'none']);
@@ -56,12 +57,18 @@ const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 2;
 const UPDATE_WATCH_MS = 3000;
 const UPDATE_IDLE_MS = 15000;
+const WINDOW_REVEAL_MS = 8000;
+const PROBE_TIMEOUT_MS = 2000;
+// Linhas do telinha.exe que valem guardar no registro do app.
+const NOTABLE_LINE_PATTERN = /falha fatal|\[error\]/;
 const IMAGE_EXTENSIONS = new Map([
   ['image/png', 'png'],
   ['image/jpeg', 'jpg'],
   ['image/webp', 'webp'],
   ['image/gif', 'gif'],
 ]);
+
+const log = new AppLog(path.join(app.getPath('userData'), 'logs', 'telinha.log'));
 
 let mainWindow = null;
 let profile = null;
@@ -278,6 +285,7 @@ function restartToUpdate() {
   if (!updater || !updater.apply({ waitPid: process.ppid, relaunch: true, elevate: true })) {
     return false;
   }
+  log.info(`fechando para trocar o executavel pela versao ${updater.snapshot().version}`);
   app.quit();
   return true;
 }
@@ -309,7 +317,15 @@ function startUpdater() {
     stageDir: path.join(app.getPath('userData'), 'updates'),
     helper: telinhaExe(),
   });
-  updater.on('changed', (snapshot) => sendToWindow('update:changed', snapshot));
+  let lastStatus = '';
+  updater.on('changed', (snapshot) => {
+    sendToWindow('update:changed', snapshot);
+    if (snapshot.status !== lastStatus) {
+      lastStatus = snapshot.status;
+      log.info(`atualizacao: ${snapshot.status}${snapshot.version ? ` ${snapshot.version}` : ''}`);
+    }
+  });
+  updater.on('failed', (error) => log.error(`atualizacao: ${describeError(error)}`));
   updater.start();
   setInterval(watchUpdate, UPDATE_WATCH_MS).unref();
 }
@@ -1398,6 +1414,10 @@ function registerIpc() {
   ipcMain.handle('file:close', (_event, { id, reason = null }) => fileShare.close(String(id), reason));
 
   ipcMain.handle('link:preview', (_event, url) => linkPreviews.get(url));
+  ipcMain.handle('app:show-log', () => {
+    log.info('registro aberto pelas configuracoes');
+    shell.showItemInFolder(log.file);
+  });
   ipcMain.handle('app:open-external', (_event, url) => {
     const target = safeExternalUrl(url);
     if (!target) {
@@ -1544,6 +1564,34 @@ function configurePermissions() {
   current.setPermissionCheckHandler((_webContents, permission) => ALLOWED_PERMISSIONS.has(permission));
 }
 
+// O que da para saber, de fora, de uma pagina que nao chegou a pintar: ate onde ela carregou, se
+// ainda responde, e como estao os processos e a placa de video.
+async function describeStuckPage(contents, steps) {
+  const within = (promise) => Promise.race([
+    promise,
+    new Promise((resolve) => {
+      setTimeout(resolve, PROBE_TIMEOUT_MS, null);
+    }),
+  ]).catch(() => null);
+  const frame = contents.mainFrame;
+  const state = frame ? await within(frame.executeJavaScript('document.readyState')) : null;
+  const graphics = await within(app.getGPUInfo('basic'));
+  const cards = ((graphics && graphics.gpuDevice) || []).map((card) => {
+    const driver = card.driverVersion ? ` driver ${card.driverVersion}` : '';
+    return `${Number(card.vendorId).toString(16)}:${Number(card.deviceId).toString(16)}${driver}`;
+  });
+  const processes = app.getAppMetrics()
+    .map((metric) => `${metric.serviceName || metric.type} ${Math.round(metric.memory.workingSetSize / 1024)} MB`);
+  const features = Object.entries(app.getGPUFeatureStatus()).map(([name, status]) => `${name}=${status}`);
+  return [
+    `etapas: ${steps.join(', ') || 'nenhuma'}`,
+    `pagina: ${state ? `responde, ${state}` : 'nao responde'}`,
+    `processos: ${processes.join(', ')}`,
+    `placa de video: ${cards.join(', ') || 'desconhecida'}`,
+    `recursos graficos: ${features.join(' ')}`,
+  ].join('\n');
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1360,
@@ -1576,11 +1624,89 @@ function createWindow() {
     return { action: 'deny' };
   });
   contents.on('will-navigate', (event) => event.preventDefault());
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  contents.on('did-fail-load', (_event, code, description, url) => {
+    log.error(`a pagina nao carregou: ${code} ${description} (${url})`);
+  });
+  contents.on('preload-error', (_event, _file, error) => log.error(`o preload falhou: ${describeError(error)}`));
+  contents.on('unresponsive', () => log.error('a interface parou de responder'));
+  contents.on('console-message', (...args) => {
+    // O formato deste evento mudou entre versoes do Electron: um objeto so, ou os campos soltos.
+    const details = args[0] && typeof args[0] === 'object' && 'message' in args[0] ? args[0] : null;
+    const level = details ? details.level : args[1];
+    if (level === 'error' || level === 3) {
+      log.error(`interface: ${details ? details.message : args[2]}`);
+    }
+  });
+
+  const opened = Date.now();
+  const elapsed = () => `${((Date.now() - opened) / 1000).toFixed(1)} s`;
+  const steps = [];
+  for (const step of ['did-navigate', 'dom-ready', 'did-finish-load']) {
+    contents.once(step, () => steps.push(`${step} em ${elapsed()}`));
+  }
+
+  // A janela aparece com a pagina carregada ou com a primeira pintura, o que vier antes. Em alguns
+  // computadores a pintura de uma janela escondida so se confirma depois que ela aparece, e esperar
+  // so por ela deixava o app aberto sem janela nenhuma.
+  let shown = false;
+  const reveal = (moment) => {
+    if (shown || mainWindow.isDestroyed()) {
+      return false;
+    }
+    shown = true;
+    mainWindow.show();
+    const bounds = mainWindow.getBounds();
+    log.info(`janela mostrada em ${elapsed()}, ${moment}, em ${bounds.x},${bounds.y} com ${bounds.width}x${bounds.height}`);
+    return true;
+  };
+  contents.once('did-finish-load', () => reveal('com a pagina carregada'));
+  mainWindow.once('ready-to-show', () => {
+    if (!reveal('na primeira pintura')) {
+      log.info(`primeira pintura em ${elapsed()}`);
+    }
+  });
+  // Se nem a pagina carregar, a janela aparece vazia e o registro guarda o que deu para ver.
+  setTimeout(() => {
+    if (reveal('sem a pagina carregar')) {
+      describeStuckPage(contents, steps).catch(describeError).then((report) => {
+        log.error(`a pagina nao carregou em ${WINDOW_REVEAL_MS / 1000} s\n${report}`);
+      });
+    }
+  }, WINDOW_REVEAL_MS);
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 }
 
-app.whenReady().then(() => {
+function startLog() {
+  const opened = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+  // O tamanho separa um executavel do outro quando dois dizem a mesma versao.
+  let size = '';
+  try {
+    size = ` (${fs.statSync(opened).size} bytes)`;
+  } catch {
+    // sem o tamanho o resto da linha ainda serve
+  }
+  log.info(`Telinha ${appVersion()}${size} abrindo de ${opened}, Windows ${os.release()}, `
+    + `Electron ${process.versions.electron}`);
+  process.on('uncaughtExceptionMonitor', (error) => log.error(`erro no processo principal: ${describeError(error)}`));
+  process.on('unhandledRejection', (reason) => log.error(`promessa sem tratamento: ${describeError(reason)}`));
+  app.on('render-process-gone', (_event, _contents, details) => {
+    log.error(`a interface caiu: ${details.reason}, codigo ${details.exitCode}`);
+  });
+  app.on('child-process-gone', (_event, details) => {
+    log.error(`o processo ${details.type} caiu: ${details.reason}, codigo ${details.exitCode}`);
+  });
+  app.on('quit', (_event, code) => log.info(`fechando, codigo ${code}`));
+}
+
+// Um erro aqui deixava o app rodando sem janela nenhuma e sem dizer nada.
+function failStartup(error) {
+  log.error(`nao consegui iniciar: ${describeError(error)}`);
+  dialog.showErrorBox('Telinha', `O Telinha não conseguiu iniciar.\n\n${error && error.message ? error.message : error}`
+    + `\n\nOs detalhes ficaram em:\n${log.file}`);
+  app.exit(1);
+}
+
+function start() {
   const storage = protectedStorage();
   const userData = app.getPath('userData');
   profile = new ProfileStore(path.join(userData, 'profile.json'), systemName()).load();
@@ -1635,9 +1761,26 @@ app.whenReady().then(() => {
     }
   });
   streams.on('event', (payload) => sendToWindow('stream:event', payload));
-  streams.on('log', (payload) => sendToWindow('stream:log', payload));
-  streams.on('outgoing-ended', (info) => sendToWindow('stream:outgoing-ended', info));
-  streams.on('incoming-ended', (info) => sendToWindow('stream:incoming-ended', info));
+  streams.on('log', (payload) => {
+    sendToWindow('stream:log', payload);
+    if (NOTABLE_LINE_PATTERN.test(payload.line)) {
+      log.error(`telinha.exe: ${payload.line}`);
+    }
+  });
+  // Parar de proposito nao entra no registro, so o que parou sozinho.
+  const ending = (info) => `codigo ${info.code}${info.error ? ` ${JSON.stringify(info.error)}` : ''}`;
+  streams.on('outgoing-ended', (info) => {
+    sendToWindow('stream:outgoing-ended', info);
+    if (!info.stopped && (info.code || info.error)) {
+      log.error(`a transmissao parou sozinha, ${ending(info)}`);
+    }
+  });
+  streams.on('incoming-ended', (info) => {
+    sendToWindow('stream:incoming-ended', info);
+    if (info.reason === 'failed') {
+      log.error(`assistir a transmissao falhou, ${ending(info)}`);
+    }
+  });
   streams.on('embedded-offer', (payload) => sendToWindow('stream:offer', payload));
   streams.on('thumb', (payload) => sendToWindow('stream:thumb', payload));
 
@@ -1646,7 +1789,10 @@ app.whenReady().then(() => {
   createWindow();
   signaling.start();
   startUpdater();
-});
+}
+
+startLog();
+app.whenReady().then(start).catch(failStartup);
 
 app.on('before-quit', (event) => {
   if (quitting || !signaling) {

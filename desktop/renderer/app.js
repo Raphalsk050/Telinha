@@ -202,6 +202,7 @@ const el = {
   settingsAvatarRemove: byId('settings-avatar-remove'),
   toast: byId('toast'),
   settingsVersion: byId('settings-version'),
+  settingsLog: byId('settings-log'),
   updateNotice: byId('update-notice'),
   updateText: byId('update-text'),
   updateAction: byId('update-action'),
@@ -3640,6 +3641,7 @@ function bindEvents() {
   }
 
   el.settingsClose.addEventListener('click', closeSettings);
+  el.settingsLog.addEventListener('click', () => api.showLog());
   el.updateAction.addEventListener('click', () => api.restartToUpdate());
   el.updateLater.addEventListener('click', () => {
     el.updateNotice.hidden = true;

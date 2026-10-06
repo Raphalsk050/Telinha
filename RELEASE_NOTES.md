@@ -1,19 +1,15 @@
 # Telinha release notes
 ## Features
 
-1. Themes: Light, Ash, Dark and Onyx, or follow the computer. The light theme can keep a dark sidebar.
-2. Color themes: fourteen gradients over a dark or a light base, plus a custom one with up to five colors, a direction and an intensity. The gradient can also drift slowly.
-3. Name styles: solid, gradient, neon or prism colors on your name, seen by everyone you talk to.
-4. Profile card: click a name or an avatar to open it. Yours can carry a banner image that you crop to fit, two theme colors and a short "about me".
-5. Interface density, cozy or compact messages, chat font size, space between message groups and zoom from 50% to 200%.
+1. The app keeps a log of how it opened, its errors and its updates. Settings has a button that opens its folder.
 
 ## Improvements
 
-1. The channel edit button uses the same gear as the settings button.
+1. A failure while starting now shows a message that points to the log, instead of leaving the app open without a window.
 
 ## Fixes
 
-None.
+1. On some computers the app kept running without ever showing its window. The window now shows as soon as the page loads, or after 8 seconds at the latest.
 
 Notes:
-Name styles, banners and profile themes only show up for people on this version or newer.
+If 0.3.0 opened without a window on your computer, start it and wait a minute or two: it updates itself to this version and then the window shows up.

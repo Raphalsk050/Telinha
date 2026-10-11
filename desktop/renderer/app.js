@@ -2934,9 +2934,11 @@ function streamVolumeFor(sharerId) {
   return Call.personPrefs(Call.prefsKey({ id: sharerId, memberId: peer ? peer.memberId : null })).streamVolume;
 }
 
-const THUMB_INTERVAL_MS = 4000;
-const THUMB_MAX_AGE_MS = 60000;
-const THUMB_WIDTH = 480;
+// O retrato viaja pelo servidor de mensagens, o mesmo canal dos pedidos de chamada e de assistir.
+// A cada 4 s e com 480 de largura ele ocupava o canal e esses pedidos ficavam na fila atras dele.
+const THUMB_INTERVAL_MS = 20000;
+const THUMB_MAX_AGE_MS = 90000;
+const THUMB_WIDTH = 320;
 let thumbTimer = null;
 let thumbCanvas = null;
 

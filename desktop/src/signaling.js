@@ -5,10 +5,13 @@ const { EventEmitter } = require('node:events');
 const { openMessage, sealMessage } = require('./contacts');
 const { cleanStyle, hasStyle } = require('./profile');
 
+// O shiftr derruba a conexao quando recebe uma mensagem grande: 60 KB passaram, 150 KB nao. Ele
+// fica por ultimo para as mensagens grandes preferirem os outros quando todos alcancam as pessoas.
 const DEFAULT_BROKERS = [
   'wss://broker.hivemq.com:8884/mqtt',
   'wss://broker.emqx.io:8084/mqtt',
   'wss://test.mosquitto.org:8081',
+  { url: 'wss://public:public@public.cloud.shiftr.io:443', maxBytes: 60 * 1024 },
 ];
 const TOPIC_PREFIX = 'telinha/v1/';
 const PRESENCE_INTERVAL_MS = 25000;
@@ -42,6 +45,7 @@ function describePeer(message) {
       deaf: message.voice.deaf === true,
       live: message.voice.live === true,
       liveName: text(message.voice.liveName, 80),
+      v: Number.isInteger(message.voice.v) && message.voice.v > 0 ? message.voice.v : 1,
     }
     : null;
   const style = cleanStyle(message.style);
@@ -67,9 +71,12 @@ class Signaling extends EventEmitter {
     this.presenceFor = presenceFor;
     this.connectClient = connect;
     this.instanceId = crypto.randomUUID();
-    this.links = brokers.map((url) => ({
-      url, client: null, connected: false, failures: 0, retryTimer: null,
-    }));
+    this.links = brokers.map((broker) => {
+      const { url, maxBytes = Infinity } = typeof broker === 'string' ? { url: broker } : broker;
+      return {
+        url, maxBytes, client: null, connected: false, failures: 0, retryTimer: null,
+      };
+    });
     this.stopped = true;
     this.presence = new Map();
     this.routes = new Map();
@@ -192,7 +199,11 @@ class Signaling extends EventEmitter {
     const payload = sealMessage(keys.key, {
       ...body, type, from: this.instanceId, at: Date.now(), mid: crypto.randomUUID(),
     });
-    const targets = only ? open : this.routeFor(spaceId, payload.length, open);
+    const fits = open.filter((link) => payload.length <= link.maxBytes);
+    if (fits.length === 0) {
+      return false;
+    }
+    const targets = only ? fits : this.routeFor(spaceId, payload.length, fits);
     let settled = false;
     let failures = 0;
     const done = onAcked

@@ -6,6 +6,12 @@ const Call = (() => {
   const SPEAKING_LEVEL = 0.03;
   const SPEAKING_HOLD_MS = 350;
   const RETRY_DELAY_MS = 3000;
+  const DROP_RETRY_DELAY_MS = 1000;
+  const DROP_GRACE_MS = 2000;
+  const QUICK_ANSWER_MS = 5000;
+  const OFFER_REPEAT_AT_MS = [4000, 10000, 22000, 46000];
+  const ANSWER_TIMEOUT_MS = 90000;
+  const REPEAT_VERSION = 2;
   const STATS_INTERVAL_MS = 2000;
   const PEER_GRACE_MS = 5000;
   const SETTINGS_KEY = 'telinha.devices';
@@ -417,6 +423,9 @@ const Call = (() => {
       state: 'new',
       createdAt: Date.now(),
       retryTimer: null,
+      dropTimer: null,
+      offeredAt: 0,
+      answerMs: null,
       speakingUntil: 0,
       stats: { rtt: null, loss: 0, lost: 0, received: 0 },
     };
@@ -426,6 +435,7 @@ const Call = (() => {
 
   function closePeer(peer) {
     clearTimeout(peer.retryTimer);
+    clearTimeout(peer.dropTimer);
     if (peer.pc) {
       peer.pc.close();
       peer.pc = null;
@@ -492,6 +502,7 @@ const Call = (() => {
 
   function newConnection(peer) {
     clearTimeout(peer.retryTimer);
+    clearTimeout(peer.dropTimer);
     if (peer.pc) {
       peer.pc.close();
     }
@@ -529,13 +540,55 @@ const Call = (() => {
       if (peer.pc !== pc) {
         return;
       }
+      clearTimeout(peer.dropTimer);
       peer.state = pc.connectionState;
       if (pc.connectionState === 'failed') {
-        scheduleRetry(peer);
+        scheduleRetry(peer, DROP_RETRY_DELAY_MS);
+      } else if (pc.connectionState === 'disconnected' && peer.initiator && quickToAnswer(peer)) {
+        // A conexao so se da por perdida uns 10 s depois de ficar muda. Quando a combinacao com a
+        // pessoa e rapida, refazer logo custa menos do que esperar esse tempo todo.
+        peer.dropTimer = setTimeout(() => {
+          if (peer.pc === pc && pc.connectionState === 'disconnected') {
+            scheduleRetry(peer, DROP_RETRY_DELAY_MS);
+            emit();
+          }
+        }, DROP_GRACE_MS);
       }
       emit();
     };
     return pc;
+  }
+
+  function quickToAnswer(peer) {
+    return peer.answerMs !== null && peer.answerMs < QUICK_ANSWER_MS;
+  }
+
+  function answersRepeats(peer) {
+    const participant = participants().find((item) => item.id === peer.id);
+    return Boolean(participant && participant.voice.v >= REPEAT_VERSION);
+  }
+
+  // Sem resposta a conexao nunca chega a falhar, e uma oferta ou resposta perdida no caminho deixava
+  // a pessoa em "conectando" para sempre. Enquanto a resposta nao vem, a mesma oferta vai de novo,
+  // cada vez mais espacada, para quem sabe responder de novo sem recomecar. No fim do prazo, que
+  // cobre a ida e volta mais lenta medida, a conexao recomeca do zero.
+  function awaitAnswer(peer, pc, step = 0) {
+    const last = step >= OFFER_REPEAT_AT_MS.length;
+    const at = last ? ANSWER_TIMEOUT_MS : OFFER_REPEAT_AT_MS[step];
+    peer.retryTimer = setTimeout(() => {
+      if (peer.pc !== pc || pc.signalingState !== 'have-local-offer') {
+        return;
+      }
+      if (last) {
+        scheduleRetry(peer);
+        emit();
+        return;
+      }
+      if (answersRepeats(peer)) {
+        send(peer, { kind: 'offer', session: peer.session, description: pc.localDescription.toJSON() });
+      }
+      awaitAnswer(peer, pc, step + 1);
+    }, Math.max(0, peer.offeredAt + at - Date.now()));
   }
 
   async function startOffer(peer) {
@@ -549,7 +602,9 @@ const Call = (() => {
       await peer.videoTx.sender.replaceTrack(local.cameraOn ? local.camera : null);
       await pc.setLocalDescription(await pc.createOffer());
       if (peer.pc === pc) {
+        peer.offeredAt = Date.now();
         send(peer, { kind: 'offer', session: peer.session, description: pc.localDescription.toJSON() });
+        awaitAnswer(peer, pc);
       }
     } catch {
       if (peer.pc === pc) {
@@ -596,17 +651,22 @@ const Call = (() => {
     }
   }
 
-  function scheduleRetry(peer) {
+  function scheduleRetry(peer, delay = RETRY_DELAY_MS) {
     clearTimeout(peer.retryTimer);
+    clearTimeout(peer.dropTimer);
     peer.state = 'failed';
     if (!peer.initiator) {
       return;
     }
     peer.retryTimer = setTimeout(() => {
+      // A conexao pode ter voltado sozinha enquanto o prazo corria.
+      if (peer.pc && peer.pc.connectionState === 'connected') {
+        return;
+      }
       if (room && peers.get(peer.id) === peer && participants().some((item) => item.id === peer.id)) {
         startOffer(peer);
       }
-    }, RETRY_DELAY_MS);
+    }, delay);
   }
 
   async function handleRtc({ spaceId, from, payload }) {
@@ -618,6 +678,15 @@ const Call = (() => {
 
     if (payload.kind === 'offer') {
       if (!peer.initiator && payload.description) {
+        const { pc } = peer;
+        if (pc && peer.session === payload.session && pc.signalingState !== 'closed') {
+          // A mesma oferta de novo: a resposta se perdeu ou ainda esta a caminho. Ela vai outra vez,
+          // agora com os enderecos ja descobertos, e a conexao em andamento segue como esta.
+          if (pc.signalingState === 'stable' && pc.localDescription) {
+            send(peer, { kind: 'answer', session: peer.session, description: pc.localDescription.toJSON() });
+          }
+          return;
+        }
         await acceptOffer(peer, payload);
       }
       return;
@@ -630,6 +699,7 @@ const Call = (() => {
       }
       try {
         await pc.setRemoteDescription(payload.description);
+        peer.answerMs = Date.now() - peer.offeredAt;
         await flushCandidates(peer, pc);
       } catch {
         scheduleRetry(peer);

@@ -81,8 +81,8 @@ test('two apps see each other online and exchange encrypted requests', async () 
   alice.start();
   bob.start();
 
-  assert.deepEqual(await aliceSeesBob, { contactId: left.contactId, online: true });
-  assert.deepEqual(await bobName, { contactId: left.contactId, name: 'Bob' });
+  assert.deepEqual(await aliceSeesBob, { contactId: left.contactId, spaceId: left.contactId, online: true });
+  assert.deepEqual(await bobName, { contactId: left.contactId, spaceId: left.contactId, name: 'Bob' });
 
   const received = nextEvent(bob, 'message');
   assert.equal(alice.publish(left.contactId, 'request', { sessionId: 's1', role: 'share' }), true);
@@ -98,8 +98,72 @@ test('two apps see each other online and exchange encrypted requests', async () 
 
   const offline = nextEvent(alice, 'presence');
   await bob.stop();
-  assert.deepEqual(await offline, { contactId: left.contactId, online: false });
+  assert.deepEqual(await offline, { contactId: left.contactId, spaceId: left.contactId, online: false });
   await alice.stop();
+});
+
+test('a message larger than a server accepts goes only through the others', async () => {
+  const small = new FakeBroker();
+  const large = new FakeBroker();
+  const { store, contactId } = pairedStore();
+  const app = new Signaling({
+    store,
+    profileName: 'Solo',
+    brokers: [{ url: 'fake://small', maxBytes: 2000 }, 'fake://large'],
+    connect: (url) => (url === 'fake://small' ? small : large).connect(),
+  });
+  app.start();
+  await nextEvent(app, 'status');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  small.published.length = 0;
+  large.published.length = 0;
+
+  assert.equal(app.publish(contactId, 'request', { blob: 'x'.repeat(5000) }), true);
+  assert.equal(small.published.length, 0);
+  assert.equal(large.published.length, 1);
+
+  assert.equal(app.publish(contactId, 'request', { blob: 'x' }), true);
+  assert.equal(small.published.length, 1);
+  assert.equal(large.published.length, 2);
+  await app.stop();
+
+  const alone = new Signaling({
+    store, profileName: 'Solo', brokers: [{ url: 'fake://small', maxBytes: 2000 }], connect: () => small.connect(),
+  });
+  alone.start();
+  await nextEvent(alone, 'status');
+  assert.equal(alone.publish(contactId, 'request', { blob: 'x'.repeat(5000) }), false);
+  await alone.stop();
+});
+
+test('presence carries the call version, and an app that says none counts as the first', async () => {
+  const broker = new FakeBroker();
+  const connect = () => broker.connect();
+  const left = pairedStore();
+  const right = pairedStore();
+  const alice = new Signaling({
+    store: left.store,
+    profileName: 'Alice',
+    brokers: ['fake://a'],
+    connect,
+    presenceFor: () => ({ voice: { roomId: 'sala', v: 2 } }),
+  });
+  const bob = new Signaling({
+    store: right.store,
+    profileName: 'Bob',
+    brokers: ['fake://a'],
+    connect,
+    presenceFor: () => ({ voice: { roomId: 'sala' } }),
+  });
+
+  const bobSeesAlice = nextEvent(bob, 'peers');
+  const aliceSeesBob = nextEvent(alice, 'peers');
+  alice.start();
+  bob.start();
+  assert.equal((await bobSeesAlice).peers[0].voice.v, 2);
+  assert.equal((await aliceSeesBob).peers[0].voice.v, 1);
+  await alice.stop();
+  await bob.stop();
 });
 
 test('messages sent by the same app are ignored', async () => {

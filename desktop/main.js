@@ -43,6 +43,9 @@ const ALLOWED_PERMISSIONS = new Set([
 const WEBRTC_PORT_MIN = 50020;
 const WEBRTC_PORT_MAX = 50039;
 const MAX_RTC_PAYLOAD = 60000;
+// Versao da combinacao de chamada que este app fala. A partir da 2, quem recebe de novo a mesma
+// oferta responde de novo em vez de recomecar a conexao.
+const VOICE_VERSION = 2;
 const META_REPLY_INTERVAL_MS = 5000;
 const CHANNEL_ID_PATTERN = /^[a-f0-9]{16}$/;
 const OFFER_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
@@ -398,6 +401,7 @@ function presenceFor(spaceId) {
       deaf: voice.deaf,
       live,
       liveName: live ? outgoing.targetName : '',
+      v: VOICE_VERSION,
     };
   }
   const meta = servers.meta(spaceId);

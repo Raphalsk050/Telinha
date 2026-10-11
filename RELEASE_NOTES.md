@@ -1,15 +1,17 @@
 # Telinha release notes
 ## Features
 
-1. The app keeps a log of how it opened, its errors and its updates. Settings has a button that opens its folder.
+None.
 
 ## Improvements
 
-1. A failure while starting now shows a message that points to the log, instead of leaving the app open without a window.
+1. Calls and screen shares connect faster. The app now also uses a fourth message server, which delivered in under half a second where the others took several seconds.
+2. A call that drops starts reconnecting about 10 seconds sooner.
+3. The preview of a live screen share is lighter and refreshes every 20 seconds, so it no longer holds back people who are trying to connect.
 
 ## Fixes
 
-1. On some computers the app kept running without ever showing its window. The window now shows as soon as the page loads, or after 8 seconds at the latest.
+1. A person could stay on "conectando…" forever when one connection message was lost on the way. The app now sends it again after 4 seconds.
 
 Notes:
-If 0.3.0 opened without a window on your computer, start it and wait a minute or two: it updates itself to this version and then the window shows up.
+The faster connection needs both sides on this version.

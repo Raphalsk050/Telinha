@@ -34,15 +34,15 @@ const {
 } = require('./src/telinha-process');
 const { Updater } = require('./src/updater');
 const { AppLog, describeError } = require('./src/applog');
+const { randomPortWindow } = require('./src/ports');
 
 const DM_ROOM = 'dm';
 const AUDIO_SCOPES = new Set(['system', 'process', 'device', 'none']);
 const ALLOWED_PERMISSIONS = new Set([
   'media', 'notifications', 'clipboard-sanitized-write', 'speaker-selection', 'fullscreen',
 ]);
-const WEBRTC_PORT_MIN = 50020;
-const WEBRTC_PORT_MAX = 50039;
 const MAX_RTC_PAYLOAD = 60000;
+const MAX_CALL_REPORT = 1500;
 // Versao da combinacao de chamada que este app fala. A partir da 2, quem recebe de novo a mesma
 // oferta responde de novo em vez de recomecar a conexao.
 const VOICE_VERSION = 2;
@@ -93,6 +93,7 @@ let updateIdleSince = 0;
 let voice = null;
 let quitting = false;
 let lastLive = false;
+let callPorts = null;
 
 const calls = new Map();
 const metaReplies = new Map();
@@ -935,6 +936,17 @@ function handleSignalingMessage({ spaceId, message }) {
 
 /* chamada */
 
+// A troca vale para as conexoes criadas dai em diante. As que ja estao de pe seguem nas portas delas.
+function moveCallPorts() {
+  callPorts = randomPortWindow(callPorts);
+  if (mainWindow && !mainWindow.isDestroyed()
+    && typeof mainWindow.webContents.setWebRTCUDPPortRange === 'function') {
+    mainWindow.webContents.setWebRTCUDPPortRange(callPorts);
+  }
+  log.info(`chamada: portas ${callPorts.min}-${callPorts.max}`);
+  return { ...callPorts };
+}
+
 function roomExists(spaceId, roomId) {
   if (store.get(spaceId)) {
     return roomId === DM_ROOM;
@@ -1463,6 +1475,10 @@ function registerIpc() {
   });
   ipcMain.handle('voice:leave', () => leaveVoice());
 
+  ipcMain.handle('rtc:move-ports', () => moveCallPorts());
+  ipcMain.handle('rtc:report', (_event, text) => {
+    log.info(`chamada: ${String(text).slice(0, MAX_CALL_REPORT)}`);
+  });
   ipcMain.handle('rtc:send', (_event, { spaceId, to, payload }) => {
     if (!voice || voice.spaceId !== spaceId || !PEER_ID_PATTERN.test(String(to))) {
       return false;
@@ -1617,9 +1633,7 @@ function createWindow() {
   });
   describeToTaskbar(mainWindow);
   const contents = mainWindow.webContents;
-  if (typeof contents.setWebRTCUDPPortRange === 'function') {
-    contents.setWebRTCUDPPortRange({ min: WEBRTC_PORT_MIN, max: WEBRTC_PORT_MAX });
-  }
+  moveCallPorts();
   contents.setWindowOpenHandler(({ url }) => {
     const target = safeExternalUrl(url);
     if (target) {

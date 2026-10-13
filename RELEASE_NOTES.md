@@ -5,13 +5,13 @@ None.
 
 ## Improvements
 
-1. Calls and screen shares connect faster. The app now also uses a fourth message server, which delivered in under half a second where the others took several seconds.
-2. A call that drops starts reconnecting about 10 seconds sooner.
-3. The preview of a live screen share is lighter and refreshes every 20 seconds, so it no longer holds back people who are trying to connect.
+1. A call that fails to connect tries again through different network ports, instead of repeating the same attempt.
+2. The app log now records each call attempt: how long it took, and whether the other side was reached.
 
 ## Fixes
 
-1. A person could stay on "conectando…" forever when one connection message was lost on the way. The app now sends it again after 4 seconds.
+1. A person could stay on "conectando…" for minutes, or forever, on routers that handle UDP ports 50000 to 50100 in a special way. Calls and screen shares used fixed ports inside that range. They now use ports between 51200 and 59999, different on each computer.
+2. Two computers on the same home network no longer compete for the same ports on the router.
 
 Notes:
-The faster connection needs both sides on this version.
+The ports are no longer fixed, so a router rule that forwards UDP 50000 to 50039 has no effect anymore and can be removed.

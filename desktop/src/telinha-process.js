@@ -5,13 +5,12 @@ const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
+const { randomPortWindow } = require('./ports');
 
 const CODE_PREFIX = 'TELINHA1.';
 const CODE_MAGIC = 'VExT';
 const STOP_GRACE_MS = 4000;
 const LIST_TIMEOUT_MS = 15000;
-const LOCAL_PORT_MIN = 50000;
-const LOCAL_PORT_MAX = 50019;
 const DEV_EXE = path.join(
   __dirname, '..', '..', 'build', 'msvc-release', 'tools', 'telinha', 'Release', 'telinha.exe');
 const TARGET_KINDS = new Set(['monitor', 'window', 'device']);
@@ -53,8 +52,8 @@ function looksLikeCode(text) {
   return body.length > 16 && body.startsWith(CODE_MAGIC) && /^[A-Za-z0-9_-]+$/.test(body);
 }
 
-function withPortRange(args) {
-  args.push('--port-min', String(LOCAL_PORT_MIN), '--port-max', String(LOCAL_PORT_MAX));
+function withPortRange(args, ports) {
+  args.push('--port-min', String(ports.min), '--port-max', String(ports.max));
   return args;
 }
 
@@ -64,7 +63,7 @@ function isAudioDeviceId(value) {
 
 function buildShareArgs({
   targetKind, targetIndex, targetHandle, audio = 'system', audioPid, audioDevice, fps, multi = false,
-  excludePid,
+  excludePid, ports = randomPortWindow(),
 } = {}) {
   if (!TARGET_KINDS.has(targetKind)) {
     throw new Error('escolha uma tela, um programa ou uma placa de captura para compartilhar');
@@ -102,10 +101,10 @@ function buildShareArgs({
   if (fps !== undefined) {
     args.push('--fps', String(fps));
   }
-  return withPortRange(args);
+  return withPortRange(args, ports);
 }
 
-function buildWatchArgs({ fullscreen = false, audio = true, title = '' } = {}) {
+function buildWatchArgs({ fullscreen = false, audio = true, title = '', ports = randomPortWindow() } = {}) {
   const args = ['recv', '--json'];
   if (fullscreen) {
     args.push('--fullscreen');
@@ -116,7 +115,7 @@ function buildWatchArgs({ fullscreen = false, audio = true, title = '' } = {}) {
   if (!audio) {
     args.push('--no-audio');
   }
-  return withPortRange(args);
+  return withPortRange(args, ports);
 }
 
 function listTargets(exe, { timeoutMs = LIST_TIMEOUT_MS } = {}) {
@@ -251,8 +250,6 @@ class TelinhaSession extends EventEmitter {
 module.exports = {
   CODE_PREFIX,
   DEV_EXE,
-  LOCAL_PORT_MAX,
-  LOCAL_PORT_MIN,
   TelinhaSession,
   buildShareArgs,
   buildWatchArgs,

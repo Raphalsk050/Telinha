@@ -426,6 +426,10 @@ const Call = (() => {
       dropTimer: null,
       offeredAt: 0,
       answerMs: null,
+      attempt: 0,
+      startedAt: 0,
+      connectedAt: 0,
+      checks: '',
       speakingUntil: 0,
       stats: { rtt: null, loss: 0, lost: 0, received: 0 },
     };
@@ -513,6 +517,10 @@ const Call = (() => {
     peer.audioTrack = null;
     peer.videoTrack = null;
     peer.stats = { rtt: null, loss: 0, lost: 0, received: 0 };
+    peer.attempt += 1;
+    peer.startedAt = Date.now();
+    peer.connectedAt = 0;
+    peer.checks = '';
 
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     peer.pc = pc;
@@ -542,7 +550,12 @@ const Call = (() => {
       }
       clearTimeout(peer.dropTimer);
       peer.state = pc.connectionState;
+      if (pc.connectionState === 'connected' && !peer.connectedAt) {
+        peer.connectedAt = Date.now();
+        reportConnected(peer, pc);
+      }
       if (pc.connectionState === 'failed') {
+        reportFailed(peer);
         scheduleRetry(peer, DROP_RETRY_DELAY_MS);
       } else if (pc.connectionState === 'disconnected' && peer.initiator && quickToAnswer(peer)) {
         // A conexao so se da por perdida uns 10 s depois de ficar muda. Quando a combinacao com a
@@ -557,6 +570,62 @@ const Call = (() => {
       emit();
     };
     return pc;
+  }
+
+  /* registro das tentativas */
+
+  function describePeer(peer) {
+    const participant = participants().find((item) => item.id === peer.id);
+    return `${participant && participant.name ? participant.name : '?'} (${peer.id.slice(0, 4)})`;
+  }
+
+  // Os testes de caminho de uma conexao: de que tipo de endereco e porta para qual, quantos pedidos
+  // sairam, quantas respostas voltaram e quantos pedidos do outro lado chegaram. So tipo e porta,
+  // sem o endereco de ninguem.
+  async function readChecks(pc) {
+    const report = await pc.getStats();
+    const ends = new Map();
+    const pairs = [];
+    report.forEach((stat) => {
+      if (stat.type === 'local-candidate' || stat.type === 'remote-candidate') {
+        ends.set(stat.id, `${stat.candidateType} ${stat.port}`);
+      } else if (stat.type === 'candidate-pair') {
+        pairs.push(stat);
+      }
+    });
+    return pairs.map((pair) => ({
+      chosen: pair.nominated === true && pair.state === 'succeeded',
+      text: `${ends.get(pair.localCandidateId)} > ${ends.get(pair.remoteCandidateId)}`
+        + ` enviou ${pair.requestsSent} respostas ${pair.responsesReceived} recebeu ${pair.requestsReceived}`,
+    }));
+  }
+
+  // Quando a conexao falha os testes ja foram descartados, entao a ultima leitura fica guardada.
+  function rememberChecks(peer, pc) {
+    readChecks(pc).then((checks) => {
+      if (peer.pc === pc && checks.length > 0) {
+        peer.checks = checks.map((check) => check.text).join('; ');
+      }
+    }).catch(() => {});
+  }
+
+  function sinceStart(peer) {
+    return `${((Date.now() - peer.startedAt) / 1000).toFixed(1)} s`;
+  }
+
+  function reportConnected(peer, pc) {
+    const head = `conectou com ${describePeer(peer)} em ${sinceStart(peer)}, tentativa ${peer.attempt}`;
+    readChecks(pc)
+      .then((checks) => checks.find((check) => check.chosen))
+      .catch(() => null)
+      .then((chosen) => api.rtcReport(chosen ? `${head}, por ${chosen.text}` : head))
+      .catch(() => {});
+  }
+
+  function reportFailed(peer) {
+    const what = peer.connectedAt ? 'caiu' : 'nao conectou';
+    api.rtcReport(`${what} com ${describePeer(peer)} em ${sinceStart(peer)}, tentativa ${peer.attempt}`
+      + `${peer.checks ? `, testes: ${peer.checks}` : ''}`).catch(() => {});
   }
 
   function quickToAnswer(peer) {
@@ -658,12 +727,17 @@ const Call = (() => {
     if (!peer.initiator) {
       return;
     }
-    peer.retryTimer = setTimeout(() => {
+    peer.retryTimer = setTimeout(async () => {
       // A conexao pode ter voltado sozinha enquanto o prazo corria.
       if (peer.pc && peer.pc.connectionState === 'connected') {
         return;
       }
-      if (room && peers.get(peer.id) === peer && participants().some((item) => item.id === peer.id)) {
+      const { pc } = peer;
+      // Cada tentativa sai por portas locais novas. Repetir as mesmas mantinha vivo no roteador o
+      // registro que tinha impedido a tentativa anterior, e ela falhava de novo do mesmo jeito.
+      await api.rtcMovePorts().catch(() => {});
+      if (peer.pc === pc && room && peers.get(peer.id) === peer
+        && participants().some((item) => item.id === peer.id)) {
         startOffer(peer);
       }
     }, delay);
@@ -845,6 +919,9 @@ const Call = (() => {
   async function collectStats() {
     const results = [];
     for (const peer of [...peers.values()]) {
+      if (peer.pc && peer.pc.connectionState === 'connecting') {
+        rememberChecks(peer, peer.pc);
+      }
       if (!peer.pc || peer.pc.connectionState !== 'connected') {
         continue;
       }

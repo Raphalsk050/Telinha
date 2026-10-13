@@ -43,11 +43,12 @@ screen share is one `telinha.exe send --multi` process that fans the same
 encoded stream out to every viewer, and each viewer runs its own
 `telinha.exe recv`.
 
-Screen streams bind their local ports inside 50000-50019 and calls inside
-50020-50039. When two networks cannot reach each other directly, forwarding UDP
-50000-50039 on the router is usually enough, unless that connection sits behind
-carrier grade NAT. `dist` writes a portable `Telinha.exe` with
-`telinha.exe` bundled inside to `desktop/dist`.
+Calls and screen streams bind their local UDP ports inside a window of 20 ports
+drawn between 51200 and 59999. Each stream draws its own window, and a call
+moves to a new one whenever an attempt to connect fails. The ports are not
+fixed, so there is no range to forward on the router, and two networks that are
+both behind carrier grade NAT may not reach each other. `dist` writes a
+portable `Telinha.exe` with `telinha.exe` bundled inside to `desktop/dist`.
 
 On Windows, `.\build.ps1` builds `telinha.exe` on every core and runs `dist` in
 one go. `-Run` starts the app from the build instead of packaging it, and

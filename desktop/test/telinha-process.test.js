@@ -6,8 +6,6 @@ const { test } = require('node:test');
 const {
   CODE_PREFIX,
   DEV_EXE,
-  LOCAL_PORT_MAX,
-  LOCAL_PORT_MIN,
   buildShareArgs,
   buildWatchArgs,
   looksLikeCode,
@@ -17,7 +15,8 @@ const {
 } = require('../src/telinha-process');
 
 const SAMPLE_CODE = `${CODE_PREFIX}VExTMQEAAgAxCwAAdj0wDQpvPS0gMjYw`;
-const PORTS = ['--port-min', '50000', '--port-max', '50019'];
+const WINDOW = { min: 51200, max: 51219 };
+const PORTS = ['--port-min', '51200', '--port-max', '51219'];
 
 test('parseEventLine reads one JSON event per line and ignores everything else', () => {
   assert.deepEqual(parseEventLine('{"event":"state","state":"Connected"}'), {
@@ -43,17 +42,14 @@ test('normalizeCode strips every whitespace character', () => {
   assert.equal(normalizeCode(undefined), '');
 });
 
-test('the fixed port range is the one routers are told to forward', () => {
-  assert.equal(LOCAL_PORT_MIN, 50000);
-  assert.equal(LOCAL_PORT_MAX, 50019);
-});
-
 test('buildShareArgs maps the chosen target and audio scope', () => {
-  assert.deepEqual(buildShareArgs({ targetKind: 'monitor', targetIndex: 1, audio: 'none' }), [
+  assert.deepEqual(buildShareArgs({ targetKind: 'monitor', targetIndex: 1, audio: 'none', ports: WINDOW }), [
     'send', '--json', '--monitor', '1', '--audio', 'none', ...PORTS,
   ]);
   assert.deepEqual(
-    buildShareArgs({ targetKind: 'window', targetIndex: 3, audio: 'process', audioPid: 4242 }),
+    buildShareArgs({
+      targetKind: 'window', targetIndex: 3, audio: 'process', audioPid: 4242, ports: WINDOW,
+    }),
     ['send', '--json', '--window', '3', '--audio', 'process', '--audio-pid', '4242', ...PORTS]);
   assert.throws(() => buildShareArgs({ targetKind: 'monitor', targetIndex: -1 }));
   assert.throws(() => buildShareArgs({ targetKind: 'window', targetIndex: 0, audio: 'process' }));
@@ -62,19 +58,28 @@ test('buildShareArgs maps the chosen target and audio scope', () => {
 
 test('buildShareArgs prefers the stable handle over the list index', () => {
   assert.deepEqual(
-    buildShareArgs({ targetKind: 'window', targetHandle: 0x1a2b, targetIndex: 7, audio: 'system' }),
+    buildShareArgs({
+      targetKind: 'window', targetHandle: 0x1a2b, targetIndex: 7, audio: 'system', ports: WINDOW,
+    }),
     ['send', '--json', '--window-handle', '6699', '--audio', 'system', ...PORTS]);
-  assert.deepEqual(buildShareArgs({ targetKind: 'monitor', targetHandle: 65537, audio: 'none' }), [
-    'send', '--json', '--monitor-handle', '65537', '--audio', 'none', ...PORTS,
-  ]);
+  assert.deepEqual(
+    buildShareArgs({ targetKind: 'monitor', targetHandle: 65537, audio: 'none', ports: WINDOW }),
+    ['send', '--json', '--monitor-handle', '65537', '--audio', 'none', ...PORTS]);
   assert.throws(() => buildShareArgs({ targetKind: 'monitor', targetHandle: 0 }));
 });
 
 test('buildWatchArgs adds only the requested flags and the port range', () => {
-  assert.deepEqual(buildWatchArgs(), ['recv', '--json', ...PORTS]);
-  assert.deepEqual(buildWatchArgs({ fullscreen: true, audio: false }), [
+  assert.deepEqual(buildWatchArgs({ ports: WINDOW }), ['recv', '--json', ...PORTS]);
+  assert.deepEqual(buildWatchArgs({ fullscreen: true, audio: false, ports: WINDOW }), [
     'recv', '--json', '--fullscreen', '--no-audio', ...PORTS,
   ]);
+});
+
+test('each stream draws its own port window away from 50000-50100', () => {
+  const args = buildWatchArgs();
+  const min = Number(args[args.indexOf('--port-min') + 1]);
+  const max = Number(args[args.indexOf('--port-max') + 1]);
+  assert.ok(min > 50100 && max === min + 19 && max <= 59999);
 });
 
 test('resolveTelinhaExe prefers the override and falls back to the development build', () => {

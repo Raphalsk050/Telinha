@@ -96,6 +96,8 @@ contextBridge.exposeInMainWorld('telinha', {
   voiceUpdate: (changes) => invoke('voice:update', changes),
   voiceLeave: () => invoke('voice:leave'),
   rtcSend: (spaceId, to, payload) => invoke('rtc:send', { spaceId, to, payload }),
+  rtcMovePorts: () => invoke('rtc:move-ports'),
+  rtcReport: (text) => invoke('rtc:report', text),
 
   goLive: (request) => invoke('stream:go-live', request),
   stopLive: () => invoke('stream:stop'),

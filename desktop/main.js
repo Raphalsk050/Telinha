@@ -234,7 +234,11 @@ function notify({ title = 'Telinha', body, icon = null, open = null }) {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return;
   }
-  mainWindow.flashFrame(true);
+  // Piscar a janela que ja esta na frente nao para nunca, e cada piscada tira o foco por um instante:
+  // o Chromium fecha a lista de um <select> antes dela abrir.
+  if (!windowFocused()) {
+    mainWindow.flashFrame(true);
+  }
   if (!Notification.isSupported()) {
     return;
   }
@@ -1741,6 +1745,7 @@ function createWindow() {
     },
   });
   describeToTaskbar(mainWindow);
+  mainWindow.on('focus', () => mainWindow.flashFrame(false));
   const contents = mainWindow.webContents;
   moveCallPorts();
   contents.setWindowOpenHandler(({ url }) => {

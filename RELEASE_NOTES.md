@@ -1,17 +1,16 @@
 # Telinha release notes
 ## Features
 
-None.
+1. Delete your own messages: hover a message and click the trash icon, or right-click it. It disappears for everyone who has Telinha open. Hold Shift to skip the confirmation.
+2. Copy images from the chat: right-click an image and choose "Copiar imagem", or press Ctrl+C with the image open.
+3. An incoming call rings until you answer, decline, or the caller hangs up, for up to 45 seconds.
+4. When you are streaming, a sound plays each time someone starts watching.
 
 ## Improvements
 
-1. A call that fails to connect tries again through different network ports, instead of repeating the same attempt.
-2. The app log now records each call attempt: how long it took, and whether the other side was reached.
+1. Windows notifications now arrive for every message in a conversation you do not have open, even while the Telinha window is in front. They show the sender's name and picture, and clicking one opens that conversation.
+2. Windows notifications show "Telinha" and its icon on computers that never had a Telinha shortcut in the Start menu.
 
 ## Fixes
 
-1. A person could stay on "conectando…" for minutes, or forever, on routers that handle UDP ports 50000 to 50100 in a special way. Calls and screen shares used fixed ports inside that range. They now use ports between 51200 and 59999, different on each computer.
-2. Two computers on the same home network no longer compete for the same ports on the router.
-
-Notes:
-The ports are no longer fixed, so a router rule that forwards UDP 50000 to 50039 has no effect anymore and can be removed.
+1. The glow of a neon name was cut off in a rectangle around the name.

@@ -262,6 +262,20 @@ class ChatStore {
     return message;
   }
 
+  remove(conversationId, messageId) {
+    const messages = this.history(conversationId);
+    const index = messages.findIndex((message) => message.id === messageId);
+    if (index < 0) {
+      return null;
+    }
+    const [removed] = messages.splice(index, 1);
+    for (const blob of blobsOf(removed)) {
+      this.removeBlob(conversationId, blob.id);
+    }
+    this.save(conversationId);
+    return removed;
+  }
+
   find(conversationId, messageId) {
     return this.history(conversationId).find((message) => message.id === messageId) ?? null;
   }

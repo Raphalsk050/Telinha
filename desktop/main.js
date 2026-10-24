@@ -1,5 +1,6 @@
 'use strict';
 
+const { execFile } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -62,6 +63,7 @@ const UPDATE_WATCH_MS = 3000;
 const UPDATE_IDLE_MS = 15000;
 const WINDOW_REVEAL_MS = 8000;
 const PROBE_TIMEOUT_MS = 2000;
+const MAX_KEPT_NOTIFICATIONS = 20;
 // Linhas do telinha.exe que valem guardar no registro do app.
 const NOTABLE_LINE_PATTERN = /falha fatal|\[error\]/;
 const IMAGE_EXTENSIONS = new Map([
@@ -94,8 +96,10 @@ let voice = null;
 let quitting = false;
 let lastLive = false;
 let callPorts = null;
+let viewing = null;
 
 const calls = new Map();
+const shownNotifications = new Set();
 const metaReplies = new Map();
 const avatarRequests = new Map();
 
@@ -172,6 +176,25 @@ function describeToTaskbar(window) {
   }
 }
 
+// O aviso do Windows sai com o identificador que o Electron gera a partir do nome do app. Sem um
+// atalho no menu Iniciar, o Windows so mostra nome e icone se esse identificador estiver registrado
+// na conta do usuario. O registro nao muda o identificador do processo nem a barra de tarefas.
+function registerToastIdentity() {
+  if (process.platform !== 'win32') {
+    return;
+  }
+  const key = `HKCU\\Software\\Classes\\AppUserModelId\\electron.app.${app.getName()}`;
+  const icon = storedIconFile();
+  const values = [['DisplayName', 'Telinha'], ...(icon ? [['IconUri', icon]] : [])];
+  for (const [name, data] of values) {
+    execFile('reg', ['add', key, '/v', name, '/t', 'REG_SZ', '/d', data, '/f'], { windowsHide: true }, (error) => {
+      if (error) {
+        log.error(`aviso do Windows: nao registrei ${name}: ${describeError(error)}`);
+      }
+    });
+  }
+}
+
 function systemName() {
   try {
     return os.userInfo().username || 'Telinha';
@@ -198,21 +221,42 @@ function windowFocused() {
   return Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused());
 }
 
-function notify(body) {
+function avatarIcon(memberId) {
+  const url = MEMBER_ID_PATTERN.test(String(memberId)) ? avatars.url(memberId) : null;
+  const image = url ? nativeImage.createFromDataURL(url) : null;
+  return image && !image.isEmpty() ? image : appIcon();
+}
+
+// O Electron perde o clique de um aviso cujo objeto o coletor de lixo ja levou, e o aviso continua
+// na central de notificacoes depois de sumir da tela. Por isso os ultimos ficam guardados.
+// open diz qual conversa abrir no clique: { spaceId, channelId }.
+function notify({ title = 'Telinha', body, icon = null, open = null }) {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return;
   }
   mainWindow.flashFrame(true);
-  if (Notification.isSupported()) {
-    const notification = new Notification({ title: 'Telinha', body });
-    notification.on('click', () => {
-      if (mainWindow.isMinimized()) {
-        mainWindow.restore();
-      }
-      mainWindow.focus();
-    });
-    notification.show();
+  if (!Notification.isSupported()) {
+    return;
   }
+  const notification = new Notification({ title, body, icon: icon ?? appIcon() });
+  notification.on('click', () => {
+    shownNotifications.delete(notification);
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore();
+    }
+    mainWindow.focus();
+    if (open) {
+      sendToWindow('app:open', open);
+    }
+  });
+  shownNotifications.add(notification);
+  if (shownNotifications.size > MAX_KEPT_NOTIFICATIONS) {
+    shownNotifications.delete(shownNotifications.values().next().value);
+  }
+  notification.show();
 }
 
 function toLimit(value) {
@@ -521,9 +565,12 @@ function handlePeers({ spaceId, peers }) {
     return;
   }
   sendToWindow('call:incoming', { contactId: spaceId, name: contact.name, live: next === 'live' });
-  notify(next === 'live'
-    ? `${contact.name} está transmitindo a tela para você`
-    : `${contact.name} está chamando você`);
+  notify({
+    title: contact.name,
+    body: next === 'live' ? 'Está transmitindo a tela para você' : 'Está chamando você',
+    icon: avatarIcon(inCall[0].memberId),
+    open: { spaceId, channelId: null },
+  });
 }
 
 /* mensagens */
@@ -657,17 +704,45 @@ function storeIncomingChat(spaceId, message, fileData) {
     fileShare.download(downloadTarget(spaceId, channelId, key, stored));
   }
 
-  if (!windowFocused()) {
+  // Avisa sempre que a conversa nao esta na frente de quem usa: janela sem foco, ou outra conversa aberta.
+  if (!windowFocused() || viewing !== key) {
     const channel = server ? server.channels.find((item) => item.id === channelId) : null;
     const where = server ? ` em ${server.name}${channel ? ` #${channel.name}` : ''}` : '';
-    let summary = 'mandou uma imagem';
+    let summary = 'Mandou uma imagem';
     if (stored.text) {
-      summary = stored.text.slice(0, 120);
+      summary = stored.text.slice(0, 200);
     } else if (fileInfo) {
-      summary = `mandou ${fileInfo.name}`;
+      summary = `Mandou ${fileInfo.name}`;
     }
-    notify(`${author}${where}: ${summary}`);
+    notify({
+      title: `${author}${where}`, body: summary, icon: avatarIcon(stored.memberId), open: { spaceId, channelId },
+    });
   }
+}
+
+function removeStoredChat(spaceId, channelId, key, messageId) {
+  const removed = chats.remove(key, messageId);
+  if (removed) {
+    sendToWindow('chat:remove', { spaceId, channelId, messageId });
+  }
+  return removed;
+}
+
+// So quem escreveu apaga. Num servidor, quem pede precisa ser o mesmo membro que mandou a mensagem.
+function handleChatDelete(spaceId, message) {
+  const target = chatTarget(spaceId, message);
+  const stored = target ? chats.find(target.key, message.messageId) : null;
+  if (!stored || stored.mine) {
+    return;
+  }
+  if (target.server) {
+    const memberId = String(message.memberId ?? '');
+    const peer = signaling.peers(spaceId).find((item) => item.id === message.from);
+    if (stored.memberId !== memberId || (peer && peer.memberId && peer.memberId !== memberId)) {
+      return;
+    }
+  }
+  removeStoredChat(spaceId, target.channelId, target.key, stored.id);
 }
 
 function handleChat(spaceId, message) {
@@ -683,7 +758,7 @@ function handleChat(spaceId, message) {
 
 // Arquivos pequenos vao em pedacos pelo servidor de mensagens, poucos de cada vez, e cada
 // confirmacao do servidor conta como progresso do envio.
-function publishRelayFile(spaceId, payload, fileInfo, data, onProgress) {
+function publishRelayFile(spaceId, payload, fileInfo, data, onProgress, wanted) {
   return new Promise((resolve) => {
     const transferId = crypto.randomUUID();
     const chunks = splitFile(data);
@@ -707,7 +782,8 @@ function publishRelayFile(spaceId, payload, fileInfo, data, onProgress) {
       if (finished) {
         return;
       }
-      if (error) {
+      // Apagada no meio do envio: a mensagem nao pode chegar depois do pedido de apagar.
+      if (error || !wanted()) {
         finish(false);
         return;
       }
@@ -748,7 +824,8 @@ async function relayFile(target, message, payload, data) {
   const progress = throttle((done, total) => sendToWindow('file:progress', {
     spaceId, channelId, fileId, direction: 'up', done, total,
   }));
-  const delivered = await publishRelayFile(spaceId, payload, message.file, data, progress);
+  const delivered = await publishRelayFile(spaceId, payload, message.file, data, progress,
+    () => Boolean(chats.find(key, message.id)));
   const updated = chats.update(key, message.id, (item) => {
     item.delivered = delivered;
   });
@@ -920,6 +997,10 @@ function handleSignalingMessage({ spaceId, message }) {
   }
   if (message.type === 'chat') {
     handleChat(spaceId, message);
+    return;
+  }
+  if (message.type === 'chat-delete') {
+    handleChatDelete(spaceId, message);
     return;
   }
   if (message.type === 'rtc') {
@@ -1357,6 +1438,24 @@ function registerIpc() {
     return publicMessage(stored);
   });
 
+  // Apaga aqui e pede para os outros apagarem. Quem estiver fora do ar na hora continua com ela.
+  ipcMain.handle('chat:delete', (_event, { spaceId, channelId = null, messageId }) => {
+    const key = storedConversation(spaceId, channelId);
+    const message = key ? chats.find(key, String(messageId)) : null;
+    if (!message || !message.mine) {
+      return null;
+    }
+    const channel = store.get(spaceId) ? null : channelId;
+    const delivered = signaling.publish(spaceId, 'chat-delete', {
+      messageId: message.id, channelId: channel ?? undefined, memberId: profile.memberId,
+    });
+    removeStoredChat(spaceId, channel, key, message.id);
+    return { delivered };
+  });
+  ipcMain.handle('chat:viewing', (_event, target) => {
+    viewing = target ? storedConversation(target.spaceId, target.channelId ?? null) : null;
+  });
+
   ipcMain.handle('chat:image', (_event, { spaceId, channelId = null, imageId }) => {
     const key = storedConversation(spaceId, channelId);
     if (!key || !BLOB_ID_PATTERN.test(String(imageId))) {
@@ -1562,6 +1661,16 @@ function registerIpc() {
     clipboard.writeText(String(text));
   });
   ipcMain.handle('clipboard:read', () => clipboard.readText());
+  // A janela converte para PNG antes, porque o Electron so le PNG e JPEG e o chat guarda WebP.
+  ipcMain.handle('clipboard:write-image', (_event, url) => {
+    const image = typeof url === 'string' && url.startsWith('data:image/png;base64,')
+      ? nativeImage.createFromDataURL(url)
+      : null;
+    if (!image || image.isEmpty()) {
+      throw new Error('nao consegui ler essa imagem');
+    }
+    clipboard.writeImage(image);
+  });
 
   ipcMain.handle('app:set-zoom', (_event, factor) => {
     const value = Number(factor);
@@ -1805,6 +1914,7 @@ function start() {
   configurePermissions();
   registerIpc();
   createWindow();
+  registerToastIdentity();
   signaling.start();
   startUpdater();
 }

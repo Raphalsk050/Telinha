@@ -898,7 +898,25 @@ svg { display: block; }
 .message-head { display: flex; align-items: baseline; gap: 8px; }
 .message-author { font-weight: 600; color: var(--strong); }
 .message-time { font-size: 12px; color: var(--muted); }
-.message-line { display: flex; flex-direction: column; align-items: flex-start; }
+.message-line { position: relative; display: flex; flex-direction: column; align-items: flex-start; }
+
+/* Ferramentas da mensagem: aparecem por cima, no canto, so com o mouse em cima da linha. */
+.message-tools {
+  position: absolute;
+  top: -16px;
+  right: 0;
+  z-index: 2;
+  display: none;
+  padding: 2px;
+  border-radius: 6px;
+  background: var(--float);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.message-line:hover > .message-tools { display: flex; }
+.message-tools .icon-button { width: 28px; height: 28px; }
+.message-tools .icon-button svg { width: 18px; height: 18px; }
+.message-tools .icon-button.danger:hover { background: var(--danger); color: #fff; }
 
 .message-text {
   margin: 2px 0 0;
@@ -1704,6 +1722,10 @@ body.resizing, body.resizing * { cursor: ns-resize !important; user-select: none
 /* O estilo do nome vale onde o nome aparecer, por cima da cor que aquele lugar daria a ele. */
 :root .name-solid { color: var(--name-color) !important; }
 :root .name-neon { color: var(--name-color) !important; text-shadow: 0 0 6px var(--name-color), 0 0 14px var(--name-color); }
+
+/* Onde o nome corta com reticencias, overflow: hidden cortava junto o brilho num retangulo em volta
+   do texto. clip com margem corta o texto no mesmo lugar e deixa o brilho passar da caixa. */
+:root .name-neon { overflow: clip; overflow-clip-margin: 24px; }
 
 :root .name-gradient, :root .name-prism {
   background-image: var(--name-flow);

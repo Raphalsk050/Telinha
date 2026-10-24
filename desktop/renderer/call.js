@@ -29,6 +29,8 @@ const Call = (() => {
   const AVATAR_COLORS = ['#5865f2', '#3ba55c', '#faa61a', '#ed4245', '#eb459e', '#9b59b6', '#1abc9c', '#e67e22'];
   const MAX_SOUND_SECONDS = 10;
   const SOUND_VOLUME_KEY = 'telinha.soundVolume';
+  const RING_INTERVAL_MS = 2500;
+  const RING_LIMIT_MS = 45000;
 
   const listeners = new Set();
   const statsListeners = new Set();
@@ -53,6 +55,8 @@ const Call = (() => {
   let room = null;
   let busy = false;
   let audioContext = null;
+  let ringTimer = null;
+  let ringLimit = null;
   let meterTimer = null;
   let statsTimer = null;
   let previewTrack = null;
@@ -1278,40 +1282,79 @@ const Call = (() => {
     }
   }
 
-  function playTone(kind) {
-    if (local.deaf) {
-      return;
-    }
+  // Cada nota e [frequencia em Hz, segundos depois de agora].
+  function playNotes(notes, { type = 'sine', peak = 0.16, length = 0.28 } = {}) {
     try {
       const context = ensureAudioContext();
-      let notes = [659.25, 440];
-      if (kind === 'join') {
-        notes = [587.33, 880];
-      } else if (kind === 'live') {
-        notes = [523.25, 783.99, 1046.5];
-      }
       const start = context.currentTime + 0.01;
-      notes.forEach((frequency, index) => {
+      for (const [frequency, offset] of notes) {
         const oscillator = context.createOscillator();
         const gain = context.createGain();
-        const at = start + index * 0.12;
-        oscillator.type = 'sine';
+        const at = start + offset;
+        oscillator.type = type;
         oscillator.frequency.setValueAtTime(frequency, at);
         gain.gain.setValueAtTime(0.0001, at);
-        gain.gain.exponentialRampToValueAtTime(0.16, at + 0.02);
-        gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.28);
+        gain.gain.exponentialRampToValueAtTime(peak, at + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, at + length);
         oscillator.connect(gain);
         gain.connect(context.destination);
         oscillator.start(at);
-        oscillator.stop(at + 0.3);
-      });
+        oscillator.stop(at + length + 0.02);
+      }
     } catch {
       // sem saida de audio disponivel
     }
   }
 
+  function playTone(kind) {
+    if (local.deaf) {
+      return;
+    }
+    let notes = [659.25, 440];
+    if (kind === 'join') {
+      notes = [587.33, 880];
+    } else if (kind === 'live') {
+      notes = [523.25, 783.99, 1046.5];
+    } else if (kind === 'viewer') {
+      notes = [880, 1318.51];
+    }
+    playNotes(notes.map((frequency, index) => [frequency, index * 0.12]));
+  }
+
   function playLiveTone() {
     playTone('live');
+  }
+
+  // Alguem comecou a assistir a sua transmissao.
+  function playViewerTone() {
+    playTone('viewer');
+  }
+
+  /* toque de chamada recebida */
+
+  // Dois "ding-dong" seguidos. Quem esta numa sala com o audio desativado nao ouve.
+  function ringOnce() {
+    if (room && local.deaf) {
+      return;
+    }
+    playNotes([[783.99, 0], [659.25, 0.16], [783.99, 0.5], [659.25, 0.66]], {
+      type: 'triangle', peak: 0.2, length: 0.32,
+    });
+  }
+
+  // Toca ate atender, recusar, quem ligou desistir ou passar o limite.
+  function startRing() {
+    stopRing();
+    ringOnce();
+    ringTimer = setInterval(ringOnce, RING_INTERVAL_MS);
+    ringLimit = setTimeout(stopRing, RING_LIMIT_MS);
+  }
+
+  function stopRing() {
+    clearInterval(ringTimer);
+    clearTimeout(ringLimit);
+    ringTimer = null;
+    ringLimit = null;
   }
 
   function loadSoundVolume() {
@@ -1660,7 +1703,10 @@ const Call = (() => {
     getSoundVolume,
     playLiveTone,
     playSound,
+    playViewerTone,
     setSoundVolume,
     soundDuration,
+    startRing,
+    stopRing,
   };
 })();

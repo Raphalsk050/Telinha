@@ -10,6 +10,7 @@ const AUDIO_NAMES = {
   system: 'som do computador', process: 'só o som do programa', device: 'som da placa de captura', none: 'sem som',
 };
 const TOAST_MS = 6000;
+const VIEWER_RETURN_MS = 5000;
 
 const ICONS = {
   home: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9 20h6M12 16v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
@@ -221,6 +222,8 @@ const state = {
   showMembers: true,
   voice: null,
   streams: { outgoing: null, incoming: [] },
+  streamViewers: new Set(),
+  viewerLeftAt: new Map(),
   streamThumbs: new Map(),
   outgoing: null,
   pendingQuality: null,
@@ -1378,6 +1381,7 @@ function callPanelDebug() {
 /* chamadas recebidas */
 
 function closeIncomingCall() {
+  Call.stopRing();
   el.callDialog.hidden = true;
   state.incomingCall = null;
 }
@@ -1393,6 +1397,7 @@ function handleIncomingCall({ contactId, name, live }) {
     : 'Entre para conversar por voz, ver a câmera ou a tela.';
   el.callDialogAccept.textContent = live ? 'Entrar e assistir' : 'Entrar';
   el.callDialog.hidden = false;
+  Call.startRing();
 }
 
 async function acceptIncomingCall() {
@@ -3419,6 +3424,9 @@ function handleVoice(voice) {
   }
   state.voice = voice;
   Call.syncVoice(voice);
+  if (voice && state.incomingCall && state.incomingCall.contactId === voice.spaceId) {
+    closeIncomingCall();
+  }
   if (!voice) {
     Debug.remove('call');
     state.roomFeedback = '';
@@ -3431,17 +3439,37 @@ function handleVoice(voice) {
   render();
 }
 
+// Quem troca entre a janela embutida e a separada sai e volta a pedir a transmissao em seguida.
+// Essa volta rapida nao conta como gente nova entrando.
+function viewerArrived(snapshot) {
+  const now = Date.now();
+  const current = new Set(snapshot.outgoing ? snapshot.outgoing.viewers.map((viewer) => viewer.id) : []);
+  for (const id of state.streamViewers) {
+    if (!current.has(id)) {
+      state.viewerLeftAt.set(id, now);
+    }
+  }
+  const arrived = [...current].some((id) => !state.streamViewers.has(id)
+    && now - (state.viewerLeftAt.get(id) ?? 0) > VIEWER_RETURN_MS);
+  state.streamViewers = current;
+  return arrived;
+}
+
 function handleStreams(snapshot) {
   const wasLive = outgoingLive();
   state.streams = snapshot;
   const live = outgoingLive();
   StreamView.sync(snapshot.incoming, live);
+  if (viewerArrived(snapshot) && live) {
+    Call.playViewerTone();
+  }
   if (live && !wasLive) {
     Call.playLiveTone();
     startThumbLoop();
   } else if (!live && wasLive) {
     stopThumbLoop();
     StreamView.close(StreamView.SELF);
+    state.viewerLeftAt.clear();
   }
   applyStreamVolumes();
   render();
@@ -3724,6 +3752,14 @@ function subscribeEvents() {
   api.onIncomingCall(handleIncomingCall);
   api.onChatMessage(handleChatMessage);
   api.onChatUpdate(({ spaceId, channelId, message }) => Chat.update(conversationKey(spaceId, channelId), message));
+  api.onChatRemove(({ spaceId, channelId, messageId }) => Chat.remove(conversationKey(spaceId, channelId), messageId));
+  api.onOpenConversation(({ spaceId, channelId }) => {
+    if (channelId) {
+      openChannel(spaceId, channelId);
+    } else {
+      openContact(spaceId);
+    }
+  });
   api.onUploadProgress((info) => Chat.uploadProgress(info));
   api.onFileProgress(({
     spaceId, channelId, fileId, direction, done, total,

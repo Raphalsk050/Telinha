@@ -16,6 +16,7 @@ const Chat = (() => {
   const EMBED_WAIT_MS = 2500;
   const IMAGE_CACHE_LIMIT = 80;
   const DOWNLOAD_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const DELETE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12.5a1.5 1.5 0 0 0 1.5 1.5h7a1.5 1.5 0 0 0 1.5-1.5L18 7M9 7V4.5a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 .5.5V7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   const FILE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2.5h8l4.5 4.5v14a.5.5 0 0 1-.5.5H6a.5.5 0 0 1-.5-.5V3a.5.5 0 0 1 .5-.5z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M14 2.5V7h4.5M8.5 12h7M8.5 15h7M8.5 18h4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   const find = (id) => document.getElementById(id);
 
@@ -200,12 +201,11 @@ const Chat = (() => {
     window.telinha.openExternal(href).catch(() => {});
   }
 
-  function openLinkMenu(event, href) {
-    event.preventDefault();
-    openContextMenu(event, [
+  function linkItems(href) {
+    return [
       { type: 'action', label: 'Abrir link', onSelect: () => openLink(href) },
       { type: 'action', label: 'Copiar link', onSelect: () => window.telinha.copyText(href) },
-    ]);
+    ];
   }
 
   /* anexos recebidos */
@@ -255,12 +255,29 @@ const Chat = (() => {
     }
   }
 
-  function openImageMenu(event, source) {
-    if (!source) {
-      return;
+  // O chat guarda WebP e GIF, e a area de transferencia do Windows so entende bitmap. Redesenhar
+  // num canvas da o PNG que o processo principal sabe copiar. GIF vira o primeiro quadro.
+  async function copyImage(url) {
+    try {
+      const picture = new Image();
+      picture.src = url;
+      await picture.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = picture.naturalWidth;
+      canvas.height = picture.naturalHeight;
+      canvas.getContext('2d').drawImage(picture, 0, 0);
+      await window.telinha.copyImage(canvas.toDataURL('image/png'));
+      nodes.hint.textContent = 'Imagem copiada.';
+    } catch (error) {
+      nodes.hint.textContent = `Não consegui copiar: ${cleanError(error)}`;
     }
-    event.preventDefault();
-    openContextMenu(event, [{ type: 'action', label: 'Salvar imagem', onSelect: () => saveImage(source) }]);
+  }
+
+  function imageItems(source, url) {
+    return [
+      { type: 'action', label: 'Copiar imagem', onSelect: () => copyImage(url) },
+      { type: 'action', label: 'Salvar imagem', onSelect: () => saveImage(source) },
+    ];
   }
 
   function imageNode(image, bounds, className = 'message-image') {
@@ -299,11 +316,8 @@ const Chat = (() => {
         openLightbox(picture.src, source);
       }
     });
-    frame.addEventListener('contextmenu', (event) => {
-      if (picture.src) {
-        openImageMenu(event, source);
-      }
-    });
+    // O menu do botao direito sai da lista de mensagens, que junta imagem, link e apagar.
+    frame.imageSource = source;
     return frame;
   }
 
@@ -745,6 +759,20 @@ const Chat = (() => {
   function messageLine(message) {
     const line = document.createElement('div');
     line.className = 'message-line';
+    line.dataset.id = message.id;
+    if (message.mine) {
+      const tools = document.createElement('div');
+      tools.className = 'message-tools';
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'icon-button danger';
+      remove.title = 'Apagar mensagem (com Shift, apaga sem perguntar)';
+      remove.setAttribute('aria-label', 'Apagar mensagem');
+      remove.innerHTML = DELETE_ICON;
+      remove.addEventListener('click', (event) => deleteMessage(message, event.shiftKey));
+      tools.append(remove);
+      line.append(tools);
+    }
     if (message.text) {
       const text = document.createElement('p');
       text.className = 'message-text';
@@ -819,6 +847,8 @@ const Chat = (() => {
       render();
       return;
     }
+    // O aviso do Windows sai para toda conversa que nao esta aberta aqui.
+    window.telinha.setViewing(next.spaceId, next.channelId).catch(() => {});
 
     nodes.input.value = '';
     clearAttachment();
@@ -848,6 +878,9 @@ const Chat = (() => {
   }
 
   function close() {
+    if (conversation) {
+      window.telinha.setViewing(null).catch(() => {});
+    }
     conversation = null;
     loadToken += 1;
     clearAttachment();
@@ -896,6 +929,72 @@ const Chat = (() => {
       scrollToBottom();
     }
     return true;
+  }
+
+  function remove(key, messageId) {
+    if (!conversation || conversation.key !== key) {
+      return false;
+    }
+    const index = messages.findIndex((existing) => existing.id === messageId);
+    if (index < 0) {
+      return false;
+    }
+    messages.splice(index, 1);
+    render();
+    return true;
+  }
+
+  async function deleteMessage(message, skipConfirm = false) {
+    const target = conversation;
+    if (!target || !message.mine) {
+      return;
+    }
+    if (!skipConfirm && !window.confirm('Apagar esta mensagem? Ela some daqui e de quem estiver com o Telinha aberto.')) {
+      return;
+    }
+    try {
+      const result = await window.telinha.deleteChat(target.spaceId, target.channelId, message.id);
+      if (!result) {
+        return;
+      }
+      remove(target.key, message.id);
+      if (!result.delivered) {
+        nodes.hint.textContent = 'Apagada só aqui. Sem conexão com o servidor, os outros ainda veem a mensagem.';
+      }
+    } catch (error) {
+      nodes.hint.textContent = `Não consegui apagar: ${cleanError(error)}`;
+    }
+  }
+
+  function messageFrom(event) {
+    const line = event.target instanceof Element ? event.target.closest('.message-line') : null;
+    return line ? messages.find((message) => message.id === line.dataset.id) ?? null : null;
+  }
+
+  function openMessageMenu(event) {
+    const items = [];
+    const href = linkFrom(event);
+    if (href) {
+      items.push(...linkItems(href));
+    }
+    const frame = event.target instanceof Element ? event.target.closest('.message-image') : null;
+    const picture = frame ? frame.querySelector('img') : null;
+    if (frame && frame.imageSource && picture && picture.src) {
+      items.push(...imageItems(frame.imageSource, picture.src));
+    }
+    const message = messageFrom(event);
+    if (message && message.mine) {
+      if (items.length > 0) {
+        items.push({ type: 'separator' });
+      }
+      items.push({
+        type: 'action', label: 'Apagar mensagem', danger: true, onSelect: () => deleteMessage(message, event.shiftKey),
+      });
+    }
+    if (items.length > 0) {
+      event.preventDefault();
+      openContextMenu(event, items);
+    }
   }
 
   function transferProgress(info) {
@@ -1041,12 +1140,7 @@ const Chat = (() => {
         openLink(href);
       }
     });
-    nodes.messages.addEventListener('contextmenu', (event) => {
-      const href = linkFrom(event);
-      if (href) {
-        openLinkMenu(event, href);
-      }
-    });
+    nodes.messages.addEventListener('contextmenu', openMessageMenu);
 
     nodes.view.addEventListener('dragover', (event) => {
       if (event.dataTransfer && [...event.dataTransfer.types].includes('Files')) {
@@ -1069,15 +1163,26 @@ const Chat = (() => {
     });
 
     nodes.lightbox.addEventListener('click', closeLightbox);
-    nodes.lightbox.addEventListener('contextmenu', (event) => openImageMenu(event, lightboxSource));
+    nodes.lightbox.addEventListener('contextmenu', (event) => {
+      if (lightboxSource && nodes.lightboxImage.src) {
+        event.preventDefault();
+        openContextMenu(event, imageItems(lightboxSource, nodes.lightboxImage.src));
+      }
+    });
     document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape' && !nodes.lightbox.hidden) {
+      if (nodes.lightbox.hidden) {
+        return;
+      }
+      if (event.key === 'Escape') {
         closeLightbox();
+      } else if (event.ctrlKey && event.key.toLowerCase() === 'c' && nodes.lightboxImage.src) {
+        event.preventDefault();
+        copyImage(nodes.lightboxImage.src);
       }
     });
   }
 
   return {
-    bind, close, currentKey, fetchStatus, open, receive, refresh, transferProgress, update, uploadProgress,
+    bind, close, currentKey, fetchStatus, open, receive, refresh, remove, transferProgress, update, uploadProgress,
   };
 })();

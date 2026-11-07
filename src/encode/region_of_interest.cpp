@@ -27,9 +27,13 @@ bool RegionOfInterestMap::initialize(LinearArena& arena, std::uint32_t surface_w
     coding_unit_size_ = coding_unit_size;
 
     deltas_ = arena.allocate_array_aligned<std::int8_t>(unit_count_, kCacheLineSize);
-    if (deltas_ == nullptr) {
+    hold_ = arena.allocate_array_aligned<std::uint8_t>(unit_count_, kCacheLineSize);
+    if (deltas_ == nullptr || hold_ == nullptr) {
         *this = RegionOfInterestMap{};
         return false;
+    }
+    for (std::uint32_t i = 0; i < unit_count_; ++i) {
+        hold_[i] = 0;
     }
 
     fill(0);
@@ -66,9 +70,9 @@ void RegionOfInterestMap::build(const TileDirtyMap& tiles, std::int32_t dirty_de
         const Span<const std::uint64_t> words = tiles.words();
         for (std::uint32_t unit = 0; unit < unit_count_; ++unit) {
             const bool dirty = (words[unit >> 6] & (std::uint64_t{1} << (unit & 63))) != 0;
-            deltas_[unit] = dirty ? dirty_value : static_value;
-            dirty_unit_count_ += dirty ? 1u : 0u;
+            set_unit(unit, dirty, dirty_value, static_value);
         }
+        flatten_if_mostly_dirty(dirty_value);
         return;
     }
 
@@ -90,10 +94,35 @@ void RegionOfInterestMap::build(const TileDirtyMap& tiles, std::int32_t dirty_de
                 }
             }
 
-            deltas_[unit_y * units_x_ + unit_x] = dirty ? dirty_value : static_value;
-            dirty_unit_count_ += dirty ? 1u : 0u;
+            set_unit(unit_y * units_x_ + unit_x, dirty, dirty_value, static_value);
         }
     }
+    flatten_if_mostly_dirty(dirty_value);
+}
+
+void RegionOfInterestMap::set_unit(std::uint32_t unit, bool dirty, std::int8_t dirty_value,
+                                   std::int8_t static_value) noexcept
+{
+    if (dirty) {
+        hold_[unit] = kHoldFrames;
+    } else if (hold_[unit] != 0) {
+        --hold_[unit];
+        dirty = true;
+    }
+    deltas_[unit] = dirty ? dirty_value : static_value;
+    dirty_unit_count_ += dirty ? 1u : 0u;
+}
+
+void RegionOfInterestMap::flatten_if_mostly_dirty(std::int8_t dirty_value) noexcept
+{
+    if (static_cast<std::uint64_t>(dirty_unit_count_) * 100u <
+        static_cast<std::uint64_t>(unit_count_) * kFlatDirtyPercent) {
+        return;
+    }
+    for (std::uint32_t i = 0; i < unit_count_; ++i) {
+        deltas_[i] = dirty_value;
+    }
+    dirty_unit_count_ = unit_count_;
 }
 
 std::uint32_t RegionOfInterestMap::extract_dirty_rects(RectSoA& out) const noexcept

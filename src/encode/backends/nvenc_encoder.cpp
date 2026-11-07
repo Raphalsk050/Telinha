@@ -394,6 +394,11 @@ Outcome NvencEncoder::submit(const capture::ClassifiedFrame& frame)
     if (region_of_interest_active_) {
         region_of_interest_.build(*frame.tiles, config_.dirty_region_qp_delta,
                                   config_.static_region_qp_delta);
+        // Every later frame builds on the keyframe, so a static part coded at a high QP here
+        // stays blurred until it changes again.
+        if (keyframe_pending_) {
+            region_of_interest_.fill(config_.dirty_region_qp_delta);
+        }
         pic.qpDeltaMap = const_cast<std::int8_t*>(region_of_interest_.deltas().data());
         pic.qpDeltaMapSize = region_of_interest_.unit_count();
     }

@@ -20,8 +20,15 @@ public:
 
     void fill(std::int32_t delta) noexcept;
 
+    // A unit stays at dirty_delta for kHoldFrames after it last changed, and a frame where at
+    // least kFlatDirtyPercent of the units are dirty gets dirty_delta everywhere. The dirty rects
+    // Windows reports for a game window can miss parts of what changed; a unit wrongly taken as
+    // static gets a high QP, the encoder skips it, and the old picture stays there.
     void build(const TileDirtyMap& tiles, std::int32_t dirty_delta,
                std::int32_t static_delta) noexcept;
+
+    static constexpr std::uint8_t kHoldFrames = 60;
+    static constexpr std::uint32_t kFlatDirtyPercent = 25;
 
     [[nodiscard]] std::uint32_t extract_dirty_rects(RectSoA& out) const noexcept;
 
@@ -46,8 +53,12 @@ public:
 
 private:
     [[nodiscard]] static std::int8_t clamp_delta(std::int32_t delta) noexcept;
+    void set_unit(std::uint32_t unit, bool dirty, std::int8_t dirty_value,
+                  std::int8_t static_value) noexcept;
+    void flatten_if_mostly_dirty(std::int8_t dirty_value) noexcept;
 
     std::int8_t* deltas_ = nullptr;
+    std::uint8_t* hold_ = nullptr;
     std::uint32_t units_x_ = 0;
     std::uint32_t units_y_ = 0;
     std::uint32_t unit_count_ = 0;

@@ -9,4 +9,4 @@ None.
 
 ## Fixes
 
-1. Parts of a shared game could keep showing an old frame in blocks while the game itself looked fine. The encoder took parts that Windows did not report as changed as static and coded them at much lower quality; recently changed parts and keyframes now keep full quality.
+1. During fast motion a shared screen could show black specks and leftovers of old frames until a line swept down the screen and cleaned it. The app dropped some video frames before sending them, and every frame after a dropped one was drawn on the wrong picture; frames are no longer dropped, and a gap now asks for a fresh keyframe.

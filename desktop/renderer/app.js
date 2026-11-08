@@ -2430,6 +2430,18 @@ async function serverAction(action) {
       value: server.name,
       onConfirm: (name) => api.renameServer(server.id, name),
     });
+  } else if (action === 'relay') {
+    const { relay } = server;
+    openPrompt({
+      title: 'Relay das chamadas: turn:endereco:porta usuario senha',
+      value: relay ? `${relay.urls.join(',')} ${relay.username} ${relay.credential}` : '',
+      dangerLabel: relay ? 'Remover relay' : null,
+      onConfirm: (text) => {
+        const [urls = '', username = '', credential = ''] = text.trim().split(/\s+/);
+        return api.setServerRelay(server.id, urls ? { urls, username, credential } : null);
+      },
+      onDanger: () => api.setServerRelay(server.id, null),
+    });
   } else if (action === 'leave'
     && window.confirm(`Sair de ${server.name}? As conversas guardadas neste computador somem e você só volta com um convite novo.`)) {
     await api.leaveServer(server.id);
@@ -3399,8 +3411,17 @@ function handleContacts(contacts) {
   render();
 }
 
+// As chamadas e transmissoes usam o relay do servidor onde a pessoa esta em voz.
+function syncRelay() {
+  const server = state.voice ? findServer(state.voice.spaceId) : null;
+  const relay = server ? server.relay : null;
+  Call.setRelay(relay);
+  StreamView.setRelay(relay);
+}
+
 function handleServers(servers) {
   state.servers = servers;
+  syncRelay();
   if (state.nav.space !== 'home') {
     const server = currentServer();
     if (!server) {
@@ -3423,6 +3444,7 @@ function handleVoice(voice) {
     state.voiceSince = Date.now();
   }
   state.voice = voice;
+  syncRelay();
   Call.syncVoice(voice);
   if (voice && state.incomingCall && state.incomingCall.contactId === voice.spaceId) {
     closeIncomingCall();

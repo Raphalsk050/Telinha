@@ -63,7 +63,7 @@ function isAudioDeviceId(value) {
 
 function buildShareArgs({
   targetKind, targetIndex, targetHandle, audio = 'system', audioPid, audioDevice, fps, multi = false,
-  excludePid, ports = randomPortWindow(),
+  excludePid, relay = null, ports = randomPortWindow(),
 } = {}) {
   if (!TARGET_KINDS.has(targetKind)) {
     throw new Error('escolha uma tela, um programa ou uma placa de captura para compartilhar');
@@ -100,6 +100,16 @@ function buildShareArgs({
   }
   if (fps !== undefined) {
     args.push('--fps', String(fps));
+  }
+  const relayUrls = relay && Array.isArray(relay.urls) ? relay.urls : [];
+  for (const url of relayUrls.filter((item) => typeof item === 'string' && item.startsWith('turn'))) {
+    args.push('--turn', url);
+    if (relay.username) {
+      args.push('--turn-user', relay.username);
+    }
+    if (relay.credential) {
+      args.push('--turn-pass', relay.credential);
+    }
   }
   return withPortRange(args, ports);
 }

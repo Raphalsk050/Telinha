@@ -2,7 +2,9 @@
 
 const Call = (() => {
   const api = window.telinha;
-  const ICE_SERVERS = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }];
+  const STUN_SERVERS = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }];
+  // O relay do servidor da sala, para quem nao conecta direto. Muda com a sala e com o servidor.
+  let relayServers = [];
   const SPEAKING_LEVEL = 0.03;
   const SPEAKING_HOLD_MS = 350;
   const RETRY_DELAY_MS = 3000;
@@ -526,7 +528,7 @@ const Call = (() => {
     peer.connectedAt = 0;
     peer.checks = '';
 
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    const pc = new RTCPeerConnection({ iceServers: [...STUN_SERVERS, ...relayServers] });
     peer.pc = pc;
     peer.state = 'connecting';
 
@@ -1668,7 +1670,12 @@ const Call = (() => {
     };
   }
 
+  function setRelay(relay) {
+    relayServers = relay ? [relay] : [];
+  }
+
   return {
+    setRelay,
     blurSupported,
     currentRoom,
     handleRtc,

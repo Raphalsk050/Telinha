@@ -2,7 +2,8 @@
 
 const StreamView = (() => {
   const api = window.telinha;
-  const ICE_SERVERS = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }];
+  const STUN_SERVERS = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }];
+  let relayServers = [];
   const GATHER_TIMEOUT_MS = 3000;
   const STATS_INTERVAL_MS = 1000;
 
@@ -219,7 +220,7 @@ const StreamView = (() => {
     video.className = 'stream-video';
     const view = {
       sharerId,
-      pc: new RTCPeerConnection({ iceServers: ICE_SERVERS, bundlePolicy: 'max-bundle' }),
+      pc: new RTCPeerConnection({ iceServers: [...STUN_SERVERS, ...relayServers], bundlePolicy: 'max-bundle' }),
       video,
       mine: sharerId === SELF,
       audio: hiddenAudio(sharerId === SELF),
@@ -311,7 +312,12 @@ const StreamView = (() => {
     return view ? view.state : null;
   }
 
+  function setRelay(relay) {
+    relayServers = relay ? [relay] : [];
+  }
+
   return {
+    setRelay,
     SELF,
     close,
     configure,

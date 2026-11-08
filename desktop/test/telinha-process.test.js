@@ -88,3 +88,14 @@ test('resolveTelinhaExe prefers the override and falls back to the development b
   const fallback = resolveTelinhaExe({ env: {} });
   assert.ok(fallback === null || fallback === DEV_EXE);
 });
+
+test('buildShareArgs passes the server relay to the sender', () => {
+  const relay = { urls: ['turn:relay.example:3478', 'turn:10.0.0.2:3478'], username: 'u', credential: 'p' };
+  const args = buildShareArgs({ targetKind: 'monitor', targetIndex: 0, audio: 'none', relay, ports: WINDOW });
+  const at = args.indexOf('--turn');
+  assert.deepEqual(args.slice(at, at + 12), [
+    '--turn', relay.urls[0], '--turn-user', 'u', '--turn-pass', 'p',
+    '--turn', relay.urls[1], '--turn-user', 'u', '--turn-pass', 'p',
+  ]);
+  assert.equal(buildShareArgs({ targetKind: 'monitor', targetIndex: 0, audio: 'none', ports: WINDOW }).includes('--turn'), false);
+});

@@ -13,6 +13,9 @@ const CHANNEL_KINDS = new Set(['text', 'voice']);
 const MAX_CHANNELS = 50;
 const MAX_MEMBERS = 500;
 const MAX_CHANNEL_NAME = 32;
+const RELAY_URL_PATTERN = /^turns?:[^\s,]{1,200}$/;
+const MAX_RELAY_URLS = 4;
+const MAX_RELAY_TEXT = 128;
 
 function newChannelId() {
   return crypto.randomBytes(8).toString('hex');
@@ -43,6 +46,25 @@ function sanitizeChannels(channels) {
     });
   }
   return result;
+}
+
+// O relay (TURN) do servidor: por onde passam as chamadas e transmissoes que nao conectam direto.
+// Aceita mais de um endereco, como o publico e o da rede de casa de quem hospeda o relay, porque
+// muitos roteadores nao devolvem para dentro o que sai para o proprio endereco publico. null quando
+// o servidor nao tem um.
+function sanitizeRelay(relay) {
+  if (!relay || typeof relay !== 'object') {
+    return null;
+  }
+  const list = Array.isArray(relay.urls) ? relay.urls : String(relay.urls ?? '').split(',');
+  const urls = list.map((url) => String(url).trim()).filter((url) => RELAY_URL_PATTERN.test(url))
+    .slice(0, MAX_RELAY_URLS);
+  if (urls.length === 0) {
+    return null;
+  }
+  const username = typeof relay.username === 'string' ? relay.username.slice(0, MAX_RELAY_TEXT) : '';
+  const credential = typeof relay.credential === 'string' ? relay.credential.slice(0, MAX_RELAY_TEXT) : '';
+  return { urls, username, credential };
 }
 
 function nextVersion(current) {
@@ -77,6 +99,7 @@ function publicView(server) {
     name: server.name,
     createdAt: server.createdAt,
     channels: server.channels.map((channel) => ({ ...channel })),
+    relay: server.relay ? { ...server.relay, urls: [...server.relay.urls] } : null,
     members: Object.entries(server.members).map(([memberId, member]) => ({
       memberId,
       name: member.name,
@@ -108,6 +131,8 @@ class ServerStore {
             createdAt: Number(server.createdAt) || Date.now(),
             channels: sanitizeChannels(server.channels) ?? [],
             channelsVersion: Number(server.channelsVersion) || 0,
+            relay: sanitizeRelay(server.relay),
+            relayVersion: Number(server.relayVersion) || 0,
             members: server.members && typeof server.members === 'object' ? server.members : {},
           }))
         : [];
@@ -166,6 +191,8 @@ class ServerStore {
       nameVersion: server.nameVersion,
       channels: server.channels,
       channelsVersion: server.channelsVersion,
+      relay: server.relay,
+      relayVersion: server.relayVersion,
     } : null;
   }
 
@@ -180,6 +207,8 @@ class ServerStore {
       createdAt: now,
       channels,
       channelsVersion,
+      relay: null,
+      relayVersion: 0,
       members: {},
     };
     if (self && MEMBER_ID_PATTERN.test(String(self.memberId))) {
@@ -231,6 +260,21 @@ class ServerStore {
     return true;
   }
 
+  setRelay(id, relay) {
+    const server = this.get(id);
+    if (!server) {
+      return false;
+    }
+    const clean = sanitizeRelay(relay);
+    if (JSON.stringify(clean) === JSON.stringify(server.relay)) {
+      return false;
+    }
+    server.relay = clean;
+    server.relayVersion = nextVersion(server.relayVersion);
+    this.save();
+    return true;
+  }
+
   leave(id) {
     const server = this.get(id);
     if (!server) {
@@ -267,6 +311,16 @@ class ServerStore {
       server.nameVersion = nameVersion;
       result.changed = true;
     } else if (nameVersion < server.nameVersion) {
+      result.mineNewer = true;
+    }
+
+    // Quem nao conhece o relay manda relayVersion 0 e nao conta como versao mais velha.
+    const relayVersion = Number(meta.relayVersion) || 0;
+    if (relayVersion > server.relayVersion) {
+      server.relay = sanitizeRelay(meta.relay);
+      server.relayVersion = relayVersion;
+      result.changed = true;
+    } else if (relayVersion > 0 && relayVersion < server.relayVersion) {
       result.mineNewer = true;
     }
 
@@ -340,4 +394,4 @@ class ServerStore {
   }
 }
 
-module.exports = { INVITE_PREFIX, ServerStore, decodeInvite, encodeInvite };
+module.exports = { INVITE_PREFIX, ServerStore, decodeInvite, encodeInvite, sanitizeRelay };

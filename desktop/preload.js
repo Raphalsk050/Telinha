@@ -70,6 +70,7 @@ contextBridge.exposeInMainWorld('telinha', {
   joinServer: (code) => invoke('servers:join', code),
   inviteCode: (id) => invoke('servers:invite', id),
   renameServer: (id, name) => invoke('servers:rename', { id, name }),
+  setServerRelay: (id, relay) => invoke('servers:set-relay', { id, relay }),
   leaveServer: (id) => invoke('servers:leave', id),
   addChannel: (serverId, kind, name) => invoke('servers:add-channel', { serverId, kind, name }),
   renameChannel: (serverId, channelId, name) => invoke('servers:rename-channel', { serverId, channelId, name }),

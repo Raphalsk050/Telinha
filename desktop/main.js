@@ -1302,6 +1302,14 @@ function registerIpc() {
     }
     return renamed;
   });
+  ipcMain.handle('servers:set-relay', (_event, { id, relay }) => {
+    const changed = servers.setRelay(id, relay);
+    if (changed) {
+      sendServers();
+      signaling.publishPresence(true, id);
+    }
+    return changed;
+  });
   ipcMain.handle('servers:leave', (_event, id) => {
     const server = servers.get(id);
     if (!server) {
@@ -1600,6 +1608,7 @@ function registerIpc() {
       spaceId: voice.spaceId,
       roomId: voice.roomId,
       share: share ?? {},
+      relay: servers.get(voice.spaceId)?.relay ?? null,
       targetName: cleanName(targetName, 'Tela'),
     });
     return streams.snapshot();

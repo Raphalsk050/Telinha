@@ -62,11 +62,11 @@ class StreamManager extends EventEmitter {
 
   /* transmissao propria */
 
-  goLive({ spaceId, roomId, share, targetName }) {
+  goLive({ spaceId, roomId, share, relay = null, targetName }) {
     if (this.outgoing) {
       throw new Error('voce ja esta transmitindo');
     }
-    const args = buildShareArgs({ ...share, multi: true, excludePid: this.ownerPid });
+    const args = buildShareArgs({ ...share, multi: true, excludePid: this.ownerPid, relay });
     const session = new TelinhaSession(this.exe(), args);
     const outgoing = {
       session,

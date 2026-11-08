@@ -44,6 +44,10 @@ private:
     std::uint32_t target_bitrate_bps_ = 0;
     std::uint32_t framerate_hz_ = 0;
     bool awaiting_keyframe_ = true;
+    // Index of the last frame handed to Encode. libwebrtc can drop frames before Encode, and a
+    // delta frame after a dropped one references a picture the receiver never gets.
+    std::uint64_t last_frame_index_ = 0;
+    bool seen_frame_ = false;
 };
 
 class PassthroughVideoEncoderFactory final : public webrtc::VideoEncoderFactory {

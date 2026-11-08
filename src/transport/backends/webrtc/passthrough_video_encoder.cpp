@@ -116,6 +116,15 @@ int32_t PassthroughVideoEncoder::Encode(const webrtc::VideoFrame& frame,
         }
     }
 
+    const std::uint64_t frame_index = payload.frame_index();
+    // A delta frame right after one libwebrtc dropped references a picture the receiver never
+    // got; send nothing until a keyframe instead of a picture built on the wrong one.
+    if (seen_frame_ && frame_index != last_frame_index_ + 1 && !payload.keyframe()) {
+        keyframe_wanted = true;
+    }
+    last_frame_index_ = frame_index;
+    seen_frame_ = true;
+
     if (keyframe_wanted && !payload.keyframe()) {
         feedback_->on_keyframe_requested();
         awaiting_keyframe_ = true;

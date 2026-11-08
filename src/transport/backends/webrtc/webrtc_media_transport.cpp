@@ -46,6 +46,9 @@
 namespace tl::transport {
 namespace {
 
+constexpr double kMaxSendFramerate = 1000.0;
+constexpr std::int64_t kMinFrameSpacingUs = 1000;
+
 using backend::EncodedVideoBuffer;
 using backend::PassthroughVideoDecoderFactory;
 using backend::PassthroughVideoEncoderFactory;
@@ -233,6 +236,7 @@ private:
 
     std::atomic<std::uint64_t> video_frames_submitted_{0};
     std::atomic<std::uint64_t> video_frames_rejected_{0};
+    std::int64_t last_video_timestamp_us_ = 0;
     std::atomic<std::uint64_t> keyframes_requested_{0};
     std::atomic<std::uint32_t> target_bitrate_bps_{0};
     std::atomic<std::uint32_t> host_candidates_{0};
@@ -414,6 +418,10 @@ Outcome WebrtcMediaTransport::attach_media()
             parameters.encodings[0].max_bitrate_bps = static_cast<int>(config_.max_bitrate_bps);
             parameters.encodings[0].min_bitrate_bps = static_cast<int>(config_.min_bitrate_bps);
             parameters.encodings[0].scale_resolution_down_by = 1.0;
+            // The frames arrive already encoded and the capture paces them. With the default cap
+            // of 60 fps, capture jitter puts some frames over it and libwebrtc drops them, which
+            // breaks the chain of delta frames until the next intra refresh.
+            parameters.encodings[0].max_framerate = kMaxSendFramerate;
         }
         const webrtc::RTCError applied = video_sender_->SetParameters(parameters);
         if (!applied.ok()) {
@@ -729,9 +737,18 @@ Outcome WebrtcMediaTransport::send_video(const EncodedVideoFrame& frame)
                                         kNanosecondsPerMicrosecond)
             : 0;
 
+    // libwebrtc drops a frame whose millisecond timestamp is not later than the previous one, and
+    // the capture age jitters enough at 60 fps for that to happen under motion. A dropped delta
+    // frame breaks every frame after it until the next intra refresh.
+    std::int64_t timestamp_us = webrtc::TimeMicros() - age_us;
+    if (timestamp_us < last_video_timestamp_us_ + kMinFrameSpacingUs) {
+        timestamp_us = last_video_timestamp_us_ + kMinFrameSpacingUs;
+    }
+    last_video_timestamp_us_ = timestamp_us;
+
     const webrtc::VideoFrame video = webrtc::VideoFrame::Builder()
                                          .set_video_frame_buffer(buffer)
-                                         .set_timestamp_us(webrtc::TimeMicros() - age_us)
+                                         .set_timestamp_us(timestamp_us)
                                          .set_rotation(webrtc::kVideoRotation_0)
                                          .build();
 

@@ -1,0 +1,11 @@
+{
+  "name": "telinha-relay",
+  "version": "1.0.0",
+  "description": "TURN relay for Telinha",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "type": "commonjs",
+  "private": true
+}

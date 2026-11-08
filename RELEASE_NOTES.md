@@ -1,7 +1,7 @@
 # Telinha release notes
 ## Features
 
-None.
+1. A server can now have a relay for calls and streams. When two people cannot connect directly, which happened between some home networks and took over a minute of retries, the call goes through the relay instead. Set it in the server menu, under Relay das chamadas; it reaches every member of the server.
 
 ## Improvements
 
@@ -9,4 +9,4 @@ None.
 
 ## Fixes
 
-1. During fast motion a shared screen could show black specks and leftovers of old frames until a line swept down the screen and cleaned it. The app dropped some video frames before sending them, and every frame after a dropped one was drawn on the wrong picture; frames are no longer dropped, and a gap now asks for a fresh keyframe.
+None.

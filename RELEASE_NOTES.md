@@ -9,4 +9,4 @@ None.
 
 ## Fixes
 
-1. Dropdown lists, such as the stream quality options, did not open after a message arrived in a conversation you did not have open. The window kept flashing in the taskbar, and each flash closed the list.
+1. Parts of a shared game could keep showing an old frame in blocks while the game itself looked fine. The encoder took parts that Windows did not report as changed as static and coded them at much lower quality; recently changed parts and keyframes now keep full quality.

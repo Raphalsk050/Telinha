@@ -485,7 +485,18 @@ impl TelinhaApp {
         };
         let screen = context.content_rect();
         let texture = self.video_texture(context, &key, &store, screen.size());
-        let mut close = context.input(|input| input.key_pressed(egui::Key::Escape));
+        // The person whose video it is, for the menu on the right button, as on their tile.
+        let owner = match &source {
+            ViewSource::Stream(id) | ViewSource::Camera(id) if id != SELF_VIEWER => self
+                .room
+                .voice
+                .clone()
+                .and_then(|voice| self.people_in(&voice.space_id, &voice.room_id).into_iter().find(|person| &person.id == id).map(|person| (person, voice.space_id))),
+            _ => None,
+        };
+        // A click that only closes an open menu leaves the video where it is.
+        let menu_open = egui::Popup::is_any_open(context);
+        let mut close = context.input(|input| input.key_pressed(egui::Key::Escape)) && !menu_open;
         egui::Area::new(egui::Id::unique("tile-viewer")).order(egui::Order::Foreground).fixed_pos(screen.min).show(context, |ui| {
             let (rect, response) = ui.allocate_exact_size(screen.size(), Sense::click());
             ui.painter().rect_filled(rect, CornerRadius::ZERO, Color32::BLACK);
@@ -498,7 +509,10 @@ impl TelinhaApp {
             }
             // As `.tile-viewer .tile-label`: 16 from the corner, a little larger.
             tile_label(ui, rect.shrink(8.0), &label, None, 15.0 / 13.0);
-            close |= response.clicked();
+            close |= response.clicked() && !menu_open;
+            if let Some((person, space_id)) = &owner {
+                self.person_menu(&response, person, space_id, true);
+            }
         });
         if close {
             self.close_viewer();

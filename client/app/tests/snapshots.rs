@@ -277,6 +277,7 @@ fn the_window_draws() {
         shoot(&mut scene, "room-stream");
         scene.app.open_viewer("peer-keep", "Tela de Keep".to_owned());
         shoot(&mut scene, "stream-viewer");
+        shoot_clicking(&mut scene.app, "stream-viewer-menu", &[(egui::pos2(600.0, 400.0), egui::PointerButton::Secondary)]);
         scene.app.close_viewer();
     }
     scene.app.focus_tile(Some("peer-keep"));

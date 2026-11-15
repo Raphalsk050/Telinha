@@ -75,6 +75,16 @@ struct MachineCommand {
     std::uint32_t max_width = 0;
     std::uint32_t max_height = 0;
     std::uint32_t max_bitrate_kbps = 0;
+    // set_quality: how the encoder spends its bits. Every field left out keeps today's way.
+    // rate_mode: 0 follows the network at a steady rate, 1 varies the rate with the motion,
+    // 2 keeps a fixed image quality (quality is the quantizer, 1 to 51).
+    std::uint8_t rate_mode = 0;
+    std::uint32_t quality = 0;
+    // prefer: what gives way when the network is short. 0 the encoder decides, 1 keeps the
+    // picture sharp and drops frames, 2 keeps the motion smooth and lowers the resolution.
+    std::uint8_t prefer = 0;
+    std::uint32_t keyframe_ms = 0;
+    bool normal_latency = false;
     std::uint32_t pid = 0;
     std::uint32_t volume = 0;
     char scope[16] = {};

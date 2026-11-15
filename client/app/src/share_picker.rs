@@ -219,9 +219,16 @@ fn card(ui: &mut Ui, palette: &Palette, choice: &Choice, width: f32, selected: b
 
 impl TelinhaApp {
     pub(crate) fn open_picker(&mut self, switching: bool, manual: bool) {
-        let (quality, audio) = self.room.last_share.unwrap_or_default();
+        let (quality, audio) = self.room.last_share.unwrap_or_else(|| (self.prefs.share_quality.as_ref().map(Quality::from_json).unwrap_or_default(), AudioChoice::default()));
         self.room.picker = Some(Picker { switching, manual, targets: None, chosen: None, quality, audio, device: 0, filter: String::new() });
         self.list_targets();
+    }
+
+    /// Turns the open window to "Personalizada" with every choice showing. For the tests.
+    pub fn picker_custom_for_test(&mut self) {
+        if let Some(picker) = &mut self.room.picker {
+            picker.quality = Quality { preset: Preset::Custom, bitrate: 14, ..Quality::default() };
+        }
     }
 
     /// Opens the window over a made-up list, with the first screen picked. For the tests.
@@ -260,6 +267,7 @@ impl TelinhaApp {
     pub(crate) fn show_picker(&mut self, context: &egui::Context) {
         self.drain_tasks();
         let palette = self.palette;
+        let network = self.room.share_network_kbps;
         let mut tab = self.room.share_tab;
         let Some(picker) = &mut self.room.picker else { return };
         let settings = !picker.switching;
@@ -274,6 +282,7 @@ impl TelinhaApp {
         let mut refresh = false;
         let response = egui::Modal::new(egui::Id::unique("share-picker")).frame(dialog_frame(&palette)).backdrop_color(Color32::from_black_alpha(178)).show(context, |ui| {
             ui.set_width(WIDTH);
+            let top = ui.cursor().min.y;
             ui.spacing_mut().item_spacing = Vec2::ZERO;
             if header(ui, &palette, title) {
                 close = true;
@@ -374,8 +383,13 @@ impl TelinhaApp {
                 let (line, _) = ui.allocate_exact_size(Vec2::new(WIDTH, 1.0), Sense::hover());
                 ui.painter().hline(line.x_range(), line.center().y, Stroke::new(1.0, palette.line_soft));
                 ui.add_space(4.0);
-                quality_section(ui, &palette, &mut picker.quality, WIDTH);
-                audio_section(ui, &palette, &mut picker.audio, &mut picker.device, process, device_share, &inputs, WIDTH);
+                // The choices scroll when "Personalizada" makes them taller than the window; the
+                // buttons below stay in view.
+                let room = (context.content_rect().height() - 2.0 * crate::dialogs::DIALOG_MARGIN - (ui.cursor().min.y - top) - 12.0 - 34.0 - 40.0).max(160.0);
+                egui::ScrollArea::vertical().id_salt("share-options").max_height(room).min_scrolled_height(room).show(ui, |ui| {
+                    quality_section(ui, &palette, &mut picker.quality, WIDTH, 1, network);
+                    audio_section(ui, &palette, &mut picker.audio, &mut picker.device, process, device_share, &inputs, WIDTH);
+                });
             }
 
             ui.add_space(12.0);
@@ -434,6 +448,8 @@ impl TelinhaApp {
         };
         let device = picker.device.min(inputs.len().saturating_sub(1));
         self.room.last_share = Some((picker.quality, audio));
+        self.prefs.share_quality = Some(picker.quality.to_json());
+        self.prefs.save();
         self.room.shared = Some(Shared {
             window_pid: if process { choice.pid } else { 0 },
             audio,

@@ -475,6 +475,35 @@ async fn screen_watched_inside_the_window() {
         }
         println!("receiving and decoding: {:.1} % of one core over {elapsed:.1} s; last reading {last:?}", used / (elapsed * 1000.0) * 100.0);
     }
+    // With TELINHA_QUALITY_PROBE set, each choice of quality goes to the engine in turn and what
+    // the viewer receives under it is printed.
+    if let Some(seconds) = std::env::var("TELINHA_QUALITY_PROBE").ok().and_then(|value| value.parse::<u64>().ok()) {
+        let choices = [
+            ("automatic", serde_json::json!({ "command": "set_quality", "max_fps": 0, "max_width": 0, "max_height": 0, "max_bitrate_kbps": 0 })),
+            ("at most 70 Mbps", serde_json::json!({ "command": "set_quality", "max_fps": 0, "max_width": 0, "max_height": 0, "max_bitrate_kbps": 70000 })),
+            ("variable, at most 1 Mbps", serde_json::json!({ "command": "set_quality", "max_fps": 0, "max_width": 0, "max_height": 0, "max_bitrate_kbps": 1000, "rate_control": "vbr" })),
+            ("fixed quality 14", serde_json::json!({ "command": "set_quality", "max_fps": 0, "max_width": 0, "max_height": 0, "max_bitrate_kbps": 0, "rate_control": "quality", "quality": 14 })),
+            ("720p, 15 fps, keyframe 1 s", serde_json::json!({ "command": "set_quality", "max_fps": 15, "max_width": 1280, "max_height": 720, "max_bitrate_kbps": 0, "keyframe_ms": 1000, "latency": "normal" })),
+        ];
+        for (name, command) in choices {
+            assert!(sharer.stream_command(&command), "the engine took {name}");
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            while call_events.try_recv().is_ok() {}
+            tokio::time::sleep(Duration::from_secs(seconds)).await;
+            let mut seen = Vec::new();
+            while let Ok(event) = call_events.try_recv() {
+                if let CallEvent::StreamStats { stats, .. } = event {
+                    println!("  {name}: {:?} kbps, {:?} fps, dropped {}, buffer {:?}", stats.bitrate.map(f64::round), stats.fps, stats.dropped, stats.buffer.map(f64::round));
+                    seen.push(stats);
+                }
+            }
+            let rates: Vec<f64> = seen.iter().filter_map(|stats| stats.bitrate).collect();
+            let mean = rates.iter().sum::<f64>() / rates.len().max(1) as f64;
+            let peak = rates.iter().copied().fold(0.0, f64::max);
+            let last = seen.last();
+            println!("PROBE {name}: mean {mean:.0} kbps, peak {peak:.0} kbps, size {:?}, fps {:?}", last.and_then(|stats| stats.size), last.and_then(|stats| stats.fps));
+        }
+    }
     let phase = viewer.streams().incoming.first().map(|entry| entry.phase);
     // The small picture of the share reaches the room.
     assert!(sharer.publish_stream_thumb("data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ=="));

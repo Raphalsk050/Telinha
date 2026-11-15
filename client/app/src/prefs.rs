@@ -34,6 +34,8 @@ pub struct Prefs {
     pub blur: bool,
     /// Whose camera is not shown here, by the id that names the person.
     pub video_hidden: BTreeSet<String>,
+    /// The last choice of quality of a share, as `Quality::to_json` writes it.
+    pub share_quality: Option<Value>,
 }
 
 impl Prefs {
@@ -66,6 +68,7 @@ impl Prefs {
             stage_height: field("stageHeight").and_then(Value::as_f64).map(|height| (height as f32).max(140.0)),
             camera: field("cameraId").and_then(Value::as_str).filter(|name| !name.is_empty()).map(str::to_owned),
             blur: field("blur").and_then(Value::as_bool).unwrap_or(false),
+            share_quality: field("shareQuality").filter(|value| value.is_object()).cloned(),
             video_hidden: field("videoHidden").and_then(Value::as_array).map(|ids| ids.iter().filter_map(|id| id.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
             file,
         }
@@ -82,7 +85,7 @@ impl Prefs {
             "inputDevice": self.input_device, "outputDevice": self.output_device, "volumes": self.volumes,
             "streamVolumes": self.stream_volumes, "muted": self.muted, "soundVolume": self.sound_volume,
             "stageHeight": self.stage_height, "cameraId": self.camera, "blur": self.blur,
-            "videoHidden": self.video_hidden,
+            "videoHidden": self.video_hidden, "shareQuality": self.share_quality,
         });
         if let Ok(text) = serde_json::to_string_pretty(&data) {
             // The choice still holds for this run when the disk refuses it.

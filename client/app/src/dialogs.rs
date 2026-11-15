@@ -236,11 +236,14 @@ impl Dialog {
 }
 
 /// The look of every dialog: the main color, rounded, with a shadow and no border.
+/// The space between the edge of a dialog and what it holds.
+pub const DIALOG_MARGIN: f32 = 20.0;
+
 pub fn dialog_frame(palette: &Palette) -> Frame {
     Frame::new()
         .fill(palette.main)
         .corner_radius(CornerRadius::same(8))
-        .inner_margin(Margin::same(20))
+        .inner_margin(Margin::same(DIALOG_MARGIN as i8))
         .shadow(egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(128) })
 }
 

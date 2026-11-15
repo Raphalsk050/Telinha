@@ -110,6 +110,10 @@ fn is_audio_device_id(id: &str) -> bool {
         && id.chars().all(|character| character.is_ascii_alphanumeric() || "_{}.-".contains(character))
 }
 
+/// The most kilobits per second the network of a share may reach; the engine alone stops at 40
+/// thousand.
+pub const SHARE_CEILING_KBPS: u32 = 100_000;
+
 pub fn build_share_args(request: &ShareRequest) -> Result<Vec<String>, String> {
     let kind = request.kind.key();
     let mut args = vec!["send".to_owned(), "--json".to_owned()];
@@ -157,6 +161,8 @@ pub fn build_share_args(request: &ShareRequest) -> Result<Vec<String>, String> {
             }
         }
     }
+    // The network may carry up to this much, so a high limit chosen for the share can be met.
+    args.extend(["--max-bitrate".to_owned(), SHARE_CEILING_KBPS.to_string()]);
     args.extend(port_args(request.ports));
     Ok(args)
 }
@@ -386,6 +392,10 @@ mod tests {
         args.iter().chain(PORTS.iter()).map(|arg| (*arg).to_owned()).collect()
     }
 
+    fn expect_share(args: &[&str]) -> Vec<String> {
+        args.iter().chain(["--max-bitrate", "100000"].iter()).chain(PORTS.iter()).map(|arg| (*arg).to_owned()).collect()
+    }
+
     #[test]
     fn one_json_event_is_read_per_line_and_everything_else_is_log() {
         assert_eq!(parse_event_line(r#"{"event":"state","state":"Connected"}"#), Some(json!({ "event": "state", "state": "Connected" })));
@@ -408,11 +418,11 @@ mod tests {
     #[test]
     fn share_arguments_follow_the_target_and_the_sound_chosen() {
         let monitor = request(TargetKind::Monitor, None, Some(1), ShareAudio::None);
-        assert_eq!(build_share_args(&monitor).unwrap(), expect(&["send", "--json", "--monitor", "1", "--audio", "none"]));
+        assert_eq!(build_share_args(&monitor).unwrap(), expect_share(&["send", "--json", "--monitor", "1", "--audio", "none"]));
         let window = request(TargetKind::Window, None, Some(3), ShareAudio::Process { pid: 4242 });
         assert_eq!(
             build_share_args(&window).unwrap(),
-            expect(&["send", "--json", "--window", "3", "--audio", "process", "--audio-pid", "4242"])
+            expect_share(&["send", "--json", "--window", "3", "--audio", "process", "--audio-pid", "4242"])
         );
         assert!(build_share_args(&request(TargetKind::Monitor, None, None, ShareAudio::None)).is_err());
         assert!(build_share_args(&request(TargetKind::Window, None, Some(0), ShareAudio::Process { pid: 0 })).is_err());
@@ -421,9 +431,9 @@ mod tests {
     #[test]
     fn the_stable_handle_is_preferred_over_the_list_index() {
         let window = request(TargetKind::Window, Some(0x1a2b), Some(7), ShareAudio::System { exclude_pid: None });
-        assert_eq!(build_share_args(&window).unwrap(), expect(&["send", "--json", "--window-handle", "6699", "--audio", "system"]));
+        assert_eq!(build_share_args(&window).unwrap(), expect_share(&["send", "--json", "--window-handle", "6699", "--audio", "system"]));
         let monitor = request(TargetKind::Monitor, Some(65537), None, ShareAudio::None);
-        assert_eq!(build_share_args(&monitor).unwrap(), expect(&["send", "--json", "--monitor-handle", "65537", "--audio", "none"]));
+        assert_eq!(build_share_args(&monitor).unwrap(), expect_share(&["send", "--json", "--monitor-handle", "65537", "--audio", "none"]));
         assert!(build_share_args(&request(TargetKind::Monitor, Some(0), None, ShareAudio::None)).is_err());
     }
 
@@ -433,7 +443,7 @@ mod tests {
         live.multi = true;
         assert_eq!(
             build_share_args(&live).unwrap(),
-            expect(&["send", "--json", "--monitor-handle", "65537", "--multi", "--audio", "system", "--audio-exclude-pid", "777"])
+            expect_share(&["send", "--json", "--monitor-handle", "65537", "--multi", "--audio", "system", "--audio-exclude-pid", "777"])
         );
     }
 

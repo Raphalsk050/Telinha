@@ -189,7 +189,7 @@ fn theme_dot(ui: &mut Ui, palette: &Palette, label: &str, chosen: bool, paint: i
 }
 
 /// A slider with its name on the left and its value on the right, above it.
-fn slider_field(ui: &mut Ui, palette: &Palette, label: &str, shown: String, value: &mut f32, range: std::ops::RangeInclusive<f32>, step: f64) -> egui::Response {
+pub(crate) fn slider_field(ui: &mut Ui, palette: &Palette, label: &str, shown: String, value: &mut f32, range: std::ops::RangeInclusive<f32>, step: f64) -> egui::Response {
     ui.add_space(6.0);
     let mut name = None;
     ui.horizontal(|ui| {

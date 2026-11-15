@@ -17,6 +17,23 @@ constexpr std::uint32_t kTargetListCapacity = 128;
 constexpr std::uint32_t kAudioScratchFrames = 4096;
 constexpr std::uint32_t kAudioAcquireTimeoutMs = 40;
 constexpr std::uint32_t kMaxBitrateKbps = 4'000'000;
+
+constexpr std::uint8_t kRateVariable = 1;
+constexpr std::uint8_t kRateQuality = 2;
+constexpr std::uint8_t kPreferSharp = 1;
+constexpr std::uint8_t kPreferSmooth = 2;
+// Bits each pixel of a frame needs to look right: a sharp share keeps text crisp, a smooth one
+// accepts a softer picture to keep the motion.
+constexpr double kSharpBitsPerPixel = 0.08;
+constexpr double kSmoothBitsPerPixel = 0.05;
+constexpr std::uint32_t kSharpLowestFps = 5;
+// The heights a smooth share steps down to, largest first.
+constexpr std::uint32_t kSmoothHeights[] = {1440, 1080, 720, 540, 360};
+// A lower resolution waits a little for the network to settle, a higher one longer: each step
+// opens the encoder again and costs a full frame.
+constexpr Nanoseconds kLowerHoldNs = 2'000'000'000;
+constexpr std::uint32_t kAutomaticCeilingBps = 40'000'000u;
+constexpr Nanoseconds kRaiseHoldNs = 8'000'000'000;
 constexpr std::uint32_t kEncoderFullWaitMs = 50;
 constexpr std::uint32_t kMaxPacketsPerDrain = 32;
 constexpr std::uint32_t kExcludeAttempts = 3;
@@ -248,6 +265,13 @@ Outcome SenderSession::open_encoder(const capture::CaptureSourceInfo& info)
     std::uint32_t width = info.width;
     std::uint32_t height = info.height;
     fit_within(max_width_, max_height_, width, height);
+    if (adaptive_height_ != 0 && info.width != 0 && info.height != 0) {
+        const std::uint32_t source_long = info.width > info.height ? info.width : info.height;
+        const std::uint32_t source_short = info.width > info.height ? info.height : info.width;
+        fit_within(static_cast<std::uint32_t>(static_cast<std::uint64_t>(adaptive_height_) *
+                                              source_long / source_short),
+                   adaptive_height_, width, height);
+    }
 
     encode::VideoEncoderConfig config;
     config.codec = encode::VideoCodec::H264;
@@ -255,15 +279,25 @@ Outcome SenderSession::open_encoder(const capture::CaptureSourceInfo& info)
     config.height = height;
     config.framerate_millihertz = frame_rate_millihertz();
     config.target_bitrate_bps = options_.network.start_bitrate_bps;
-    config.max_bitrate_bps = options_.network.max_bitrate_bps;
-    if (max_bitrate_bps_ != 0) {
-        config.max_bitrate_bps = max_bitrate_bps_;
-        if (config.target_bitrate_bps > max_bitrate_bps_) {
-            config.target_bitrate_bps = max_bitrate_bps_;
-        }
+    config.max_bitrate_bps = bitrate_ceiling_bps();
+    if (config.target_bitrate_bps > config.max_bitrate_bps) {
+        config.target_bitrate_bps = config.max_bitrate_bps;
     }
     config.coding_unit_size = encode::coding_unit_size_for(config.codec);
-    config.intra_refresh = options_.intra_refresh;
+    config.rate_control = rate_mode_ == kRateVariable  ? encode::RateControlMode::VariableBitrate
+                          : rate_mode_ == kRateQuality ? encode::RateControlMode::ConstantQuality
+                                                       : encode::RateControlMode::ConstantBitrate;
+    if (quality_qp_ != 0) {
+        config.constant_quality = quality_qp_;
+    }
+    config.low_latency = low_latency_;
+    // A keyframe now and then takes the place of the refresh spread over the frames.
+    config.intra_refresh = options_.intra_refresh && keyframe_ms_ == 0;
+    if (keyframe_ms_ != 0) {
+        const std::uint64_t frames =
+            static_cast<std::uint64_t>(keyframe_ms_) * config.framerate_millihertz / 1'000'000u;
+        config.gop_length = frames == 0 ? 1u : static_cast<std::uint32_t>(frames);
+    }
     config.region_of_interest = width == info.width && height == info.height;
 
     if (!config.valid()) {
@@ -649,9 +683,25 @@ Outcome SenderSession::switch_target(const capture::CaptureTarget& target)
 
 Outcome SenderSession::apply_quality(const MachineCommand& command)
 {
-    const bool reopen = command.max_fps != max_fps_ || command.max_width != max_width_ ||
-                        command.max_height != max_height_;
+    const std::uint32_t qp = command.quality > 51u ? 51u : command.quality;
+    bool reopen = command.max_fps != max_fps_ || command.max_width != max_width_ ||
+                  command.max_height != max_height_ || command.rate_mode != rate_mode_ ||
+                  qp != quality_qp_ || command.keyframe_ms != keyframe_ms_ ||
+                  command.normal_latency == low_latency_;
+    if (command.prefer != prefer_) {
+        adaptive_fps_millihertz_ = 0;
+        wanted_height_ = 0;
+        if (adaptive_height_ != 0) {
+            adaptive_height_ = 0;
+            reopen = true;
+        }
+    }
 
+    rate_mode_ = command.rate_mode;
+    quality_qp_ = qp;
+    prefer_ = command.prefer;
+    keyframe_ms_ = command.keyframe_ms;
+    low_latency_ = !command.normal_latency;
     max_fps_ = command.max_fps;
     max_width_ = command.max_width;
     max_height_ = command.max_height;
@@ -677,11 +727,134 @@ Outcome SenderSession::apply_quality(const MachineCommand& command)
     if (target == 0) {
         target = options_.network.start_bitrate_bps;
     }
-    if (max_bitrate_bps_ != 0 && target > max_bitrate_bps_) {
-        target = max_bitrate_bps_;
+    applied_bitrate_bps_ = 0;
+    return steer_bitrate(target);
+}
+
+// Hands the encoder what the network allows, within the limit of the person and in the way they
+// chose to spend it.
+Outcome SenderSession::steer_bitrate(std::uint32_t network_bps) noexcept
+{
+    std::uint32_t bitrate = network_bps;
+    const std::uint32_t ceiling = bitrate_ceiling_bps();
+    if (bitrate > ceiling) {
+        bitrate = ceiling;
     }
-    applied_bitrate_bps_ = target;
-    return encoder_->set_target_bitrate(target);
+    network_bitrate_bps_ = bitrate;
+    // A fixed quality takes the bits each picture needs, whatever the network says.
+    if (rate_mode_ == kRateQuality || bitrate == applied_bitrate_bps_) {
+        return ok();
+    }
+    applied_bitrate_bps_ = bitrate;
+    const std::uint32_t encoder_bps = prefer_ == kPreferSharp ? sharpen(bitrate) : bitrate;
+    const Outcome applied = encoder_->set_target_bitrate(encoder_bps);
+    if (applied.ok()) {
+        counters_.bitrate_updates.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        TL_LOG_WARN("emissor: encoder recusou %u bps (%s)", encoder_bps,
+                    to_string(applied.status()));
+    }
+    return applied;
+}
+
+// Fewer frames when the network is short, each with the bits a sharp picture needs. The encoder
+// counts its budget by the frame rate it was opened with, so it gets the rate of that pace.
+std::uint32_t SenderSession::sharpen(std::uint32_t bitrate) noexcept
+{
+    const encode::VideoEncoderInfo info = encoder_->info();
+    const double pixels = static_cast<double>(info.width) * info.height;
+    const std::uint32_t configured = frame_rate_millihertz();
+    if (pixels <= 0.0 || configured == 0) {
+        adaptive_fps_millihertz_ = 0;
+        return bitrate;
+    }
+    double millihertz = bitrate / (pixels * kSharpBitsPerPixel) * 1000.0;
+    if (millihertz >= configured) {
+        adaptive_fps_millihertz_ = 0;
+        return bitrate;
+    }
+    if (millihertz < kSharpLowestFps * 1000.0) {
+        millihertz = kSharpLowestFps * 1000.0;
+    }
+    adaptive_fps_millihertz_ = static_cast<std::uint32_t>(millihertz);
+    const double scaled = static_cast<double>(bitrate) * configured / millihertz;
+    return scaled > 4.0e9 ? 4'000'000'000u : static_cast<std::uint32_t>(scaled);
+}
+
+// A smaller picture when the network cannot carry this one at the full frame rate, and the
+// larger one back once it can, each after the network held there for a while.
+void SenderSession::steer_resolution() noexcept
+{
+    if (prefer_ != kPreferSmooth || rate_mode_ == kRateQuality || network_bitrate_bps_ == 0 ||
+        !encoder_) {
+        return;
+    }
+    const capture::CaptureSourceInfo source = pipeline_->info();
+    if (source.width == 0 || source.height == 0) {
+        return;
+    }
+    const std::uint32_t source_short = source.width > source.height ? source.height : source.width;
+    const double aspect = static_cast<double>(source.width) * source.height /
+                          (static_cast<double>(source_short) * source_short);
+    const double fps = frame_rate_millihertz() / 1000.0;
+    const auto fits = [&](double short_side) {
+        return short_side * short_side * aspect * fps * kSmoothBitsPerPixel <= network_bitrate_bps_;
+    };
+
+    std::uint32_t wanted = 0;
+    if (!fits(source_short)) {
+        wanted = kSmoothHeights[sizeof(kSmoothHeights) / sizeof(kSmoothHeights[0]) - 1];
+        for (const std::uint32_t height : kSmoothHeights) {
+            if (height < source_short && fits(height)) {
+                wanted = height;
+                break;
+            }
+        }
+    }
+
+    const Nanoseconds now = now_ns();
+    if (wanted != wanted_height_) {
+        wanted_height_ = wanted;
+        wanted_height_since_ns_ = now;
+    }
+    if (wanted == adaptive_height_) {
+        return;
+    }
+    const bool lower = wanted != 0 && (adaptive_height_ == 0 || wanted < adaptive_height_);
+    if (now - wanted_height_since_ns_ < (lower ? kLowerHoldNs : kRaiseHoldNs)) {
+        return;
+    }
+
+    adaptive_height_ = wanted;
+    TL_LOG_INFO("emissor: rede com %u kbps, resolucao %s %u", network_bitrate_bps_ / 1000u,
+                lower ? "baixa para" : "volta para", wanted == 0 ? source_short : wanted);
+    encoder_->stop();
+    encoder_.reset();
+    const Outcome opened = open_encoder(source);
+    if (!opened.ok()) {
+        stop_.store(true, std::memory_order_relaxed);
+        return;
+    }
+    applied_bitrate_bps_ = 0;
+    (void)steer_bitrate(network_bitrate_bps_);
+}
+
+// The most the encoder may spend: the limit the person chose, or with none, what a share took
+// before higher limits could be chosen, so the network carrying more does not by itself fill it.
+std::uint32_t SenderSession::bitrate_ceiling_bps() const noexcept
+{
+    if (max_bitrate_bps_ != 0) {
+        return max_bitrate_bps_;
+    }
+    return std::min(options_.network.max_bitrate_bps, kAutomaticCeilingBps);
+}
+
+std::uint32_t SenderSession::paced_frame_rate_millihertz() const noexcept
+{
+    const std::uint32_t base = frame_rate_millihertz();
+    return adaptive_fps_millihertz_ != 0 && adaptive_fps_millihertz_ < base
+               ? adaptive_fps_millihertz_
+               : base;
 }
 
 void SenderSession::handle_command(const MachineCommand& command)
@@ -743,6 +916,15 @@ void SenderSession::handle_command(const MachineCommand& command)
             .integer("max_width", max_width_)
             .integer("max_height", max_height_)
             .integer("max_bitrate_kbps", max_bitrate_bps_ / 1000u)
+            .text("rate_control", rate_mode_ == kRateVariable  ? "vbr"
+                                  : rate_mode_ == kRateQuality ? "quality"
+                                                               : "auto")
+            .integer("quality", quality_qp_)
+            .text("prefer", prefer_ == kPreferSharp    ? "sharp"
+                            : prefer_ == kPreferSmooth ? "smooth"
+                                                       : "balanced")
+            .integer("keyframe_ms", keyframe_ms_)
+            .text("latency", low_latency_ ? "low" : "normal")
             .integer("width", encoder_info.width)
             .integer("height", encoder_info.height);
         return;
@@ -1087,24 +1269,11 @@ void SenderSession::service_peers()
 
 void SenderSession::apply_peer_bitrate() noexcept
 {
-    std::uint32_t bitrate = lowest_peer_bitrate();
+    const std::uint32_t bitrate = lowest_peer_bitrate();
     if (bitrate == 0) {
         return;
     }
-    if (max_bitrate_bps_ != 0 && bitrate > max_bitrate_bps_) {
-        bitrate = max_bitrate_bps_;
-    }
-    if (bitrate == applied_bitrate_bps_) {
-        return;
-    }
-
-    applied_bitrate_bps_ = bitrate;
-    const Outcome applied = encoder_->set_target_bitrate(bitrate);
-    if (applied.ok()) {
-        counters_.bitrate_updates.fetch_add(1, std::memory_order_relaxed);
-    } else {
-        TL_LOG_WARN("emissor: encoder recusou %u bps (%s)", bitrate, to_string(applied.status()));
-    }
+    (void)steer_bitrate(bitrate);
 }
 
 void SenderSession::apply_pending_controls() noexcept
@@ -1112,20 +1281,12 @@ void SenderSession::apply_pending_controls() noexcept
     if (multi_) {
         apply_peer_bitrate();
     } else {
-        std::uint32_t bitrate = pending_bitrate_.exchange(0, std::memory_order_relaxed);
+        const std::uint32_t bitrate = pending_bitrate_.exchange(0, std::memory_order_relaxed);
         if (bitrate != 0) {
-            if (max_bitrate_bps_ != 0 && bitrate > max_bitrate_bps_) {
-                bitrate = max_bitrate_bps_;
-            }
-            const Outcome applied = encoder_->set_target_bitrate(bitrate);
-            if (applied.ok()) {
-                counters_.bitrate_updates.fetch_add(1, std::memory_order_relaxed);
-            } else {
-                TL_LOG_WARN("emissor: encoder recusou %u bps (%s)", bitrate,
-                            to_string(applied.status()));
-            }
+            (void)steer_bitrate(bitrate);
         }
     }
+    steer_resolution();
 
     if (keyframe_pending_.exchange(false, std::memory_order_relaxed)) {
         encoder_->request_keyframe();
@@ -1281,7 +1442,7 @@ void SenderSession::pump_video()
     // O proximo quadro e marcado a partir do horario deste, nao de quando ele chegou: senao a
     // espera pela tela se soma ao intervalo e a taxa fica bem abaixo da pedida.
     const Nanoseconds captured_ns = now_ns();
-    next_frame_ns_ += kNanosecondsPerSecond * 1000u / frame_rate_millihertz();
+    next_frame_ns_ += kNanosecondsPerSecond * 1000u / paced_frame_rate_millihertz();
     if (next_frame_ns_ < captured_ns) {
         next_frame_ns_ = captured_ns;
     }

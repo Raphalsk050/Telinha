@@ -134,6 +134,11 @@ private:
 
     void apply_pending_controls() noexcept;
     void apply_peer_bitrate() noexcept;
+    [[nodiscard]] Outcome steer_bitrate(std::uint32_t network_bps) noexcept;
+    [[nodiscard]] std::uint32_t sharpen(std::uint32_t bitrate) noexcept;
+    void steer_resolution() noexcept;
+    [[nodiscard]] std::uint32_t bitrate_ceiling_bps() const noexcept;
+    [[nodiscard]] std::uint32_t paced_frame_rate_millihertz() const noexcept;
     void send_encoded(const transport::EncodedVideoFrame& frame);
     void drain_encoder(std::uint32_t first_timeout_ms);
     void note_encoder_refusal(const Outcome& refused) noexcept;
@@ -164,6 +169,20 @@ private:
     std::uint32_t max_height_ = 0;
     std::uint32_t max_bitrate_bps_ = 0;
     std::uint32_t applied_bitrate_bps_ = 0;
+    // How the encoder spends its bits, as set_quality chose (see MachineCommand).
+    std::uint8_t rate_mode_ = 0;
+    std::uint32_t quality_qp_ = 0;
+    std::uint8_t prefer_ = 0;
+    std::uint32_t keyframe_ms_ = 0;
+    bool low_latency_ = true;
+    // What the network allows now, after the limit of the person.
+    std::uint32_t network_bitrate_bps_ = 0;
+    // A sharp share sends fewer frames when the network is short; zero is every frame.
+    std::uint32_t adaptive_fps_millihertz_ = 0;
+    // A smooth share lowers its resolution when the network is short; zero is the full size.
+    std::uint32_t adaptive_height_ = 0;
+    std::uint32_t wanted_height_ = 0;
+    Nanoseconds wanted_height_since_ns_ = 0;
     void* encoder_device_ = nullptr;
     capture::CaptureBackend encoder_capture_backend_ = capture::CaptureBackend::Automatic;
     Nanoseconds next_frame_ns_ = 0;

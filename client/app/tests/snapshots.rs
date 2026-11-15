@@ -306,10 +306,13 @@ fn the_window_draws() {
         scene.app.close_debug();
     }
     {
-        use telinha::stream_settings::{AudioChoice, Preset, Quality, Shared};
-        let quality = Quality { preset: Preset::Custom, resolution: 2, fps: 3, bitrate: 0 };
+        use telinha::stream_settings::{AudioChoice, Preset, Quality, RateMode, Shared};
+        let quality = Quality { preset: Preset::Custom, resolution: 2, fps: 3, bitrate: 14, typed_kbps: 25_000, mode: RateMode::Variable, ..Quality::default() };
         scene.app.stream_settings_for_test(Some(Shared { window_pid: 0, audio: AudioChoice::Computer, quality, manual: false, ..Shared::default() }));
         shoot(&mut scene, "stream-settings");
+        let fixed = Quality { mode: RateMode::Fixed, image: 85, bitrate: 4, ..quality };
+        scene.app.stream_settings_for_test(Some(Shared { quality: fixed, ..Shared::default() }));
+        shoot(&mut scene, "stream-settings-fixed");
         scene.app.stream_settings_for_test(None);
     }
     {
@@ -324,6 +327,8 @@ fn the_window_draws() {
         };
         scene.app.picker_for_test(false, targets.clone());
         shoot(&mut scene, "share-picker");
+        scene.app.picker_custom_for_test();
+        shoot(&mut scene, "share-picker-custom");
         scene.app.picker_for_test(true, targets);
         shoot(&mut scene, "share-picker-switch");
         scene.app.close_picker_for_test();

@@ -80,6 +80,8 @@ pub struct RoomState {
     pub(crate) share_tab: crate::share_picker::Tab,
     /// The quality and the sound of the last share, offered again the next time.
     pub(crate) last_share: Option<(Quality, AudioChoice)>,
+    /// What the network of the share carries now, by the last report of its engine.
+    pub(crate) share_network_kbps: Option<f64>,
     /// The sound inputs the picker found, for the sound of a capture card.
     pub(crate) audio_inputs: Vec<(String, String)>,
     pub(crate) sender: Sender<Task>,
@@ -135,6 +137,7 @@ impl RoomState {
             picker: None,
             share_tab: crate::share_picker::Tab::default(),
             last_share: None,
+            share_network_kbps: None,
             audio_inputs: Vec::new(),
             sender,
             tasks,

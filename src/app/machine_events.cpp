@@ -530,6 +530,21 @@ bool parse_machine_command(const char* line, MachineCommand& out, Span<char> scr
         out.max_width = read_limit(line, "max_width");
         out.max_height = read_limit(line, "max_height");
         out.max_bitrate_kbps = read_limit(line, "max_bitrate_kbps");
+        char word[16];
+        if (read_text(line, "rate_control", word, sizeof(word))) {
+            out.rate_mode = std::strcmp(word, "vbr") == 0       ? 1
+                            : std::strcmp(word, "quality") == 0 ? 2
+                                                                : 0;
+        }
+        out.quality = read_limit(line, "quality");
+        if (read_text(line, "prefer", word, sizeof(word))) {
+            out.prefer = std::strcmp(word, "sharp") == 0    ? 1
+                         : std::strcmp(word, "smooth") == 0 ? 2
+                                                            : 0;
+        }
+        out.keyframe_ms = read_limit(line, "keyframe_ms");
+        out.normal_latency =
+            read_text(line, "latency", word, sizeof(word)) && std::strcmp(word, "normal") == 0;
         return true;
     }
 

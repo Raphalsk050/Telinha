@@ -1127,6 +1127,7 @@ impl TelinhaApp {
             .incoming
             .iter()
             .filter(|entry| entry.space_id == space_id && entry.room_id == room_id)
+            .filter(|entry| !people.iter().any(|person| person.id == entry.sharer_id))
             .map(|entry| Tile::Stream { sharer_id: entry.sharer_id.clone(), name: entry.name.clone(), open: entry.phase == IncomingPhase::Live, embedded: entry.embedded })
             .collect();
         tiles.extend(people.into_iter().map(Tile::Person));
@@ -1277,64 +1278,73 @@ impl TelinhaApp {
                 let connected = *embedded && *open && texture.is_some();
                 match texture.filter(|_| connected) {
                     Some(texture) => paint_video(ui, rect, texture, false, false),
-                    None => {
-                        // As `.stream-note`: what is happening, and the way back from the window of the engine.
-                        let native = !*embedded;
-                        let note = if native { format!("A tela de {name} está aberta em outra janela") } else { format!("Conectando à tela de {name}…") };
-                        let job = egui::text::LayoutJob {
-                            halign: Align::Center,
-                            ..egui::text::LayoutJob::simple(note, FontId::proportional(13.0), palette.muted, (rect.width() - 32.0).max(10.0))
-                        };
-                        let galley = ui.painter().layout_job(job);
-                        let button_height = if native { 10.0 + 28.0 } else { 0.0 };
-                        let top = rect.center().y - (galley.size().y + button_height) / 2.0;
-                        let text_height = galley.size().y;
-                        ui.painter().galley(egui::pos2(rect.center().x, top), galley, palette.muted);
-                        if native {
-                            let label = ui.painter().layout_no_wrap("Trazer para o app".to_owned(), FontId::new(13.0, theme::semibold()), palette.strong);
-                            let back = Rect::from_center_size(egui::pos2(rect.center().x, top + text_height + 10.0 + 14.0), Vec2::new(label.size().x + 20.0, 28.0));
-                            let response = ui.interact(back, ui.scope_id().with(("stream-popin", sharer_id)), Sense::click());
-                            ui.painter().rect_filled(back, CornerRadius::same(4), if response.hovered() { palette.muted.gamma_multiply(0.55) } else { palette.selected });
-                            ui.painter().galley(back.center() - label.size() / 2.0, label, palette.strong);
-                            if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                                self.hub.set_stream_window(sharer_id, false);
-                            }
-                        }
-                    }
+                    None => self.stream_note(ui, palette, rect, sharer_id, name, !*embedded),
                 }
                 tile_label(ui, rect, &format!("Tela de {name}"), None, 1.0);
                 live_badge(ui, rect, palette);
                 if hovered {
-                    // As `.stream-tools`: the buttons at the top right, while the pointer is over the tile.
-                    let mut tools = Vec::new();
-                    if connected {
-                        tools.push((icons::EXPAND, "Tela cheia"));
-                    }
-                    if *embedded {
-                        tools.push((icons::POPOUT, "Abrir em outra janela"));
-                    }
-                    tools.push((icons::CLOSE, "Parar de assistir"));
-                    let mut right = rect.right() - 8.0;
-                    let mut picked = None;
-                    for (icon, tip) in tools.into_iter().rev() {
-                        let place = Rect::from_min_size(egui::pos2(right - 30.0, rect.top() + 8.0), Vec2::splat(30.0));
-                        right -= 30.0 + 6.0;
-                        let button = ui.interact(place, ui.scope_id().with(("stream-tool", sharer_id, tip)), Sense::click());
-                        let shade = if button.hovered() { Color32::from_black_alpha(230) } else { Color32::from_black_alpha(166) };
-                        ui.painter().rect_filled(place, CornerRadius::same(4), shade);
-                        icon.image(18.0, Color32::WHITE).paint_at(ui, Rect::from_center_size(place.center(), Vec2::splat(18.0)));
-                        if button.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                            picked = Some(tip);
-                        }
-                    }
-                    match picked {
-                        Some("Tela cheia") => self.open_viewer(sharer_id, format!("Tela de {name}")),
-                        Some("Abrir em outra janela") => self.hub.set_stream_window(sharer_id, true),
-                        Some(_) => self.hub.unwatch(sharer_id),
-                        None => {}
-                    }
+                    self.stream_tools(ui, rect, sharer_id, name, connected, *embedded, true);
                 }
             }
+        }
+    }
+
+    /// As `.stream-note`: what is happening with a screen not shown yet, and the way back from the
+    /// window of the engine.
+    fn stream_note(&mut self, ui: &mut Ui, palette: &Palette, rect: Rect, sharer_id: &str, name: &str, native: bool) {
+        let note = if native { format!("A tela de {name} está aberta em outra janela") } else { format!("Conectando à tela de {name}…") };
+        let job = egui::text::LayoutJob {
+            halign: Align::Center,
+            ..egui::text::LayoutJob::simple(note, FontId::proportional(13.0), palette.muted, (rect.width() - 32.0).max(10.0))
+        };
+        let galley = ui.painter().layout_job(job);
+        let button_height = if native { 10.0 + 28.0 } else { 0.0 };
+        let top = rect.center().y - (galley.size().y + button_height) / 2.0;
+        let text_height = galley.size().y;
+        ui.painter().galley(egui::pos2(rect.center().x, top), galley, palette.muted);
+        if native {
+            let label = ui.painter().layout_no_wrap("Trazer para o app".to_owned(), FontId::new(13.0, theme::semibold()), palette.strong);
+            let back = Rect::from_center_size(egui::pos2(rect.center().x, top + text_height + 10.0 + 14.0), Vec2::new(label.size().x + 20.0, 28.0));
+            let response = ui.interact(back, ui.scope_id().with(("stream-popin", sharer_id)), Sense::click());
+            ui.painter().rect_filled(back, CornerRadius::same(4), if response.hovered() { palette.muted.gamma_multiply(0.55) } else { palette.selected });
+            ui.painter().galley(back.center() - label.size() / 2.0, label, palette.strong);
+            if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                self.hub.set_stream_window(sharer_id, false);
+            }
+        }
+    }
+
+    /// As `.stream-tools`: the buttons at the top right of a screen, while the pointer is over it.
+    #[allow(clippy::too_many_arguments)]
+    fn stream_tools(&mut self, ui: &mut Ui, rect: Rect, sharer_id: &str, name: &str, connected: bool, embedded: bool, close: bool) {
+        let mut tools = Vec::new();
+        if connected {
+            tools.push((icons::EXPAND, "Tela cheia"));
+        }
+        if embedded {
+            tools.push((icons::POPOUT, "Abrir em outra janela"));
+        }
+        if close {
+            tools.push((icons::CLOSE, "Parar de assistir"));
+        }
+        let mut right = rect.right() - 8.0;
+        let mut picked = None;
+        for (icon, tip) in tools.into_iter().rev() {
+            let place = Rect::from_min_size(egui::pos2(right - 30.0, rect.top() + 8.0), Vec2::splat(30.0));
+            right -= 30.0 + 6.0;
+            let button = ui.interact(place, ui.scope_id().with(("stream-tool", sharer_id, tip)), Sense::click());
+            let shade = if button.hovered() { Color32::from_black_alpha(230) } else { Color32::from_black_alpha(166) };
+            ui.painter().rect_filled(place, CornerRadius::same(4), shade);
+            icon.image(18.0, Color32::WHITE).paint_at(ui, Rect::from_center_size(place.center(), Vec2::splat(18.0)));
+            if button.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                picked = Some(tip);
+            }
+        }
+        match picked {
+            Some("Tela cheia") => self.open_viewer(sharer_id, format!("Tela de {name}")),
+            Some("Abrir em outra janela") => self.hub.set_stream_window(sharer_id, true),
+            Some(_) => self.hub.unwatch(sharer_id),
+            None => {}
         }
     }
 
@@ -1342,13 +1352,41 @@ impl TelinhaApp {
         // The camera of this app shows as a mirror, as `.mirror` did; someone else's as it comes,
         // unless it was turned off here.
         let key = person.member_id.clone().unwrap_or_else(|| person.id.clone());
+        // The screen of this person, when it is watched here: inside the window, or in the
+        // window of the engine.
+        let watched = if person.me {
+            None
+        } else {
+            self.room.streams.incoming.iter().find(|entry| entry.sharer_id == person.id && entry.phase == IncomingPhase::Live).map(|entry| entry.embedded)
+        };
+        let screen = if watched == Some(true) {
+            self.stream_store(&person.id).and_then(|store| self.video_texture(ui.ctx(), &format!("stream:{}", person.id), &store, rect.size()))
+        } else {
+            None
+        };
+        if let Some(texture) = screen {
+            paint_video(ui, rect, texture, false, false);
+            if ui.rect_contains_pointer(rect) {
+                self.stream_tools(ui, rect, &person.id, &person.name, true, true, false);
+            }
+        } else if watched == Some(false) {
+            self.stream_note(ui, palette, rect, &person.id, &person.name, true);
+        } else {
+            self.person_picture(ui, person, rect, small, &key);
+        }
+        self.person_overlay(ui, palette, person, rect, small);
+    }
+
+    /// The face of a tile: the camera, the own screen going out, the small picture of a screen,
+    /// or the avatar.
+    fn person_picture(&mut self, ui: &mut Ui, person: &Person, rect: Rect, small: bool, key: &str) {
         // Without the camera, the tile of the person sharing shows their own screen, as it goes out.
         let own_screen = person.me && !self.camera_on() && person.live;
         let video = if own_screen {
             self.stream_store(SELF_VIEWER).map(|store| (format!("stream:{SELF_VIEWER}"), store))
         } else if person.me {
             self.camera_on().then(|| self.room.camera_feed.as_ref().map(|feed| Arc::clone(feed.preview()))).flatten().map(|store| (SELF_VIDEO.to_owned(), store))
-        } else if person.camera && !self.prefs.video_hidden.contains(&key) {
+        } else if person.camera && !self.prefs.video_hidden.iter().any(|hidden| hidden.as_str() == key) {
             self.room.call.as_ref().and_then(|call| call.call.video_of(&person.id)).map(|store| (person.id.clone(), store))
         } else {
             None
@@ -1387,7 +1425,11 @@ impl TelinhaApp {
             let picture = self.pictures.avatar(&self.hub, person.member_id.as_deref());
             widgets::paint_avatar_with(ui, Rect::from_center_size(rect.center(), Vec2::splat(side)), &person.name, picture, letter);
         }
+    }
 
+    /// What goes over the face of a tile: the speaking ring, the name, the state of the
+    /// connection, and the buttons of a share.
+    fn person_overlay(&mut self, ui: &mut Ui, palette: &Palette, person: &Person, rect: Rect, small: bool) {
         if self.is_speaking(&person.id) {
             ui.painter().rect_stroke(rect, CornerRadius::same(8), Stroke::new(3.0, palette.green), egui::StrokeKind::Inside);
         }

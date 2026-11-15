@@ -92,6 +92,7 @@ contextBridge.exposeInMainWorld('telinha', {
   fileFinish: (id) => invoke('file:finish', id),
   fileClose: (id, reason) => invoke('file:close', { id, reason }),
   chatImage: (spaceId, channelId, imageId) => invoke('chat:image', { spaceId, channelId, imageId }),
+  chatFileImage: (spaceId, channelId, fileId) => invoke('chat:file-image', { spaceId, channelId, fileId }),
   saveChatFile: (spaceId, channelId, fileId) => invoke('chat:save-file', { spaceId, channelId, fileId }),
   saveChatImage: (spaceId, channelId, imageId) => invoke('chat:save-image', { spaceId, channelId, imageId }),
 

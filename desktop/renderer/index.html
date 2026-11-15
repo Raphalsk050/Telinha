@@ -729,8 +729,20 @@
     <span id="tile-viewer-name" class="tile-label"></span>
   </div>
 
-  <div id="lightbox" class="overlay lightbox" hidden>
-    <img id="lightbox-image" alt="Imagem ampliada">
+  <div id="lightbox" class="lightbox" hidden>
+    <img id="lightbox-image" alt="Imagem ampliada" draggable="false">
+    <button id="lightbox-close" class="lightbox-button lightbox-close" type="button" title="Fechar" aria-label="Fechar">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    </button>
+    <div class="lightbox-tools">
+      <button id="lightbox-out" class="lightbox-button" type="button" title="Diminuir o zoom" aria-label="Diminuir o zoom">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+      <button id="lightbox-reset" class="lightbox-button lightbox-scale" type="button" title="Ajustar à janela"></button>
+      <button id="lightbox-in" class="lightbox-button" type="button" title="Aumentar o zoom" aria-label="Aumentar o zoom">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12M12 6v12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+    </div>
   </div>
 
   <div id="update-notice" class="update-notice" role="status" hidden>

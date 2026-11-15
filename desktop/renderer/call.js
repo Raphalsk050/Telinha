@@ -1611,6 +1611,8 @@ const Call = (() => {
       mic: micLive(),
       deaf: local.deaf,
       video: local.cameraOn && local.camera ? localVideo() : (context.selfPreview || null),
+      // Sem camera, o que aparece no quadro e a propria tela transmitida.
+      screen: !(local.cameraOn && local.camera) && Boolean(context.selfPreview),
       live: context.outgoingLive ? { name: context.outgoingName } : null,
       state: 'connected',
     }, context)];

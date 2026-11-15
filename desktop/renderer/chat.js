@@ -15,6 +15,17 @@ const Chat = (() => {
   const EMBED_DELAY_MS = 400;
   const EMBED_WAIT_MS = 2500;
   const IMAGE_CACHE_LIMIT = 80;
+  // Um GIF maior que o limite de imagem viaja como arquivo e aparece animado ate este tamanho.
+  // O mesmo numero esta em main.js.
+  const MAX_INLINE_GIF_BYTES = 24 * 1024 * 1024;
+  const GIF_CACHE_BYTES = 3 * 1024 * 1024;
+  const GIF_PLACEHOLDER = { width: 240, height: 180 };
+  const LIGHTBOX_MARGIN = 24;
+  const LIGHTBOX_TOOLS_SPACE = 72;
+  const LIGHTBOX_MAX_SCALE = 8;
+  const LIGHTBOX_STEP = 1.25;
+  const LIGHTBOX_WHEEL = 0.002;
+  const LIGHTBOX_DRAG_START = 4;
   const DOWNLOAD_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   const DELETE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12.5a1.5 1.5 0 0 0 1.5 1.5h7a1.5 1.5 0 0 0 1.5-1.5L18 7M9 7V4.5a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 .5.5V7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   const FILE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2.5h8l4.5 4.5v14a.5.5 0 0 1-.5.5H6a.5.5 0 0 1-.5-.5V3a.5.5 0 0 1 .5-.5z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M14 2.5V7h4.5M8.5 12h7M8.5 15h7M8.5 18h4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -46,6 +57,10 @@ const Chat = (() => {
     hint: find('chat-hint'),
     lightbox: find('lightbox'),
     lightboxImage: find('lightbox-image'),
+    lightboxClose: find('lightbox-close'),
+    lightboxIn: find('lightbox-in'),
+    lightboxOut: find('lightbox-out'),
+    lightboxReset: find('lightbox-reset'),
   };
 
   const imageCache = new Map();
@@ -63,6 +78,9 @@ const Chat = (() => {
   let attachment = null;
   let uploadId = null;
   let lightboxSource = null;
+  const lightbox = {
+    zoom: 1, panX: 0, panY: 0, drag: null,
+  };
   let draftEmbed = null;
   let embedTimer = null;
   let profileName = () => 'Você';
@@ -217,13 +235,15 @@ const Chat = (() => {
     }
   }
 
-  function loadImage(target, imageId, key) {
+  function loadImage(target, imageId, key, fromFile = false) {
     if (!imageLoads.has(key)) {
-      const request = window.telinha.chatImage(target.spaceId, target.channelId, imageId)
+      const read = fromFile ? window.telinha.chatFileImage : window.telinha.chatImage;
+      const request = read(target.spaceId, target.channelId, imageId)
         .catch(() => null)
         .then((url) => {
           imageLoads.delete(key);
-          if (url) {
+          // Um GIF de varios megabytes nao fica na memoria da janela, e relido quando preciso.
+          if (url && (!fromFile || url.length <= GIF_CACHE_BYTES)) {
             cacheImage(key, url);
           }
           return url;
@@ -233,21 +253,200 @@ const Chat = (() => {
     return imageLoads.get(key);
   }
 
+  /* imagem ampliada */
+
+  // A parte da janela onde a imagem aparece: uma folga em volta e, embaixo, o lugar da barra de
+  // zoom, para ela nao cobrir a base de uma imagem alta.
+  function lightboxArea() {
+    const width = Math.max(1, window.innerWidth - 2 * LIGHTBOX_MARGIN);
+    const height = Math.max(1, window.innerHeight - LIGHTBOX_MARGIN - LIGHTBOX_TOOLS_SPACE);
+    return {
+      width, height, centerX: window.innerWidth / 2, centerY: LIGHTBOX_MARGIN + height / 2,
+    };
+  }
+
+  // Sem zoom a imagem cabe inteira nessa area e nunca passa do tamanho real. O zoom conta a
+  // partir desse tamanho: 1 e a imagem inteira na janela.
+  function lightboxFit(area = lightboxArea()) {
+    const { naturalWidth, naturalHeight } = nodes.lightboxImage;
+    if (!naturalWidth || !naturalHeight) {
+      return 0;
+    }
+    return Math.max(0.01, Math.min(1, area.width / naturalWidth, area.height / naturalHeight));
+  }
+
+  function clamp(value, low, high) {
+    return Math.min(high, Math.max(low, value));
+  }
+
+  function layoutLightbox() {
+    const image = nodes.lightboxImage;
+    const area = lightboxArea();
+    const fit = lightboxFit(area);
+    if (!fit) {
+      return;
+    }
+    const most = LIGHTBOX_MAX_SCALE / fit;
+    lightbox.zoom = clamp(lightbox.zoom, 1, most);
+    const width = image.naturalWidth * fit * lightbox.zoom;
+    const height = image.naturalHeight * fit * lightbox.zoom;
+    // Maior que a area, a imagem anda ate a borda dela encostar na folga. Menor, fica no centro.
+    const reachX = Math.max(0, (width - area.width) / 2);
+    const reachY = Math.max(0, (height - area.height) / 2);
+    lightbox.panX = clamp(lightbox.panX, -reachX, reachX);
+    lightbox.panY = clamp(lightbox.panY, -reachY, reachY);
+
+    image.style.width = `${width}px`;
+    image.style.height = `${height}px`;
+    image.style.left = `${area.centerX - width / 2 + lightbox.panX}px`;
+    image.style.top = `${area.centerY - height / 2 + lightbox.panY}px`;
+    image.classList.toggle('zoomed', lightbox.zoom > 1);
+    image.classList.remove('loading');
+
+    nodes.lightboxReset.textContent = `${Math.round(fit * lightbox.zoom * 100)}%`;
+    nodes.lightboxOut.disabled = lightbox.zoom <= 1;
+    nodes.lightboxIn.disabled = lightbox.zoom >= most;
+  }
+
+  // O ponto da imagem que esta embaixo do cursor continua embaixo dele depois do zoom.
+  function zoomLightbox(factor, clientX = null, clientY = null) {
+    const area = lightboxArea();
+    const fit = lightboxFit(area);
+    if (!fit) {
+      return;
+    }
+    const previous = lightbox.zoom;
+    let next = clamp(previous * factor, 1, LIGHTBOX_MAX_SCALE / fit);
+    if (next < 1.02) {
+      next = 1;
+    }
+    // Sem cursor, pelos botoes e pelo teclado, o zoom e em torno do meio da area.
+    const fromCenterX = (clientX ?? area.centerX) - area.centerX;
+    const fromCenterY = (clientY ?? area.centerY) - area.centerY;
+    lightbox.panX = fromCenterX - (fromCenterX - lightbox.panX) * (next / previous);
+    lightbox.panY = fromCenterY - (fromCenterY - lightbox.panY) * (next / previous);
+    lightbox.zoom = next;
+    layoutLightbox();
+  }
+
+  function resetLightbox() {
+    lightbox.zoom = 1;
+    lightbox.panX = 0;
+    lightbox.panY = 0;
+    layoutLightbox();
+  }
+
+  // Um clique vai para o tamanho real da imagem, ou para o dobro quando ela ja esta nele, e o
+  // clique seguinte volta a mostrar a imagem inteira.
+  function toggleLightboxZoom(clientX, clientY) {
+    if (lightbox.zoom > 1) {
+      resetLightbox();
+      return;
+    }
+    const fit = lightboxFit();
+    zoomLightbox(fit && fit < 0.8 ? 1 / fit : 2, clientX, clientY);
+  }
+
   function openLightbox(url, source) {
     lightboxSource = source ?? null;
-    nodes.lightboxImage.src = url;
+    lightbox.zoom = 1;
+    lightbox.panX = 0;
+    lightbox.panY = 0;
+    lightbox.drag = null;
+    const image = nodes.lightboxImage;
+    image.classList.add('loading');
+    image.classList.remove('dragging');
+    image.src = url;
     nodes.lightbox.hidden = false;
+    if (image.complete && image.naturalWidth) {
+      layoutLightbox();
+    }
   }
 
   function closeLightbox() {
     lightboxSource = null;
+    lightbox.drag = null;
     nodes.lightbox.hidden = true;
     nodes.lightboxImage.removeAttribute('src');
   }
 
+  function bindLightbox() {
+    const image = nodes.lightboxImage;
+    image.addEventListener('load', layoutLightbox);
+    window.addEventListener('resize', () => {
+      if (!nodes.lightbox.hidden) {
+        layoutLightbox();
+      }
+    });
+
+    // So o fundo fecha: um clique na imagem ou nos botoes e para o zoom.
+    nodes.lightbox.addEventListener('click', (event) => {
+      if (event.target === nodes.lightbox) {
+        closeLightbox();
+      }
+    });
+    nodes.lightboxClose.addEventListener('click', closeLightbox);
+    nodes.lightboxIn.addEventListener('click', () => zoomLightbox(LIGHTBOX_STEP));
+    nodes.lightboxOut.addEventListener('click', () => zoomLightbox(1 / LIGHTBOX_STEP));
+    nodes.lightboxReset.addEventListener('click', resetLightbox);
+    nodes.lightbox.addEventListener('wheel', (event) => {
+      event.preventDefault();
+      zoomLightbox(Math.exp(-event.deltaY * LIGHTBOX_WHEEL), event.clientX, event.clientY);
+    }, { passive: false });
+
+    image.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) {
+        return;
+      }
+      event.preventDefault();
+      try {
+        image.setPointerCapture(event.pointerId);
+      } catch {
+        // sem a captura o arraste ainda funciona enquanto o cursor esta sobre a imagem
+      }
+      lightbox.drag = {
+        id: event.pointerId, x: event.clientX, y: event.clientY, panX: lightbox.panX, panY: lightbox.panY, moved: false,
+      };
+    });
+    image.addEventListener('pointermove', (event) => {
+      const { drag } = lightbox;
+      if (!drag || drag.id !== event.pointerId) {
+        return;
+      }
+      const deltaX = event.clientX - drag.x;
+      const deltaY = event.clientY - drag.y;
+      if (!drag.moved && Math.hypot(deltaX, deltaY) < LIGHTBOX_DRAG_START) {
+        return;
+      }
+      drag.moved = true;
+      image.classList.add('dragging');
+      lightbox.panX = drag.panX + deltaX;
+      lightbox.panY = drag.panY + deltaY;
+      layoutLightbox();
+    });
+    const endDrag = (event) => {
+      const { drag } = lightbox;
+      if (!drag || drag.id !== event.pointerId) {
+        return;
+      }
+      lightbox.drag = null;
+      image.classList.remove('dragging');
+      if (!drag.moved && event.type === 'pointerup') {
+        toggleLightboxZoom(event.clientX, event.clientY);
+      }
+    };
+    image.addEventListener('pointerup', endDrag);
+    image.addEventListener('pointercancel', endDrag);
+  }
+
   async function saveImage(source) {
     try {
-      if (await window.telinha.saveChatImage(source.target.spaceId, source.target.channelId, source.imageId)) {
+      const { spaceId, channelId } = source.target;
+      // Um GIF grande esta guardado como arquivo, e e salvo como tal.
+      const saved = source.fileId
+        ? await window.telinha.saveChatFile(spaceId, channelId, source.fileId)
+        : await window.telinha.saveChatImage(spaceId, channelId, source.imageId);
+      if (saved) {
         nodes.hint.textContent = 'Imagem salva.';
       }
     } catch (error) {
@@ -317,6 +516,60 @@ const Chat = (() => {
       }
     });
     // O menu do botao direito sai da lista de mensagens, que junta imagem, link e apagar.
+    frame.imageSource = source;
+    return frame;
+  }
+
+  function showsAnimated(file) {
+    const size = Number(file.size) || 0;
+    return file.mime === 'image/gif' && !file.pending && size > 0 && size <= MAX_INLINE_GIF_BYTES;
+  }
+
+  // Um GIF que veio como arquivo aparece como imagem, animado. O tamanho so se sabe depois de
+  // aberto, entao o quadro comeca num tamanho provisorio.
+  function animationNode(file) {
+    const target = conversation;
+    const frame = document.createElement('button');
+    frame.type = 'button';
+    frame.className = 'message-image';
+    frame.title = 'Abrir imagem';
+    frame.style.width = `${GIF_PLACEHOLDER.width}px`;
+    frame.style.height = `${GIF_PLACEHOLDER.height}px`;
+
+    const picture = document.createElement('img');
+    picture.alt = file.name || 'GIF';
+    frame.append(picture);
+    picture.addEventListener('load', () => {
+      const stick = nearBottom();
+      const scale = Math.min(1, IMAGE_BOUNDS.width / picture.naturalWidth,
+        IMAGE_BOUNDS.height / picture.naturalHeight);
+      frame.style.width = `${Math.max(60, Math.round(picture.naturalWidth * scale))}px`;
+      frame.style.height = `${Math.max(60, Math.round(picture.naturalHeight * scale))}px`;
+      if (stick) {
+        scrollToBottom();
+      }
+    });
+
+    const key = `${target.key}/${file.id}`;
+    const show = (url) => {
+      if (url) {
+        picture.src = url;
+      } else if (frame.isConnected && conversation === target) {
+        // Nao deu para abrir como imagem: fica o cartao de arquivo, que ainda deixa salvar.
+        frame.replaceWith(fileNode(file));
+      }
+    };
+    if (imageCache.has(key)) {
+      show(imageCache.get(key));
+    } else {
+      loadImage(target, file.id, key, true).then(show);
+    }
+    const source = { target, fileId: file.id };
+    frame.addEventListener('click', () => {
+      if (picture.src) {
+        openLightbox(picture.src, source);
+      }
+    });
     frame.imageSource = source;
     return frame;
   }
@@ -561,7 +814,10 @@ const Chat = (() => {
     showPending();
     try {
       const imageLike = file.type.startsWith('image/') && file.type !== 'image/svg+xml';
-      if (imageLike) {
+      // Um GIF acima do limite de imagem viraria uma imagem parada. Ele vai como arquivo, e a
+      // conversa o mostra animado dos dois lados.
+      const largeGif = file.type === 'image/gif' && file.size > MAX_IMAGE_BYTES;
+      if (imageLike && !largeGif) {
         try {
           attachment = await imageAttachment(file);
         } catch {
@@ -787,7 +1043,7 @@ const Chat = (() => {
       line.append(imageNode(message.image, IMAGE_BOUNDS));
     }
     if (message.file && message.file.id) {
-      line.append(fileNode(message.file));
+      line.append(showsAnimated(message.file) ? animationNode(message.file) : fileNode(message.file));
     }
     if (message.mine && message.delivered === false) {
       const failed = document.createElement('span');
@@ -1162,7 +1418,7 @@ const Chat = (() => {
       }
     });
 
-    nodes.lightbox.addEventListener('click', closeLightbox);
+    bindLightbox();
     nodes.lightbox.addEventListener('contextmenu', (event) => {
       if (lightboxSource && nodes.lightboxImage.src) {
         event.preventDefault();
@@ -1175,6 +1431,12 @@ const Chat = (() => {
       }
       if (event.key === 'Escape') {
         closeLightbox();
+      } else if (event.key === '+' || event.key === '=') {
+        zoomLightbox(LIGHTBOX_STEP);
+      } else if (event.key === '-') {
+        zoomLightbox(1 / LIGHTBOX_STEP);
+      } else if (event.key === '0') {
+        resetLightbox();
       } else if (event.ctrlKey && event.key.toLowerCase() === 'c' && nodes.lightboxImage.src) {
         event.preventDefault();
         copyImage(nodes.lightboxImage.src);

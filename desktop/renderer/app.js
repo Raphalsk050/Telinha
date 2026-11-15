@@ -1525,6 +1525,8 @@ function describeError(event) {
       return `Som: ${event.message}. Escolha "Som do computador" ou "Sem som" e tente de novo.`;
     case 'prepare':
       return `Não consegui preparar o Telinha nesta máquina (${event.status}: ${event.message}).`;
+    case 'target_closed':
+      return 'A janela que você estava transmitindo foi fechada, então a transmissão parou.';
     default:
       return `O Telinha parou com erro (${event.status}: ${event.message}).`;
   }
@@ -2790,13 +2792,23 @@ function toggleFocus(id) {
 }
 
 async function openTileViewer(info) {
-  const stream = info.stream || Call.videoStream(info.id);
+  // O quadro de quem transmite sem camera mostra a propria tela, que vem de outro lugar e nao
+  // e espelhada como a camera.
+  const ownScreen = Boolean(info.self && info.screen);
+  const stream = info.stream
+    || (ownScreen ? StreamView.mediaStream(StreamView.SELF) : Call.videoStream(info.id));
   if (!stream) {
     return;
   }
   el.tileViewerVideo.srcObject = stream;
-  el.tileViewerVideo.classList.toggle('mirror', Boolean(info.self));
-  el.tileViewerName.textContent = info.self ? `${info.name} (você)` : info.name;
+  el.tileViewerVideo.classList.toggle('mirror', Boolean(info.self) && !ownScreen);
+  let label = info.name;
+  if (ownScreen) {
+    label = 'Sua tela';
+  } else if (info.self) {
+    label = `${info.name} (você)`;
+  }
+  el.tileViewerName.textContent = label;
   el.tileViewer.hidden = false;
   el.tileViewerVideo.play().catch(() => {});
   try {

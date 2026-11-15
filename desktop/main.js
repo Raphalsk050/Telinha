@@ -43,6 +43,8 @@ const ALLOWED_PERMISSIONS = new Set([
   'media', 'notifications', 'clipboard-sanitized-write', 'speaker-selection', 'fullscreen',
 ]);
 const MAX_RTC_PAYLOAD = 60000;
+// O mesmo numero esta em renderer/chat.js.
+const MAX_INLINE_GIF_BYTES = 24 * 1024 * 1024;
 const MAX_CALL_REPORT = 1500;
 // Versao da combinacao de chamada que este app fala. A partir da 2, quem recebe de novo a mesma
 // oferta responde de novo em vez de recomecar a conexao.
@@ -1476,6 +1478,41 @@ function registerIpc() {
     const found = findImage(key, imageId);
     const data = found ? chats.loadBlob(key, imageId) : null;
     return data ? `data:${found.image.mime};base64,${data.toString('base64')}` : null;
+  });
+
+  // Um GIF grande demais para ir dentro da mensagem viaja como arquivo. Depois de guardado neste
+  // computador, a conversa o mostra animado em vez do cartao de arquivo.
+  ipcMain.handle('chat:file-image', async (_event, { spaceId, channelId = null, fileId }) => {
+    const key = storedConversation(spaceId, channelId);
+    if (!key || !BLOB_ID_PATTERN.test(String(fileId))) {
+      return null;
+    }
+    const message = chats.history(key).find((item) => item.file && item.file.id === fileId);
+    const file = message ? message.file : null;
+    if (!file || file.pending || file.mime !== 'image/gif' || !(file.size > 0 && file.size <= MAX_INLINE_GIF_BYTES)) {
+      return null;
+    }
+    try {
+      let data = null;
+      if (file.key) {
+        if (!chats.hasFile(key, fileId)) {
+          return null;
+        }
+        const parts = [];
+        for await (const part of chats.openFileReader(key, fileId, file)) {
+          parts.push(part);
+        }
+        data = Buffer.concat(parts);
+      } else {
+        data = chats.loadBlob(key, fileId);
+      }
+      if (!data || data.length > MAX_INLINE_GIF_BYTES || data.toString('ascii', 0, 4) !== 'GIF8') {
+        return null;
+      }
+      return `data:image/gif;base64,${data.toString('base64')}`;
+    } catch {
+      return null;
+    }
   });
 
   ipcMain.handle('chat:save-file', async (_event, { spaceId, channelId = null, fileId }) => {

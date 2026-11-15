@@ -2,7 +2,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <memory>
 #include <new>
 
@@ -86,6 +88,58 @@ LONG WINAPI report_fatal_exception(EXCEPTION_POINTERS* info) noexcept
                  offset, dump_path[0] != 0 ? dump_path : "lugar nenhum");
     std::fflush(stderr);
     return EXCEPTION_EXECUTE_HANDLER;
+}
+
+// std::terminate, abort e afins encerram o processo sem passar pelo filtro acima, e ai nem a
+// linha no log sobrava. O caminho de chamadas sai como deslocamentos dentro do telinha.exe.
+[[noreturn]] void report_abnormal_end(const char* reason) noexcept
+{
+    void* frames[24] = {};
+    const USHORT count = CaptureStackBackTrace(0, 24, frames, nullptr);
+    const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+
+    char trace[24 * 12 + 1] = "";
+    std::size_t used = 0;
+    for (USHORT index = 0; index < count && used + 12 < sizeof(trace); ++index) {
+        const auto address = reinterpret_cast<std::uintptr_t>(frames[index]);
+        if (address < base) {
+            continue;
+        }
+        const int written = std::snprintf(trace + used, sizeof(trace) - used, " +0x%llX",
+                                          static_cast<unsigned long long>(address - base));
+        if (written <= 0) {
+            break;
+        }
+        used += static_cast<std::size_t>(written);
+    }
+
+    std::fprintf(stderr, "telinha: falha fatal, encerramento anormal (%s) em telinha.exe%s\n",
+                 reason, trace);
+    std::fflush(stderr);
+    TerminateProcess(GetCurrentProcess(), 0xC0000409);
+    for (;;) {
+    }
+}
+
+void report_terminate() noexcept
+{
+    report_abnormal_end("terminate");
+}
+
+extern "C" void report_abort(int) noexcept
+{
+    report_abnormal_end("abort");
+}
+
+void report_pure_call() noexcept
+{
+    report_abnormal_end("chamada virtual pura");
+}
+
+void report_invalid_parameter(const wchar_t*, const wchar_t*, const wchar_t*, unsigned int,
+                              std::uintptr_t) noexcept
+{
+    report_abnormal_end("parametro invalido na biblioteca C");
 }
 
 bool launched_from_explorer() noexcept
@@ -450,6 +504,10 @@ int main(int argc, char** argv)
 
 #if TL_PLATFORM_WINDOWS
     SetUnhandledExceptionFilter(report_fatal_exception);
+    std::set_terminate(report_terminate);
+    std::signal(SIGABRT, report_abort);
+    _set_purecall_handler(report_pure_call);
+    _set_invalid_parameter_handler(report_invalid_parameter);
     if (argc == 2 && std::strcmp(argv[1], "apply-update") == 0) {
         return apply_update();
     }

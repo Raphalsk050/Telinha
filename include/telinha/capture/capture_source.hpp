@@ -56,6 +56,15 @@ public:
 
     virtual void release() noexcept = 0;
 
+    // Hands out the last picture again as a full frame. A screen that is not changing produces
+    // no frames, and someone who starts watching then still needs a first picture. Timeout
+    // means there is nothing to repeat.
+    [[nodiscard]] virtual Outcome repeat_last(CapturedFrame& out) noexcept
+    {
+        out = CapturedFrame{};
+        return fail(Status::Timeout, "CaptureSource::repeat_last");
+    }
+
     [[nodiscard]] virtual Outcome map_for_readback(FrameSurface& out) noexcept
     {
         out = FrameSurface{};

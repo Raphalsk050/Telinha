@@ -217,6 +217,34 @@ Outcome CapturePipeline::capture_next(ClassifiedFrame& out, std::uint32_t timeou
     return ok();
 }
 
+Outcome CapturePipeline::repeat_last(ClassifiedFrame& out)
+{
+    out = ClassifiedFrame{};
+
+    if (source_ == nullptr || !started_) {
+        return fail(Status::Unavailable, "CapturePipeline::repeat_last: not started");
+    }
+
+    release();
+
+    current_frame_ = CapturedFrame{};
+    CapturedFrame& frame = current_frame_;
+    TL_TRY(source_->repeat_last(frame));
+    frame_held_ = true;
+    ++stats_.frames_acquired;
+    ++stats_.frames_full_dirty;
+
+    TL_TRY(apply_surface_extent(frame.surface.width, frame.surface.height));
+
+    carry_dirty_ = false;
+    tiles_.mark_all();
+
+    out.frame = &frame;
+    out.tiles = &tiles_;
+    out.dirty_tile_count = tiles_.dirty_tile_count();
+    return ok();
+}
+
 void CapturePipeline::release() noexcept
 {
     if (frame_held_ && source_ != nullptr) {

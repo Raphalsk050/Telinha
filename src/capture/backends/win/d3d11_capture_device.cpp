@@ -263,6 +263,8 @@ void D3D11TextureRing::destroy() noexcept
             }
         }
     }
+    // The slots live in the owner's arena, which may be gone by the time the destructor runs.
+    textures_ = nullptr;
     device_.Reset();
 }
 

@@ -23,6 +23,7 @@ public:
     void stop() noexcept override;
     [[nodiscard]] Outcome acquire(CapturedFrame& out, std::uint32_t timeout_ms) noexcept override;
     void release() noexcept override;
+    [[nodiscard]] Outcome repeat_last(CapturedFrame& out) noexcept override;
     [[nodiscard]] CaptureSourceInfo info() const noexcept override;
 
 private:
@@ -52,8 +53,9 @@ private:
 
     D3D11CaptureDevice device_;
     ComPtr<IDXGIOutputDuplication> duplication_;
-    D3D11TextureRing ring_;
+    // Declared before the ring, whose slots live in this arena, so it is destroyed after it.
     ArenaStorage storage_;
+    D3D11TextureRing ring_;
     DirtyRegionBuilder dirty_;
     CursorTracker cursor_;
     D3D11CursorCompositor compositor_;

@@ -169,6 +169,9 @@ private:
     Nanoseconds next_frame_ns_ = 0;
     Nanoseconds last_refusal_log_ns_ = 0;
     std::uint32_t encoder_refusals_ = 0;
+    // Someone is waiting for a picture the capture may not produce by itself: a still screen
+    // sends no frames, so the last one goes out again.
+    bool repeat_wanted_ = false;
 
     Nanoseconds last_report_ns_ = 0;
     std::atomic<std::uint32_t> pending_bitrate_{0};

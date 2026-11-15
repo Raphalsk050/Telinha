@@ -32,6 +32,9 @@ public:
 
     [[nodiscard]] Outcome capture_next(ClassifiedFrame& out, std::uint32_t timeout_ms);
 
+    // The last picture again, fully dirty, for when the source has nothing new to give.
+    [[nodiscard]] Outcome repeat_last(ClassifiedFrame& out);
+
     [[nodiscard]] Outcome reconfigure();
 
     void release() noexcept;

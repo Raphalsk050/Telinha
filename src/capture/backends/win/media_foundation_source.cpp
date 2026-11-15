@@ -390,14 +390,53 @@ struct NativeFormat {
     UINT32 height = 0;
     UINT32 rate_numerator = 0;
     UINT32 rate_denominator = 0;
+    UINT32 range = MFNominalRange_Unknown;
+    DWORD fourcc = 0;
     std::uint64_t millihertz = 0;
+    bool widescreen = false;
     bool compressed = false;
+    bool yuv = false;
     bool tried = false;
 };
 
-// Smooth motion first, then the largest picture up to 1080p, then 60 Hz, then no decoding.
+// Within 2% of 16:9, so 1360x768 and 1366x768 count.
+[[nodiscard]] bool is_widescreen(UINT32 width, UINT32 height) noexcept
+{
+    const std::uint64_t wide = std::uint64_t{width} * 9u;
+    const std::uint64_t tall = std::uint64_t{height} * 16u;
+    const std::uint64_t gap = wide > tall ? wide - tall : tall - wide;
+    return gap * 50u <= tall;
+}
+
+// Video subtypes carry their FourCC in the first field; RGB ones carry a small D3D format number.
+void fourcc_text(DWORD code, char (&out)[5]) noexcept
+{
+    for (int index = 0; index < 4; ++index) {
+        const char symbol = static_cast<char>((code >> (8 * index)) & 0xffu);
+        out[index] = symbol >= ' ' && symbol <= '~' ? symbol : '?';
+    }
+    out[4] = '\0';
+}
+
+[[nodiscard]] const char* range_name(UINT32 range) noexcept
+{
+    switch (range) {
+        case MFNominalRange_0_255: return "0-255";
+        case MFNominalRange_16_235: return "16-235";
+        default: break;
+    }
+    return "nao informada";
+}
+
+// A 16:9 picture first, then smooth motion, then the largest picture up to 1080p, then 60 Hz,
+// then no decoding. Cheap cards also list 4:3 modes they reach by squashing a 16:9 input, and
+// 1280x960 at 50 Hz would otherwise beat 1280x720 at 60 Hz on size.
 [[nodiscard]] bool preferred(const NativeFormat& candidate, const NativeFormat& best) noexcept
 {
+    if (candidate.widescreen != best.widescreen) {
+        return candidate.widescreen;
+    }
+
     const bool candidate_smooth = candidate.millihertz >= kSmoothMillihertz;
     const bool best_smooth = best.millihertz >= kSmoothMillihertz;
     if (candidate_smooth != best_smooth) {
@@ -646,6 +685,13 @@ private:
             }
             format.compressed = subtype == MFVideoFormat_MJPG || subtype == MFVideoFormat_H264 ||
                                 subtype == MFVideoFormat_HEVC;
+            format.yuv = subtype == MFVideoFormat_YUY2 || subtype == MFVideoFormat_UYVY ||
+                         subtype == MFVideoFormat_NV12 || subtype == MFVideoFormat_I420 ||
+                         subtype == MFVideoFormat_IYUV || subtype == MFVideoFormat_YV12;
+            format.widescreen = is_widescreen(format.width, format.height);
+            format.range = MFGetAttributeUINT32(native.Get(), MF_MT_VIDEO_NOMINAL_RANGE,
+                                                MFNominalRange_Unknown);
+            format.fourcc = subtype.Data1;
             formats[count] = format;
             ++count;
         }
@@ -663,9 +709,12 @@ private:
             }
             best->tried = true;
             if (apply_format(*best).ok()) {
-                TL_LOG_INFO("captura: %s em %ux%u a %.2f quadros por segundo%s", name_, best->width,
-                            best->height, static_cast<double>(best->millihertz) / 1000.0,
-                            best->compressed ? ", comprimido pela placa" : "");
+                char fourcc[5] = {};
+                fourcc_text(best->fourcc, fourcc);
+                TL_LOG_INFO("captura: %s em %ux%u a %.2f quadros por segundo, %s, faixa de cor %s",
+                            name_, best->width, best->height,
+                            static_cast<double>(best->millihertz) / 1000.0, fourcc,
+                            range_name(best->range));
                 return adopt_current_format();
             }
         }
@@ -679,13 +728,30 @@ private:
         ComPtr<IMFMediaType> native;
         HRESULT hr = reader_->GetNativeMediaType(kVideoStream, format.index, &native);
         if (SUCCEEDED(hr)) {
-            hr = reader_->SetCurrentMediaType(kVideoStream, nullptr, native.Get());
+            hr = set_native_type(native.Get(), format);
         }
         if (FAILED(hr)) {
             return outcome_from_hresult(hr, "SetCurrentMediaType native");
         }
         return request_rgb32(format.width, format.height, format.rate_numerator,
                              format.rate_denominator);
+    }
+
+    // YUV whose range the card leaves unsaid is studio range, what HDMI carries; saying so keeps
+    // the converter from reading it as full range. A device that refuses the note gets the type
+    // as it listed it.
+    HRESULT set_native_type(IMFMediaType* native, const NativeFormat& format) noexcept
+    {
+        if (format.yuv && format.range == MFNominalRange_Unknown) {
+            ComPtr<IMFMediaType> tagged;
+            if (SUCCEEDED(MFCreateMediaType(&tagged)) &&
+                SUCCEEDED(native->CopyAllItems(tagged.Get())) &&
+                SUCCEEDED(tagged->SetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235)) &&
+                SUCCEEDED(reader_->SetCurrentMediaType(kVideoStream, nullptr, tagged.Get()))) {
+                return S_OK;
+            }
+        }
+        return reader_->SetCurrentMediaType(kVideoStream, nullptr, native);
     }
 
     Outcome request_rgb32(UINT32 width, UINT32 height, UINT32 numerator,
@@ -708,9 +774,18 @@ private:
         if (SUCCEEDED(hr) && numerator != 0 && denominator != 0) {
             hr = MFSetAttributeRatio(output.Get(), MF_MT_FRAME_RATE, numerator, denominator);
         }
-        if (SUCCEEDED(hr)) {
-            hr = reader_->SetCurrentMediaType(kVideoStream, nullptr, output.Get());
+        if (FAILED(hr)) {
+            return outcome_from_hresult(hr, "RGB32 media type");
         }
+
+        // The encoder reads these pixels as full range RGB, so ask for exactly that; a converter
+        // that cannot promise it still gets the plain request.
+        if (SUCCEEDED(output->SetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_0_255)) &&
+            SUCCEEDED(reader_->SetCurrentMediaType(kVideoStream, nullptr, output.Get()))) {
+            return ok();
+        }
+        static_cast<void>(output->DeleteItem(MF_MT_VIDEO_NOMINAL_RANGE));
+        hr = reader_->SetCurrentMediaType(kVideoStream, nullptr, output.Get());
         if (FAILED(hr)) {
             return outcome_from_hresult(hr, "SetCurrentMediaType RGB32");
         }

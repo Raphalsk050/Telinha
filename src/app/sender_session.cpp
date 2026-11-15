@@ -281,6 +281,7 @@ Outcome SenderSession::open_encoder(const capture::CaptureSourceInfo& info)
     applied_bitrate_bps_ = config.target_bitrate_bps;
     encoder_device_ = info.native_device;
     encoder_capture_backend_ = info.backend;
+    repeat_wanted_ = true;
 
     const encode::VideoEncoderInfo encoder_info = encoder_->info();
     TL_LOG_INFO("emissor: encoder %s %ux%u, regioes sujas %s, intra refresh %s",
@@ -1129,6 +1130,7 @@ void SenderSession::apply_pending_controls() noexcept
     if (keyframe_pending_.exchange(false, std::memory_order_relaxed)) {
         encoder_->request_keyframe();
         counters_.keyframes.fetch_add(1, std::memory_order_relaxed);
+        repeat_wanted_ = true;
     }
 }
 
@@ -1240,10 +1242,28 @@ void SenderSession::pump_video()
         captured = pipeline_->capture_next(classified, options_.capture_timeout_ms);
     }
 
+    // Uma tela parada nao manda quadro nenhum, e quem acabou de entrar ficaria no preto ate ela
+    // mudar. O ultimo quadro vai de novo, inteiro.
+    if (!captured.ok() && captured.status() == Status::Timeout && repeat_wanted_ &&
+        (!multi_ || connected_peers() != 0)) {
+        captured = pipeline_->repeat_last(classified);
+    }
+
     if (!captured.ok()) {
         if (captured.status() == Status::ConfigurationChanged ||
             captured.status() == Status::DeviceLost) {
             follow_capture_source();
+        } else if (captured.status() == Status::TargetGone &&
+                   pipeline_->info().target.kind == capture::CaptureTargetKind::Window) {
+            // A janela fechou e nao volta: sem isto o laco ficava girando em falso para sempre.
+            TL_LOG_INFO("emissor: a janela compartilhada foi fechada, encerrando a transmissao");
+            if (machine_events_enabled()) {
+                MachineEvent("error")
+                    .text("stage", "target_closed")
+                    .text("status", to_string(captured.status()))
+                    .text("message", "a janela compartilhada foi fechada");
+            }
+            stop_.store(true, std::memory_order_relaxed);
         } else if (captured.status() != Status::Timeout) {
             TL_LOG_WARN("emissor: captura falhou (%s)", to_string(captured.status()));
         }
@@ -1271,6 +1291,7 @@ void SenderSession::pump_video()
     if (multi_ && connected_peers() == 0) {
         pipeline_->keep_dirty();
         pipeline_->release();
+        repeat_wanted_ = true;
         return;
     }
 
@@ -1292,8 +1313,10 @@ void SenderSession::pump_video()
 
     if (!submitted.ok()) {
         note_encoder_refusal(submitted);
+        repeat_wanted_ = true;
         return;
     }
+    repeat_wanted_ = false;
     encode_ns_.record(encode_elapsed);
     drain_encoder(0);
 }

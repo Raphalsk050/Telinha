@@ -574,7 +574,11 @@ Outcome DesktopDuplicationSource::pull_frame(CapturedFrame& out, std::uint32_t t
 
     collect_cursor(info);
 
-    if (info.LastPresentTime.QuadPart == 0) {
+    // The first frame of a screen that is not changing can come without a present time, and it
+    // is still the only picture of that screen there will be for a while.
+    const bool first_image =
+        resource != nullptr && (!desktop_ready_ || desktop_device_ != device_.device());
+    if (info.LastPresentTime.QuadPart == 0 && !first_image) {
         if (!compositing() || !desktop_ready_ || desktop_device_ != device_.device()) {
             return fail(Status::Timeout, "cursor: atualizacao sem imagem nova");
         }
@@ -618,15 +622,31 @@ Outcome DesktopDuplicationSource::pull_frame(CapturedFrame& out, std::uint32_t t
         return fail(Status::ConfigurationChanged, "duplicated surface layout changed");
     }
 
+    // Kept even without a cursor to draw, so the picture can be repeated to a new viewer.
+    TL_TRY(update_desktop(image.Get()));
     if (!compositing()) {
-        desktop_ready_ = false;
         collect_dirty_metadata(info, drawn_cursor_, Rect{});
         return emit_frame(out, info, image.Get(), true, CursorPlacement{});
     }
 
-    TL_TRY(update_desktop(image.Get()));
     const CursorPlacement placement = next_cursor_placement();
     collect_dirty_metadata(info, drawn_cursor_, placement.visible);
+    return emit_frame(out, info, desktop_.Get(), true, placement);
+}
+
+Outcome DesktopDuplicationSource::repeat_last(CapturedFrame& out) noexcept
+{
+    if (!started_ || leased_ || !desktop_ready_ || desktop_device_ != device_.device() ||
+        desktop_layout_ != layout_) {
+        return fail(Status::Timeout, "desktop duplication has no picture to repeat");
+    }
+
+    dirty_.begin_frame();
+    dirty_.force_full_surface();
+    dirty_.finish();
+
+    const DXGI_OUTDUPL_FRAME_INFO info = {};
+    const CursorPlacement placement = compositing() ? next_cursor_placement() : CursorPlacement{};
     return emit_frame(out, info, desktop_.Get(), true, placement);
 }
 

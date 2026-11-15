@@ -113,6 +113,7 @@ public:
         last_texture_.Reset();
         ring_.destroy();
         device_.destroy();
+        closed_.store(false, std::memory_order_release);
 
         if (frame_ready_ != nullptr) {
             CloseHandle(frame_ready_);
@@ -157,6 +158,38 @@ public:
         }
         leased_ = false;
         leased_handle_ = TextureHandle{};
+    }
+
+    // A window only sends a frame when it draws, so a still or minimized one has to be repeated
+    // from the last copy.
+    [[nodiscard]] Outcome repeat_last(CapturedFrame& out) noexcept override
+    {
+        if (!started_ || leased_ || !last_texture_) {
+            return fail(Status::Timeout, "graphics capture has no picture to repeat");
+        }
+
+        D3D11_TEXTURE2D_DESC description = {};
+        last_texture_->GetDesc(&description);
+        if (description.Width != layout_.width || description.Height != layout_.height) {
+            return fail(Status::Timeout, "graphics capture has no picture to repeat");
+        }
+
+        ID3D11Texture2D* destination = nullptr;
+        TextureHandle handle;
+        TL_TRY(ring_.acquire(destination, handle));
+        if (destination != last_texture_.Get()) {
+            device_.context()->CopyResource(destination, last_texture_.Get());
+        }
+
+        dirty_.begin_frame();
+        dirty_.force_full_surface_without_metadata();
+        dirty_.finish();
+
+        last_texture_ = destination;
+        leased_handle_ = handle;
+        leased_ = true;
+        fill_frame(out, destination, 0);
+        return ok();
     }
 
     [[nodiscard]] CaptureSourceInfo info() const noexcept override
@@ -290,27 +323,39 @@ private:
 
     void teardown_capture() noexcept
     {
+        // The handlers come off before anything is closed: taking one off a frame pool that is
+        // already closed, after the captured window died, makes Windows end the process on the
+        // spot. Each step stands alone so one that fails does not skip the others.
+        try {
+            if (pool_ != nullptr && frame_token_) {
+                pool_.FrameArrived(frame_token_);
+            }
+        } catch (...) {
+        }
+        frame_token_ = {};
+        try {
+            if (item_ != nullptr && closed_token_) {
+                item_.Closed(closed_token_);
+            }
+        } catch (...) {
+        }
+        closed_token_ = {};
         try {
             if (session_ != nullptr) {
                 session_.Close();
-                session_ = nullptr;
             }
+        } catch (...) {
+        }
+        session_ = nullptr;
+        try {
             if (pool_ != nullptr) {
                 pool_.Close();
             }
-            if (pool_ != nullptr && frame_token_) {
-                pool_.FrameArrived(frame_token_);
-                frame_token_ = {};
-            }
-            pool_ = nullptr;
-            if (item_ != nullptr && closed_token_) {
-                item_.Closed(closed_token_);
-                closed_token_ = {};
-            }
-            item_ = nullptr;
-            winrt_device_ = nullptr;
         } catch (...) {
         }
+        pool_ = nullptr;
+        item_ = nullptr;
+        winrt_device_ = nullptr;
     }
 
     void on_frame_arrived(const wgc::Direct3D11CaptureFramePool&,
@@ -401,10 +446,15 @@ private:
         last_texture_ = destination;
         leased_handle_ = handle;
         leased_ = true;
+        fill_frame(out, destination, present_ns);
+        return ok();
+    }
 
+    void fill_frame(CapturedFrame& out, ID3D11Texture2D* texture, Nanoseconds present_ns) noexcept
+    {
         out = CapturedFrame{};
         out.surface.memory = SurfaceMemory::GpuTexture;
-        out.surface.gpu_texture = destination;
+        out.surface.gpu_texture = texture;
         out.surface.width = layout_.width;
         out.surface.height = layout_.height;
         out.surface.format = layout_.format;
@@ -423,7 +473,6 @@ private:
         out.move_rects = dirty_.move_rects();
 
         ++frame_index_;
-        return ok();
     }
 
     Outcome resize_to(const winrt::Windows::Graphics::SizeInt32& size)
@@ -451,8 +500,9 @@ private:
     std::uint32_t process_id_ = 0;
 
     D3D11CaptureDevice device_;
-    D3D11TextureRing ring_;
+    // Declared before the ring, whose slots live in this arena, so it is destroyed after it.
     ArenaStorage storage_;
+    D3D11TextureRing ring_;
     DirtyRegionBuilder dirty_;
 
     wgdx11::IDirect3DDevice winrt_device_{nullptr};

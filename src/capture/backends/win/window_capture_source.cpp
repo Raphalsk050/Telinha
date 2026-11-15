@@ -77,6 +77,11 @@ public:
 
     void release() noexcept override { active().release(); }
 
+    [[nodiscard]] Outcome repeat_last(CapturedFrame& out) noexcept override
+    {
+        return active().repeat_last(out);
+    }
+
     [[nodiscard]] Outcome map_for_readback(FrameSurface& out) noexcept override
     {
         return active().map_for_readback(out);

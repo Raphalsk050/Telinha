@@ -950,6 +950,13 @@ impl TelinhaApp {
     }
 
     /// Shows the settings scrolled this far down. For the tests.
+    /// Shows a page of the settings. For the tests.
+    pub fn settings_page_for_test(&mut self, page: crate::settings::Page) {
+        if let Some(settings) = &mut self.settings {
+            settings.page_for_test(page);
+        }
+    }
+
     pub fn scroll_settings_for_test(&mut self, offset: f32) {
         if let Some(settings) = &mut self.settings {
             settings.scroll_for_test(offset);
@@ -1052,6 +1059,10 @@ impl TelinhaApp {
         };
         let camera = self.prefs.camera.clone();
         let camera_status = self.camera_status.clone();
+        let update = self.update_info();
+        if update.busy {
+            context.request_repaint_after(std::time::Duration::from_millis(300));
+        }
         let view = SettingsView {
             name: &name,
             activity: &activity,
@@ -1068,6 +1079,7 @@ impl TelinhaApp {
             previewing: self.previewing,
             preview,
             camera_status: &camera_status,
+            update,
         };
         let (actions, open) = settings.show(context, &self.palette, view);
         if open {
@@ -1128,6 +1140,16 @@ impl TelinhaApp {
                     let folder = self.hub.data_dir().join("logs");
                     if std::process::Command::new("explorer.exe").arg(&folder).spawn().is_err() {
                         self.notice(format!("O registro fica em {}", folder.display()));
+                    }
+                }
+                SettingsAction::CheckUpdates => {
+                    if let Some(updater) = self.updater() {
+                        let waker = context.clone();
+                        self.runtime.spawn(async move {
+                            updater.check_now().await;
+                            waker.request_repaint();
+                        });
+                        context.request_repaint_after(std::time::Duration::from_millis(100));
                     }
                 }
                 SettingsAction::Notice(text) => self.notice(text),

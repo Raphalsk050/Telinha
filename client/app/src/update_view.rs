@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use egui::{Align2, CornerRadius, Frame, Margin, RichText, Stroke, Vec2};
-use telinha_core::updater::{UpdateState, UpdateStatus, Updater};
+use telinha_core::updater::{CheckOutcome, UpdateState, UpdateStatus, Updater};
 
 use crate::app::TelinhaApp;
 use crate::dialogs::{Tone, button};
@@ -22,11 +22,63 @@ pub struct UpdateView {
     dismissed: Option<(UpdateStatus, Option<String>)>,
     /// A made-up state to draw, for the tests.
     preview: Option<UpdateState>,
+    /// A made-up line for the page of updates, for the tests.
+    info_preview: Option<(bool, String)>,
 }
 
 impl TelinhaApp {
     pub fn set_updater(&mut self, updater: Arc<Updater>) {
         self.update.updater = Some(updater);
+    }
+
+    pub(crate) fn updater(&self) -> Option<Arc<Updater>> {
+        self.update.updater.clone()
+    }
+
+    /// Shows this line on the page of updates, as if this copy updated itself or not. For the
+    /// tests.
+    pub fn update_info_for_test(&mut self, available: bool, line: &str) {
+        self.update.info_preview = Some((available, line.to_owned()));
+    }
+
+    /// What the page of updates says: whether this copy looks for new versions at all, and what
+    /// the last look found.
+    pub(crate) fn update_info(&self) -> crate::settings::UpdateInfo {
+        if let Some((available, line)) = &self.update.info_preview {
+            return crate::settings::UpdateInfo { available: *available, busy: false, line: line.clone() };
+        }
+        let Some(updater) = &self.update.updater else {
+            return crate::settings::UpdateInfo {
+                available: false,
+                busy: false,
+                line: "Esta cópia do Telinha foi compilada fora da página de versões e não procura versões novas. A versão oficial fica em github.com/Raphalsk050/Telinha/releases.".to_owned(),
+            };
+        };
+        let state = updater.snapshot();
+        let version = state.version.clone().unwrap_or_default();
+        let (busy, line) = match state.status {
+            UpdateStatus::Downloading => (true, format!("Baixando o Telinha {version}… {}%", (state.progress * 100.0).floor())),
+            UpdateStatus::Ready => (false, format!("O Telinha {version} já foi baixado. Ele entra quando o app reiniciar, o que acontece sozinho fora de chamada.")),
+            UpdateStatus::Blocked => (false, format!("O Telinha {version} foi baixado, mas faltou a permissão do Windows para trocar o app.")),
+            UpdateStatus::Idle if updater.checking() => (true, "Procurando uma versão nova…".to_owned()),
+            UpdateStatus::Idle => (false, match updater.last_check() {
+                None => "O Telinha procura versões novas sozinho a cada minuto.".to_owned(),
+                Some((at, outcome)) => {
+                    let minutes = at.elapsed().as_secs() / 60;
+                    let when = match minutes {
+                        0 => "agora há pouco".to_owned(),
+                        1 => "há 1 minuto".to_owned(),
+                        _ => format!("há {minutes} minutos"),
+                    };
+                    match outcome {
+                        CheckOutcome::UpToDate(current) => format!("Você já tem a versão mais nova ({current}). Conferido {when}."),
+                        CheckOutcome::Found(found) => format!("O Telinha {found} está chegando."),
+                        CheckOutcome::Failed(error) => format!("Não consegui falar com o GitHub {when}: {error}."),
+                    }
+                }
+            }),
+        };
+        crate::settings::UpdateInfo { available: true, busy, line }
     }
 
     /// Draws the notice as if the updater were in this state. For the tests.

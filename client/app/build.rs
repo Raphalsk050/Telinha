@@ -35,8 +35,8 @@ fn main() {
         println!("cargo:rustc-env=TELINHA_ENGINE_FILE={}", engine.display());
     }
 
-    // Only the program the release pipeline builds updates itself. One built by hand would be
-    // swapped for whatever the latest release is, which may not even be this app.
+    // Only a packaged program updates itself: the one of the release pipeline and the one of
+    // build-rust.ps1. A development build would swap itself for the latest release.
     println!("cargo:rustc-check-cfg=cfg(self_update)");
     println!("cargo:rerun-if-env-changed=TELINHA_UPDATES");
     if std::env::var("TELINHA_UPDATES").as_deref() == Ok("1") {

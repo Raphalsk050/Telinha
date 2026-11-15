@@ -160,6 +160,16 @@ pub fn apply_staged(request: &ApplyRequest) -> Result<(), String> {
     command.spawn().map(|_| ()).map_err(|error| format!("não consegui abrir o ajudante: {error}"))
 }
 
+/// What the last look for a new version found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckOutcome {
+    /// No release is newer than this one, which is the latest known.
+    UpToDate(String),
+    /// This version is newer, and is downloaded or on its way.
+    Found(String),
+    Failed(String),
+}
+
 type Listener = Box<dyn Fn(UpdateEvent) + Send + Sync>;
 type Apply = Box<dyn Fn(&ApplyRequest) -> Result<(), String> + Send + Sync>;
 
@@ -176,6 +186,7 @@ pub struct Updater {
     busy: AtomicBool,
     applying: AtomicBool,
     retry_at: Mutex<Option<Instant>>,
+    last_check: Mutex<Option<(Instant, CheckOutcome)>>,
     listener: Listener,
     apply: Apply,
 }
@@ -200,6 +211,7 @@ impl Updater {
             busy: AtomicBool::new(false),
             applying: AtomicBool::new(false),
             retry_at: Mutex::new(None),
+            last_check: Mutex::new(None),
             listener: Box::new(listener),
             apply: Box::new(apply_staged),
         }
@@ -213,6 +225,31 @@ impl Updater {
 
     pub fn current(&self) -> &str {
         &self.current
+    }
+
+    /// When the last look ended and what it found. None before the first one.
+    pub fn last_check(&self) -> Option<(Instant, CheckOutcome)> {
+        self.last_check.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+    }
+
+    /// True while a look is under way.
+    pub fn checking(&self) -> bool {
+        self.busy.load(Ordering::SeqCst)
+    }
+
+    /// Looks now, when the person asks, even inside the wait after a failure.
+    pub async fn check_now(&self) {
+        *self.retry_at.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        let ready = self.snapshot();
+        if let (UpdateStatus::Ready | UpdateStatus::Blocked, Some(version)) = (ready.status, ready.version) {
+            self.found(CheckOutcome::Found(version));
+            return;
+        }
+        self.check().await;
+    }
+
+    fn found(&self, outcome: CheckOutcome) {
+        *self.last_check.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((Instant::now(), outcome));
     }
 
     pub fn snapshot(&self) -> UpdateState {
@@ -302,31 +339,36 @@ impl Updater {
         if waiting || self.applying.load(Ordering::SeqCst) || self.snapshot().status == UpdateStatus::Ready || self.busy.swap(true, Ordering::SeqCst) {
             return;
         }
-        if let Err(error) = self.look().await {
-            *self.retry_at.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now() + RETRY_AFTER_FAILURE);
-            self.set(|state| *state = UpdateState { status: UpdateStatus::Idle, version: None, progress: 0.0 });
-            (self.listener)(UpdateEvent::Failed(error));
+        match self.look().await {
+            Ok(outcome) => self.found(outcome),
+            Err(error) => {
+                *self.retry_at.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now() + RETRY_AFTER_FAILURE);
+                self.set(|state| *state = UpdateState { status: UpdateStatus::Idle, version: None, progress: 0.0 });
+                self.found(CheckOutcome::Failed(error.clone()));
+                (self.listener)(UpdateEvent::Failed(error));
+            }
         }
         self.busy.store(false, Ordering::SeqCst);
     }
 
-    async fn look(&self) -> Result<(), String> {
-        let (Some(latest), Some(current)) = (self.latest_version().await?, parse_version(&self.current)) else { return Ok(()) };
+    async fn look(&self) -> Result<CheckOutcome, String> {
+        let up_to_date = || CheckOutcome::UpToDate(self.current.clone());
+        let (Some(latest), Some(current)) = (self.latest_version().await?, parse_version(&self.current)) else { return Ok(up_to_date()) };
         if latest <= current {
-            return Ok(());
+            return Ok(up_to_date());
         }
         let version = written(latest);
         // A release published without raising the version would bring a program that still says
         // the old one, and it would be downloaded and swapped again without end.
         if self.read_mark(APPLIED_FILE) == version {
-            return Ok(());
+            return Ok(up_to_date());
         }
         if !self.staged_file(&version).is_file() {
             self.fetch_release(&version).await?;
         }
         let status = if self.read_mark(FAILED_FILE) == version { UpdateStatus::Blocked } else { UpdateStatus::Ready };
-        self.set(|state| *state = UpdateState { status, version: Some(version), progress: 1.0 });
-        Ok(())
+        self.set(|state| *state = UpdateState { status, version: Some(version.clone()), progress: 1.0 });
+        Ok(CheckOutcome::Found(version))
     }
 
     async fn fetch_release(&self, version: &str) -> Result<(), String> {
@@ -540,6 +582,10 @@ mod tests {
         let events = heard.lock().unwrap().clone();
         assert!(matches!(&events[0], UpdateEvent::Changed(state) if state.status == UpdateStatus::Downloading && state.progress == 0.0));
         assert!(!events.iter().any(|event| matches!(event, UpdateEvent::Failed(_))));
+        assert_eq!(updater.last_check().map(|(_, outcome)| outcome), Some(CheckOutcome::Found("9.9.9".into())));
+        // Asked again with the download ready, it says so without going to the network.
+        updater.check_now().await;
+        assert_eq!(updater.last_check().map(|(_, outcome)| outcome), Some(CheckOutcome::Found("9.9.9".into())));
 
         assert!(updater.apply(4242, false, false));
         assert!(!updater.apply(4242, false, false), "the swap is handed over once");
@@ -562,6 +608,13 @@ mod tests {
         assert_eq!(updater.snapshot().status, UpdateStatus::Idle);
         assert!(heard.lock().unwrap().contains(&UpdateEvent::Failed("o arquivo baixado não confere com o da release".into())));
         assert!(std::fs::read_dir(folder.path()).unwrap().flatten().all(|file| !file.file_name().to_string_lossy().starts_with("Telinha-")));
+        let (failed_at, outcome) = updater.last_check().unwrap();
+        assert_eq!(outcome, CheckOutcome::Failed("o arquivo baixado não confere com o da release".into()));
+        // After a failure the minute checks wait, but the person asking looks at once.
+        updater.check().await;
+        assert_eq!(updater.last_check().unwrap().0, failed_at);
+        updater.check_now().await;
+        assert!(updater.last_check().unwrap().0 > failed_at);
 
         // The same version already swapped once is not downloaded again.
         let other = tempfile::tempdir().unwrap();
@@ -570,6 +623,7 @@ mod tests {
         quiet.check().await;
         assert_eq!(quiet.snapshot().status, UpdateStatus::Idle);
         assert!(!other.path().join("Telinha-9.9.9.exe").exists());
+        assert_eq!(quiet.last_check().map(|(_, outcome)| outcome), Some(CheckOutcome::UpToDate("0.3.8".into())));
         server.abort();
     }
 }

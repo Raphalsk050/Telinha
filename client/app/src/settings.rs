@@ -1,5 +1,5 @@
-//! The settings window: who the person is, the voice devices and how the app looks. The same
-//! sections in the same order as the settings of the old app.
+//! The settings window: a sidebar of pages on the left, for who the person is, the voice and the
+//! video, how the app looks, the messages and the updates, and the page picked on the right.
 
 use egui::{Align, Color32, CornerRadius, FontId, Frame, Layout, Margin, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use image::GenericImageView;
@@ -32,6 +32,8 @@ pub enum SettingsAction {
     /// Start or stop the test of the camera.
     Preview(bool),
     ShowLog,
+    /// Look for a new version now.
+    CheckUpdates,
     Notice(String),
 }
 
@@ -46,8 +48,9 @@ pub struct Settings {
     style_due: Option<f64>,
     /// The size while its slider is being dragged. It only takes hold when let go.
     zoom_drag: Option<f32>,
-    /// How far down the window is scrolled, when a test wants a part further down.
+    /// How far down the page is scrolled, when a test wants a part further down.
     scroll_to: Option<f32>,
+    page: Page,
 }
 
 /// What the window needs to know about the person and the app to draw itself.
@@ -69,13 +72,52 @@ pub struct SettingsView<'a> {
     pub previewing: bool,
     pub preview: Option<egui::load::SizedTexture>,
     pub camera_status: &'a str,
+    pub update: UpdateInfo,
 }
 
 const EFFECTS: [(&str, &str, usize, usize); 5] = [("", "Nenhum", 0, 0), ("solid", "Sólido", 1, 1), ("gradient", "Degradê", 2, 2), ("neon", "Neon", 1, 1), ("prism", "Prisma", 2, 5)];
 const DEFAULT_COLORS: [&str; 5] = ["#5865f2", "#eb459e", "#19b8b0", "#f0b232", "#23a55a"];
 /// How long after the last change the style is saved and told to everyone.
 const STYLE_DELAY: f64 = 0.4;
+/// The width of what a page holds, and the room on each side of it.
 const WIDTH: f32 = 680.0;
+const PAGE_PAD: f32 = 32.0;
+const SIDEBAR: f32 = 232.0;
+
+/// The pages of the settings, each with a line in the sidebar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Page {
+    #[default]
+    Profile,
+    Voice,
+    Appearance,
+    Messages,
+    Updates,
+}
+
+/// The lines of the sidebar, in their groups.
+const PAGES: [(&str, Page, crate::icons::Icon, &str); 5] = [
+    ("USUÁRIO", Page::Profile, crate::icons::PERSON, "Perfil"),
+    ("APP", Page::Voice, crate::icons::MIC, "Voz e vídeo"),
+    ("APP", Page::Appearance, crate::icons::PALETTE, "Aparência"),
+    ("APP", Page::Messages, crate::icons::CHAT, "Mensagens"),
+    ("TELINHA", Page::Updates, crate::icons::REFRESH, "Atualizações"),
+];
+
+impl Page {
+    fn title(self) -> &'static str {
+        PAGES.iter().find(|(_, page, _, _)| *page == self).map_or("", |(_, _, _, name)| name)
+    }
+}
+
+/// What is known about new versions, for the page of updates.
+pub struct UpdateInfo {
+    /// False when this copy of the app does not update itself.
+    pub available: bool,
+    /// True while a look or a download is under way, which holds the button.
+    pub busy: bool,
+    pub line: String,
+}
 
 /// One choice of a row of choices, lit when it is the one in force.
 fn chip(ui: &mut Ui, palette: &Palette, label: &str, chosen: bool) -> bool {
@@ -277,7 +319,17 @@ fn random_color(light: bool) -> Color32 {
 
 impl Settings {
     pub fn new(name: &str, inputs: Vec<String>, outputs: Vec<String>, cameras: Vec<String>, style: Style) -> Self {
-        Self { name: name.to_owned(), inputs, outputs, cameras, style, style_due: None, zoom_drag: None, scroll_to: None }
+        Self { name: name.to_owned(), inputs, outputs, cameras, style, style_due: None, zoom_drag: None, scroll_to: None, page: Page::default() }
+    }
+
+    /// Shows this page, from its top. For the tests.
+    pub fn page_for_test(&mut self, page: Page) {
+        self.page = page;
+        self.scroll_to = None;
+    }
+
+    pub fn page(&self) -> Page {
+        self.page
     }
 
     /// Shows the window scrolled this far down. For the tests.
@@ -437,180 +489,194 @@ impl Settings {
         let mut actions = Vec::new();
         let mut open = true;
         let mut look = view.appearance.clone();
-        let frame = Frame::new().fill(palette.main).corner_radius(CornerRadius::same(8)).stroke(Stroke::new(1.0, palette.line)).inner_margin(Margin::same(20));
+        let screen = context.content_rect();
+        let height = (screen.height() - 48.0).clamp(400.0, 860.0);
+        let frame = Frame::new().fill(palette.main).corner_radius(CornerRadius::same(8)).stroke(Stroke::new(1.0, palette.line));
         let response = egui::Modal::new(egui::Id::unique("settings")).frame(frame).backdrop_color(Color32::from_black_alpha(178)).show(context, |ui| {
-            ui.set_width(WIDTH);
-            ui.spacing_mut().item_spacing.y = 8.0;
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Configurações").color(palette.strong).size(18.0).family(theme::bold()));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if widgets::icon_button(ui, crate::icons::CLOSE, 30.0, palette.soft, palette.hover, "Fechar").clicked() {
-                        open = false;
-                    }
-                });
-            });
-
-            // In a short window the settings scroll instead of running off the screen.
-            let room = (context.content_rect().height() - 110.0).max(200.0);
-            let mut area = egui::ScrollArea::vertical().max_height(room).min_scrolled_height(room).auto_shrink([false, true]);
-            if let Some(offset) = self.scroll_to {
-                area = area.vertical_scroll_offset(offset);
-            }
-            area.show(ui, |ui| {
-                ui.set_width(WIDTH);
-
-                section(ui, palette, "AVATAR", true);
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 12.0;
-                    let has_avatar = view.avatar.is_some();
-                    widgets::avatar(ui, 72.0, view.name, view.avatar.clone());
-                    if button(ui, palette, "Mudar avatar", Tone::Primary).clicked() {
-                        actions.push(SettingsAction::AvatarPicker);
-                    }
-                    if has_avatar && button(ui, palette, "Remover avatar", Tone::Ghost).clicked() {
-                        actions.push(SettingsAction::RemovePicture { banner: false });
-                    }
-                });
-
-                let label = section(ui, palette, "SEU NOME", false);
-                ui.horizontal(|ui| {
-                    ui.allocate_ui(Vec2::new(WIDTH - 82.0, 38.0), |ui| text_field(ui, palette, &mut self.name).labelled_by(label.id));
-                    if button(ui, palette, "Salvar", Tone::Primary).clicked() && !self.name.trim().is_empty() && self.name.trim() != view.name {
-                        actions.push(SettingsAction::Name(self.name.trim().to_owned()));
-                    }
-                });
-
-                section(ui, palette, "ESTILO DO NOME", false);
-                if self.style_editor(ui, palette, &mut view, &mut actions) {
-                    let now = ui.input(|input| input.time);
-                    self.style_due = Some(now + STYLE_DELAY);
-                    ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(STYLE_DELAY));
-                }
-
-                section(ui, palette, "VOZ", false);
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 12.0;
-                    let half = (WIDTH - 12.0) / 2.0;
-                    if let Some(input) = device_field(ui, palette, "Microfone", half, &self.inputs, view.input, "Microfone padrão do Windows") {
-                        actions.push(SettingsAction::Devices { input, output: view.output.map(str::to_owned) });
-                    }
-                    if let Some(output) = device_field(ui, palette, "Saída de áudio", half, &self.outputs, view.output, "Saída padrão do Windows") {
-                        actions.push(SettingsAction::Devices { input: view.input.map(str::to_owned), output });
-                    }
-                });
-                // As `.meter`: the green bar of how loud the microphone is.
-                ui.add_space(2.0);
-                let (bar, _) = ui.allocate_exact_size(Vec2::new(WIDTH, 8.0), Sense::hover());
-                ui.painter().rect_filled(bar, CornerRadius::same(4), palette.rail);
-                let level = view.mic_level.clamp(0.0, 1.0);
-                if level > 0.0 {
-                    let fill = Rect::from_min_size(bar.min, Vec2::new(bar.width() * level, bar.height()));
-                    ui.painter().with_clip_rect(fill).rect_filled(bar, CornerRadius::same(4), palette.green);
-                }
-                if !view.mic_status.is_empty() {
-                    ui.label(RichText::new(view.mic_status).color(palette.muted).size(13.0));
-                }
-
-                section(ui, palette, "VÍDEO", false);
-                self.video_section(ui, palette, &view, &mut actions);
-
-                section(ui, palette, "TEMA", false);
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 16.0;
-                    for (choice, label, theme) in [
-                        (ThemeChoice::Light, "Claro", Some(ThemeName::Light)),
-                        (ThemeChoice::Ash, "Cinza", Some(ThemeName::Gray)),
-                        (ThemeChoice::Dark, "Escuro", Some(ThemeName::Dark)),
-                        (ThemeChoice::Onyx, "Ônix", Some(ThemeName::Onyx)),
-                        (ThemeChoice::System, "Igual ao computador", None),
-                    ] {
-                        let clicked = theme_dot(ui, palette, label, look.theme == choice, |painter, center, radius| match theme {
-                            Some(theme) => {
-                                painter.circle_filled(center, radius, Palette::of(theme).main);
-                            }
-                            // Half light and half dark, cut along the diagonal.
-                            None => {
-                                painter.circle_filled(center, radius, Palette::of(ThemeName::Light).main);
-                                let dark: Vec<egui::Pos2> = (0..=20).map(|step| center + Vec2::angled((-45.0 + 9.0 * step as f32).to_radians()) * radius).collect();
-                                painter.add(egui::Shape::convex_polygon(dark, Palette::of(ThemeName::Dark).main, Stroke::NONE));
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
+            ui.horizontal_top(|ui| {
+                self.sidebar(ui, palette, &view, height);
+                let (area, _) = ui.allocate_exact_size(Vec2::new(PAGE_PAD * 2.0 + WIDTH, height), Sense::hover());
+                let inner = area.shrink2(Vec2::new(PAGE_PAD, 0.0));
+                ui.scope_builder(egui::UiBuilder::new().max_rect(inner).layout(Layout::top_down(Align::Min)), |ui| {
+                    ui.spacing_mut().item_spacing.y = 8.0;
+                    ui.add_space(20.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(self.page.title()).color(palette.strong).size(20.0).family(theme::bold()));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if widgets::icon_button(ui, crate::icons::CLOSE, 30.0, palette.soft, palette.hover, "Fechar").clicked() {
+                                open = false;
                             }
                         });
-                        if clicked {
-                            look.theme = choice;
+                    });
+                    ui.add_space(4.0);
+                    let room = ui.available_height() - 16.0;
+                    let mut area = egui::ScrollArea::vertical().id_salt(("settings-page", self.page)).max_height(room).min_scrolled_height(room).auto_shrink([false, false]);
+                    if let Some(offset) = self.scroll_to {
+                        area = area.vertical_scroll_offset(offset);
+                    }
+                    area.show(ui, |ui| {
+                        ui.set_width(WIDTH);
+                        match self.page {
+                            Page::Profile => {
+                                section(ui, palette, "AVATAR", true);
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 12.0;
+                                    let has_avatar = view.avatar.is_some();
+                                    widgets::avatar(ui, 72.0, view.name, view.avatar.clone());
+                                    if button(ui, palette, "Mudar avatar", Tone::Primary).clicked() {
+                                        actions.push(SettingsAction::AvatarPicker);
+                                    }
+                                    if has_avatar && button(ui, palette, "Remover avatar", Tone::Ghost).clicked() {
+                                        actions.push(SettingsAction::RemovePicture { banner: false });
+                                    }
+                                });
+
+                                let label = section(ui, palette, "SEU NOME", false);
+                                ui.horizontal(|ui| {
+                                    ui.allocate_ui(Vec2::new(WIDTH - 82.0, 38.0), |ui| text_field(ui, palette, &mut self.name).labelled_by(label.id));
+                                    if button(ui, palette, "Salvar", Tone::Primary).clicked() && !self.name.trim().is_empty() && self.name.trim() != view.name {
+                                        actions.push(SettingsAction::Name(self.name.trim().to_owned()));
+                                    }
+                                });
+
+                                section(ui, palette, "ESTILO DO NOME", false);
+                                if self.style_editor(ui, palette, &mut view, &mut actions) {
+                                    let now = ui.input(|input| input.time);
+                                    self.style_due = Some(now + STYLE_DELAY);
+                                    ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(STYLE_DELAY));
+                                }
+
+                            }
+                            Page::Voice => {
+                                section(ui, palette, "VOZ", true);
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 12.0;
+                                    let half = (WIDTH - 12.0) / 2.0;
+                                    if let Some(input) = device_field(ui, palette, "Microfone", half, &self.inputs, view.input, "Microfone padrão do Windows") {
+                                        actions.push(SettingsAction::Devices { input, output: view.output.map(str::to_owned) });
+                                    }
+                                    if let Some(output) = device_field(ui, palette, "Saída de áudio", half, &self.outputs, view.output, "Saída padrão do Windows") {
+                                        actions.push(SettingsAction::Devices { input: view.input.map(str::to_owned), output });
+                                    }
+                                });
+                                // As `.meter`: the green bar of how loud the microphone is.
+                                ui.add_space(2.0);
+                                let (bar, _) = ui.allocate_exact_size(Vec2::new(WIDTH, 8.0), Sense::hover());
+                                ui.painter().rect_filled(bar, CornerRadius::same(4), palette.rail);
+                                let level = view.mic_level.clamp(0.0, 1.0);
+                                if level > 0.0 {
+                                    let fill = Rect::from_min_size(bar.min, Vec2::new(bar.width() * level, bar.height()));
+                                    ui.painter().with_clip_rect(fill).rect_filled(bar, CornerRadius::same(4), palette.green);
+                                }
+                                if !view.mic_status.is_empty() {
+                                    ui.label(RichText::new(view.mic_status).color(palette.muted).size(13.0));
+                                }
+
+                                section(ui, palette, "VÍDEO", false);
+                                self.video_section(ui, palette, &view, &mut actions);
+
+                            }
+                            Page::Appearance => {
+                                section(ui, palette, "TEMA", true);
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 16.0;
+                                    for (choice, label, theme) in [
+                                        (ThemeChoice::Light, "Claro", Some(ThemeName::Light)),
+                                        (ThemeChoice::Ash, "Cinza", Some(ThemeName::Gray)),
+                                        (ThemeChoice::Dark, "Escuro", Some(ThemeName::Dark)),
+                                        (ThemeChoice::Onyx, "Ônix", Some(ThemeName::Onyx)),
+                                        (ThemeChoice::System, "Igual ao computador", None),
+                                    ] {
+                                        let clicked = theme_dot(ui, palette, label, look.theme == choice, |painter, center, radius| match theme {
+                                            Some(theme) => {
+                                                painter.circle_filled(center, radius, Palette::of(theme).main);
+                                            }
+                                            // Half light and half dark, cut along the diagonal.
+                                            None => {
+                                                painter.circle_filled(center, radius, Palette::of(ThemeName::Light).main);
+                                                let dark: Vec<egui::Pos2> = (0..=20).map(|step| center + Vec2::angled((-45.0 + 9.0 * step as f32).to_radians()) * radius).collect();
+                                                painter.add(egui::Shape::convex_polygon(dark, Palette::of(ThemeName::Dark).main, Stroke::NONE));
+                                            }
+                                        });
+                                        if clicked {
+                                            look.theme = choice;
+                                        }
+                                    }
+                                });
+                                if matches!(look.theme, ThemeChoice::Light | ThemeChoice::System) && check(ui, palette, look.dark_sidebar, "Manter a barra lateral escura no tema claro") {
+                                    look.dark_sidebar = !look.dark_sidebar;
+                                }
+
+                                section(ui, palette, "TEMAS COLORIDOS", false);
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.spacing_mut().item_spacing = Vec2::new(16.0, 8.0);
+                                    let own = Gradient { light: look.custom.light, colors: look.custom.colors.clone(), angle: look.custom.angle, intensity: look.custom.intensity, motion: false };
+                                    if theme_dot(ui, palette, "Personalizado", look.theme == ThemeChoice::Custom, |painter, center, radius| own.paint_dot(painter, center, radius)) {
+                                        look.theme = ThemeChoice::Custom;
+                                    }
+                                    for (index, theme) in COLOR_THEMES.iter().enumerate() {
+                                        let colors = theme.colors.iter().map(|color| Color32::from_rgb((color >> 16) as u8, (color >> 8) as u8, *color as u8)).collect();
+                                        let gradient = Gradient { light: theme.light, colors, angle: theme.angle, intensity: 75.0, motion: false };
+                                        if theme_dot(ui, palette, theme.name, look.theme == ThemeChoice::Color(index), |painter, center, radius| gradient.paint_dot(painter, center, radius)) {
+                                            look.theme = ThemeChoice::Color(index);
+                                        }
+                                    }
+                                });
+                                if look.theme == ThemeChoice::Custom {
+                                    Self::custom_editor(ui, palette, &mut look.custom);
+                                }
+                                if look.gradient().is_some() && check(ui, palette, look.motion, "Degradê em movimento") {
+                                    look.motion = !look.motion;
+                                }
+
+                                section(ui, palette, "DENSIDADE DA INTERFACE", false);
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 4.0;
+                                    for (density, _, label) in Density::ALL {
+                                        if chip(ui, palette, label, look.density == density) {
+                                            look.density = density;
+                                        }
+                                    }
+                                });
+
+                                section(ui, palette, "TAMANHO", false);
+                                // The size only takes hold when the slider is let go: applying it in the middle
+                                // of the drag would pull the slider from under the mouse.
+                                let mut zoom = self.zoom_drag.unwrap_or(look.zoom);
+                                let slider = slider_field(ui, palette, "Zoom", format!("{zoom:.0}%"), &mut zoom, 50.0..=200.0, 10.0);
+                                if slider.dragged() {
+                                    self.zoom_drag = Some(zoom);
+                                } else if slider.drag_stopped() || slider.changed() {
+                                    self.zoom_drag = None;
+                                    look.zoom = zoom;
+                                }
+
+                                ui.add_space(8.0);
+                                if small_button(ui, palette, "Voltar a aparência ao padrão") {
+                                    look = Appearance::default();
+                                    self.zoom_drag = None;
+                                }
+
+                            }
+                            Page::Messages => {
+                                section(ui, palette, "ESTILO DAS MENSAGENS", true);
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 4.0;
+                                    for (style, label) in [(MessageStyle::Cozy, "Confortável"), (MessageStyle::Compact, "Compacta")] {
+                                        if chip(ui, palette, label, look.messages == style) {
+                                            look.messages = style;
+                                        }
+                                    }
+                                });
+                                let font = format!("{} px", format!("{}", look.chat_font).replace('.', ","));
+                                slider_field(ui, palette, "Tamanho da fonte do chat", font, &mut look.chat_font, 12.0..=24.0, 0.5);
+                                slider_field(ui, palette, "Espaço entre grupos de mensagens", format!("{:.0} px", look.message_gap), &mut look.message_gap, 0.0..=24.0, 4.0);
+                            }
+                            Page::Updates => self.updates_page(ui, palette, &view, &mut actions),
                         }
-                    }
-                });
-                if matches!(look.theme, ThemeChoice::Light | ThemeChoice::System) && check(ui, palette, look.dark_sidebar, "Manter a barra lateral escura no tema claro") {
-                    look.dark_sidebar = !look.dark_sidebar;
-                }
-
-                section(ui, palette, "TEMAS COLORIDOS", false);
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = Vec2::new(16.0, 8.0);
-                    let own = Gradient { light: look.custom.light, colors: look.custom.colors.clone(), angle: look.custom.angle, intensity: look.custom.intensity, motion: false };
-                    if theme_dot(ui, palette, "Personalizado", look.theme == ThemeChoice::Custom, |painter, center, radius| own.paint_dot(painter, center, radius)) {
-                        look.theme = ThemeChoice::Custom;
-                    }
-                    for (index, theme) in COLOR_THEMES.iter().enumerate() {
-                        let colors = theme.colors.iter().map(|color| Color32::from_rgb((color >> 16) as u8, (color >> 8) as u8, *color as u8)).collect();
-                        let gradient = Gradient { light: theme.light, colors, angle: theme.angle, intensity: 75.0, motion: false };
-                        if theme_dot(ui, palette, theme.name, look.theme == ThemeChoice::Color(index), |painter, center, radius| gradient.paint_dot(painter, center, radius)) {
-                            look.theme = ThemeChoice::Color(index);
-                        }
-                    }
-                });
-                if look.theme == ThemeChoice::Custom {
-                    Self::custom_editor(ui, palette, &mut look.custom);
-                }
-                if look.gradient().is_some() && check(ui, palette, look.motion, "Degradê em movimento") {
-                    look.motion = !look.motion;
-                }
-
-                section(ui, palette, "DENSIDADE DA INTERFACE", false);
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    for (density, _, label) in Density::ALL {
-                        if chip(ui, palette, label, look.density == density) {
-                            look.density = density;
-                        }
-                    }
-                });
-
-                section(ui, palette, "MENSAGENS", false);
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    for (style, label) in [(MessageStyle::Cozy, "Confortável"), (MessageStyle::Compact, "Compacta")] {
-                        if chip(ui, palette, label, look.messages == style) {
-                            look.messages = style;
-                        }
-                    }
-                });
-                let font = format!("{} px", format!("{}", look.chat_font).replace('.', ","));
-                slider_field(ui, palette, "Tamanho da fonte do chat", font, &mut look.chat_font, 12.0..=24.0, 0.5);
-                slider_field(ui, palette, "Espaço entre grupos de mensagens", format!("{:.0} px", look.message_gap), &mut look.message_gap, 0.0..=24.0, 4.0);
-                // The size only takes hold when the slider is let go: applying it in the middle
-                // of the drag would pull the slider from under the mouse.
-                let mut zoom = self.zoom_drag.unwrap_or(look.zoom);
-                let slider = slider_field(ui, palette, "Zoom", format!("{zoom:.0}%"), &mut zoom, 50.0..=200.0, 10.0);
-                if slider.dragged() {
-                    self.zoom_drag = Some(zoom);
-                } else if slider.drag_stopped() || slider.changed() {
-                    self.zoom_drag = None;
-                    look.zoom = zoom;
-                }
-
-                ui.add_space(8.0);
-                if small_button(ui, palette, "Voltar a aparência ao padrão") {
-                    look = Appearance::default();
-                    self.zoom_drag = None;
-                }
-
-                ui.add_space(12.0);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if crate::debug_view::ghost_button(ui, palette, "Abrir registro de erros").on_hover_text("Abre a pasta do arquivo que registra erros do app").clicked() {
-                        actions.push(SettingsAction::ShowLog);
-                    }
-                    ui.label(RichText::new(format!("Telinha {}", view.version)).color(palette.muted).size(13.0));
+                        ui.add_space(12.0);
+                    });
                 });
             });
         });
@@ -633,6 +699,82 @@ impl Settings {
 }
 
 impl Settings {
+    /// Who the person is at the top, then the pages in their groups, then the version.
+    fn sidebar(&mut self, ui: &mut Ui, palette: &Palette, view: &SettingsView<'_>, height: f32) {
+        let (area, _) = ui.allocate_exact_size(Vec2::new(SIDEBAR, height), Sense::hover());
+        let corners = CornerRadius { nw: 8, sw: 8, ne: 0, se: 0 };
+        ui.painter().rect_filled(area, corners, palette.sidebar);
+        let inner = area.shrink2(Vec2::new(12.0, 16.0));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(inner).layout(Layout::top_down(Align::Min)), |ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(0.0, 2.0);
+            // The person, which opens the profile.
+            let (card, response) = ui.allocate_exact_size(Vec2::new(inner.width(), 52.0), Sense::click());
+            if response.hovered() {
+                ui.painter().rect_filled(card, CornerRadius::same(6), palette.hover);
+            }
+            let picture = Rect::from_min_size(card.min + Vec2::new(6.0, 8.0), Vec2::splat(36.0));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(picture), |ui| widgets::avatar(ui, 36.0, view.name, view.avatar.clone()));
+            let left = picture.right() + 10.0;
+            widgets::paint_text_clipped(ui, egui::pos2(left, card.top() + 17.0), card.right() - left - 6.0, view.name, FontId::new(15.0, theme::semibold()), palette.strong);
+            widgets::paint_text_clipped(ui, egui::pos2(left, card.top() + 35.0), card.right() - left - 6.0, "Editar perfil", FontId::proportional(12.5), palette.muted);
+            if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                self.go_to(Page::Profile);
+            }
+            let mut group = "";
+            for (name, page, icon, label) in PAGES {
+                if name != group {
+                    group = name;
+                    ui.add_space(14.0);
+                    let (line, _) = ui.allocate_exact_size(Vec2::new(inner.width(), 1.0), Sense::hover());
+                    ui.painter().hline(line.x_range().shrink(6.0), line.center().y, Stroke::new(1.0, palette.line_soft));
+                    ui.add_space(10.0);
+                    ui.add(egui::Label::new(RichText::new(name).color(palette.soft).size(11.5).family(theme::bold())).selectable(false));
+                    ui.add_space(4.0);
+                }
+                let chosen = self.page == page;
+                let (row, response) = ui.allocate_exact_size(Vec2::new(inner.width(), 36.0), Sense::click());
+                if chosen || response.hovered() {
+                    ui.painter().rect_filled(row, CornerRadius::same(6), if chosen { palette.hover } else { palette.hover.gamma_multiply(0.6) });
+                }
+                let ink = if chosen { palette.strong } else { palette.text };
+                icon.image(18.0, if chosen { palette.strong } else { palette.soft }).paint_at(ui, Rect::from_center_size(row.left_center() + Vec2::new(19.0, 0.0), Vec2::splat(18.0)));
+                widgets::paint_text_clipped(ui, row.left_center() + Vec2::new(38.0, 0.0), row.width() - 44.0, label, FontId::new(14.5, if chosen { theme::semibold() } else { egui::FontFamily::Proportional }), ink);
+                if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    self.go_to(page);
+                }
+            }
+            ui.painter().text(egui::pos2(inner.left() + 6.0, inner.bottom()), egui::Align2::LEFT_BOTTOM, format!("Telinha {}", view.version), FontId::proportional(12.0), palette.muted);
+        });
+    }
+
+    fn go_to(&mut self, page: Page) {
+        self.page = page;
+        self.scroll_to = None;
+    }
+
+    /// The version, the button that looks for a new one now, and the log of errors.
+    fn updates_page(&self, ui: &mut Ui, palette: &Palette, view: &SettingsView<'_>, actions: &mut Vec<SettingsAction>) {
+        section(ui, palette, "VERSÃO", true);
+        ui.label(RichText::new(format!("Telinha {}", view.version)).color(palette.strong).size(16.0).family(theme::semibold()));
+        ui.add_space(4.0);
+        ui.add_enabled_ui(view.update.available && !view.update.busy, |ui| {
+            let label = if view.update.busy { "Procurando…" } else { "Procurar atualizações" };
+            if button(ui, palette, label, Tone::Primary).clicked() {
+                actions.push(SettingsAction::CheckUpdates);
+            }
+        });
+        if !view.update.line.is_empty() {
+            ui.add(egui::Label::new(RichText::new(view.update.line.as_str()).color(palette.muted).size(13.0)).wrap());
+        }
+
+        section(ui, palette, "REGISTRO DE ERROS", false);
+        ui.add(egui::Label::new(RichText::new("Quando algo dá errado, o Telinha escreve o que aconteceu num arquivo. Ele ajuda a descobrir a causa.").color(palette.muted).size(13.0)).wrap());
+        ui.add_space(2.0);
+        if button(ui, palette, "Abrir registro de erros", Tone::Plain).on_hover_text("Abre a pasta do arquivo que registra erros do app").clicked() {
+            actions.push(SettingsAction::ShowLog);
+        }
+    }
+
     /// The preview of the camera on the left, its choices on the right, as `.camera-settings`.
     fn video_section(&self, ui: &mut Ui, palette: &Palette, view: &SettingsView<'_>, actions: &mut Vec<SettingsAction>) {
         let left = (WIDTH - 16.0) * 1.2 / 2.2;

@@ -191,10 +191,18 @@ fn the_window_draws() {
     {
         use telinha::appearance::{Appearance, Density, MessageStyle, ThemeChoice};
         let plain = Appearance::default();
-        scene.app.scroll_settings_for_test(560.0);
-        shoot(&mut scene, "settings-2");
-        scene.app.scroll_settings_for_test(1200.0);
-        shoot(&mut scene, "settings-3");
+        use telinha::settings::Page;
+        scene.app.settings_page_for_test(Page::Voice);
+        shoot(&mut scene, "settings-voice");
+        scene.app.settings_page_for_test(Page::Appearance);
+        shoot(&mut scene, "settings-appearance");
+        scene.app.scroll_settings_for_test(400.0);
+        shoot(&mut scene, "settings-appearance-2");
+        scene.app.settings_page_for_test(Page::Messages);
+        shoot(&mut scene, "settings-messages");
+        scene.app.update_info_for_test(true, "Você já tem a versão mais nova (0.4.0). Conferido agora há pouco.");
+        scene.app.settings_page_for_test(Page::Updates);
+        shoot(&mut scene, "settings-updates");
         scene.app.close_settings();
         scene.app.set_appearance(Appearance { theme: ThemeChoice::Light, ..plain.clone() });
         shoot(&mut scene, "server-light");

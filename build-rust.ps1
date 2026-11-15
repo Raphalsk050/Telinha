@@ -6,8 +6,8 @@ dentro. O resultado e um arquivo so.
   .\build-rust.ps1 -Run     motor + abre o app de desenvolvimento, sem empacotar
   .\build-rust.ps1 -Test    roda os testes do lado Rust
 
-O app feito aqui nao se atualiza sozinho. So o da esteira de release se atualiza, e ela liga isso
-com a variavel TELINHA_UPDATES=1 na hora de compilar.
+O app empacotado aqui se atualiza sozinho como o da esteira de release (TELINHA_UPDATES=1): ele
+troca de lugar com uma versao publicada mais nova que a do version.json. O -Run nao se atualiza.
 #>
 param(
     [switch]$Run,
@@ -47,7 +47,13 @@ try {
         cargo run -p telinha
         return
     }
-    Invoke-Step 'compilando o app' { cargo build --release -p telinha }
+    $env:TELINHA_UPDATES = '1'
+    try {
+        Invoke-Step 'compilando o app' { cargo build --release -p telinha }
+    }
+    finally {
+        Remove-Item Env:TELINHA_UPDATES -ErrorAction SilentlyContinue
+    }
     New-Item -ItemType Directory -Force $dist | Out-Null
     Copy-Item (Join-Path $client 'target\release\telinha.exe') (Join-Path $dist 'Telinha.exe') -Force
     $size = (Get-Item (Join-Path $dist 'Telinha.exe')).Length / 1MB

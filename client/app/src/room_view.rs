@@ -1833,7 +1833,7 @@ impl TelinhaApp {
     /// reaches the window.
     pub(crate) fn video_texture(&mut self, context: &egui::Context, id: &str, store: &FrameStore, drawn: Vec2) -> Option<egui::load::SizedTexture> {
         let pixels = drawn * context.pixels_per_point();
-        store.want_size(pixels.x.ceil() as u32, pixels.y.ceil() as u32);
+        store.want_size(pixels.x.ceil() as u32, pixels.y.ceil() as u32, context.cumulative_pass_nr());
         let Some((serial, picture)) = store.latest() else {
             self.room.textures.remove(id);
             return None;

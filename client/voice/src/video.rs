@@ -30,6 +30,10 @@ pub struct FrameStore {
     /// The size the window draws the video at, in pixels, width above and height below. Zero is
     /// the size the video comes in. Frames are made smaller to cover it, never larger.
     wanted: AtomicU64,
+    /// The largest size asked for in the pass of the window being drawn now, and that pass.
+    /// The same video can be drawn twice in one pass, small in its tile and large over the
+    /// window, and the size must not drop to the small one between the two.
+    asked: Mutex<(u64, u64)>,
     /// The least time between two frames converted, for a video that does not need them all.
     gap: Duration,
     last: Mutex<Option<Instant>>,
@@ -50,6 +54,7 @@ impl FrameStore {
             taken: AtomicBool::new(true),
             waker,
             wanted: AtomicU64::new(0),
+            asked: Mutex::new((u64::MAX, 0)),
             gap,
             last: Mutex::new(None),
             bt709: false,
@@ -80,9 +85,30 @@ impl FrameStore {
         true
     }
 
-    /// The size the window draws the video at now, in pixels.
-    pub fn want_size(&self, width: u32, height: u32) {
-        self.wanted.store((u64::from(width) << 32) | u64::from(height), Ordering::Relaxed);
+    /// The size the window draws the video at now, in pixels, in its pass `pass`. With more than
+    /// one place drawing it, the frames cover the largest. The size only gets smaller once a
+    /// whole pass asked for less.
+    pub fn want_size(&self, width: u32, height: u32, pass: u64) {
+        let pack = |width: u64, height: u64| (width << 32) | height;
+        let size = |packed: u64| (packed >> 32, packed & 0xffff_ffff);
+        let (width, height) = (u64::from(width), u64::from(height));
+        let mut asked = self.asked.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let wanted = if asked.0 == pass {
+            let (before_width, before_height) = size(asked.1);
+            pack(before_width.max(width), before_height.max(height))
+        } else {
+            // A new pass: what the last one asked for holds until this one asks for more.
+            if asked.0 != u64::MAX {
+                self.wanted.store(asked.1, Ordering::Relaxed);
+            }
+            pack(width, height)
+        };
+        *asked = (pass, wanted);
+        let (now_width, now_height) = size(self.wanted.load(Ordering::Relaxed));
+        let (wanted_width, wanted_height) = size(wanted);
+        if asked.0 == pass && (wanted_width > now_width || wanted_height > now_height || self.wanted.load(Ordering::Relaxed) == 0) {
+            self.wanted.store(pack(now_width.max(wanted_width), now_height.max(wanted_height)), Ordering::Relaxed);
+        }
     }
 
     /// The size to convert a frame of this size to: the smallest that still covers what the
@@ -266,5 +292,31 @@ impl CameraFeed {
                 send_nv12(source, frame, feed.started.elapsed().as_micros() as i64);
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_video_drawn_small_and_large_in_one_pass_keeps_the_large_size() {
+        let store = FrameStore::new(Arc::new(|| {}));
+        // Pass 1: the tile asks for a small picture, then the full window for a large one.
+        store.want_size(320, 180, 1);
+        assert_eq!(store.fit(1920, 1080), (320, 180));
+        store.want_size(1920, 1080, 1);
+        assert_eq!(store.fit(1920, 1080), (1920, 1080));
+        // Pass 2: the tile comes first again, and a frame converted between the two draws
+        // still covers the full window.
+        store.want_size(320, 180, 2);
+        assert_eq!(store.fit(1920, 1080), (1920, 1080));
+        store.want_size(1920, 1080, 2);
+        // The full window closes: pass 3 asks only for the tile, and the size drops once that
+        // whole pass is over.
+        store.want_size(320, 180, 3);
+        assert_eq!(store.fit(1920, 1080), (1920, 1080));
+        store.want_size(320, 180, 4);
+        assert_eq!(store.fit(1920, 1080), (320, 180));
     }
 }

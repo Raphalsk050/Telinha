@@ -7,6 +7,7 @@ edition = "2024"
 cpal = "0.18.2"
 futures-util = "0.3.34"
 libwebrtc = "0.4.1"
+webrtc-sys = "0.3.54"
 serde_json = "1.0.154"
 symphonia = { version = "0.6.1", default-features = false, features = ["mp3", "ogg", "vorbis", "wav", "pcm", "flac", "aac", "isomp4"] }
 telinha-core = { version = "0.1.0", path = "../core" }

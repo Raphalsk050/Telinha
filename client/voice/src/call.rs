@@ -791,7 +791,7 @@ impl Actor {
                 // The screen of this app is only a preview for the person sharing it: a few frames
                 // a second do, and the window does not redraw at the pace of the screen.
                 let gap = if sharer == SELF_STREAM { Duration::from_millis(66) } else { Duration::ZERO };
-                let store = FrameStore::with_gap(wake, gap);
+                let store = FrameStore::screen(wake, gap);
                 self.stream_videos.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(sharer.clone(), Arc::clone(&store));
                 view.tasks.push(watch_track(track, store));
             }

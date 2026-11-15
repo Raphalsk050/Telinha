@@ -75,6 +75,23 @@ static void i420_to_abgr(const uint8_t* src_y,
                                     dst_stride_abgr, width, height));
 }
 
+// The same as i420_to_abgr, for frames in BT.709 studio range, which is what the screen
+// share of the capture engine sends.
+static void h420_to_abgr(const uint8_t* src_y,
+                         int src_stride_y,
+                         const uint8_t* src_u,
+                         int src_stride_u,
+                         const uint8_t* src_v,
+                         int src_stride_v,
+                         uint8_t* dst_abgr,
+                         int dst_stride_abgr,
+                         int width,
+                         int height) {
+  THROW_ON_ERROR(libyuv::H420ToABGR(src_y, src_stride_y, src_u, src_stride_u,
+                                    src_v, src_stride_v, dst_abgr,
+                                    dst_stride_abgr, width, height));
+}
+
 static void i420_to_rgba(const uint8_t* src_y,
                          int src_stride_y,
                          const uint8_t* src_u,

@@ -5219,6 +5219,7 @@ dependencies = [
  "telinha-core",
  "tokio",
  "uuid",
+ "webrtc-sys",
  "windows",
 ]
 

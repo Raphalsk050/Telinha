@@ -332,6 +332,12 @@ async fn own_screen_shows_inside_the_window() {
                         println!("first picture: {}x{}", picture.width, picture.height);
                     }
                     if pictures >= 10 {
+                        // With TELINHA_COLOR_DUMP set, the last frame is written there as raw
+                        // RGBA, to compare its colors with the screen.
+                        if let Some(path) = std::env::var_os("TELINHA_COLOR_DUMP") {
+                            std::fs::write(&path, &picture.rgba).unwrap();
+                            println!("dumped {}x{}", picture.width, picture.height);
+                        }
                         break;
                     }
                 }

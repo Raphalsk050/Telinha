@@ -33,6 +33,8 @@ pub struct FrameStore {
     /// The least time between two frames converted, for a video that does not need them all.
     gap: Duration,
     last: Mutex<Option<Instant>>,
+    /// The colors come in BT.709, as the screens of the capture engine do; cameras use BT.601.
+    bt709: bool,
 }
 
 impl FrameStore {
@@ -50,7 +52,15 @@ impl FrameStore {
             wanted: AtomicU64::new(0),
             gap,
             last: Mutex::new(None),
+            bt709: false,
         })
+    }
+
+    /// A store for a shared screen: its colors are BT.709, not the BT.601 of a camera.
+    pub fn screen(waker: Waker, gap: Duration) -> Arc<Self> {
+        let mut store = Self::with_gap(waker, gap);
+        Arc::get_mut(&mut store).expect("a new store").bt709 = true;
+        store
     }
 
     /// True when a new frame would be looked at.
@@ -124,6 +134,31 @@ impl FrameStore {
         }
         let (width, height) = self.fit(full_width, full_height);
         let mut rgba = vec![0u8; (width * height * 4) as usize];
+        if self.bt709 {
+            let i420 = if (width, height) == (full_width, full_height) { buffer.to_i420() } else { buffer.to_i420().scale(width as i32, height as i32) };
+            let (y, u, v) = i420.data();
+            let (stride_y, stride_u, stride_v) = i420.strides();
+            // SAFETY: the planes and strides come from the same buffer, which lives until the
+            // call returns, and `rgba` holds exactly `width * height` pixels of four bytes.
+            let turned = unsafe {
+                webrtc_sys::yuv_helper::ffi::h420_to_abgr(
+                    y.as_ptr(),
+                    stride_y as i32,
+                    u.as_ptr(),
+                    stride_u as i32,
+                    v.as_ptr(),
+                    stride_v as i32,
+                    rgba.as_mut_ptr(),
+                    (width * 4) as i32,
+                    width as i32,
+                    height as i32,
+                )
+            };
+            if turned.is_ok() {
+                self.put(Picture { width, height, rgba });
+            }
+            return;
+        }
         // In the names of libyuv, ABGR is red first in memory.
         if (width, height) == (full_width, full_height) {
             buffer.to_argb(VideoFormatType::ABGR, &mut rgba, width * 4, width as i32, height as i32);

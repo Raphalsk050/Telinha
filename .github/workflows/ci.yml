@@ -93,7 +93,7 @@ jobs:
   package:
     name: windows package
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
 
@@ -129,33 +129,49 @@ jobs:
           path: staging/
           if-no-files-found: error
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: desktop/package-lock.json
+      # The app is the Rust one in client/, with the engine built above inside it.
+      - name: Install Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
 
-      - name: Cache the Electron downloads
+      - name: Cache the Rust build
         uses: actions/cache@v4
         with:
           path: |
-            ~\AppData\Local\electron\Cache
-            ~\AppData\Local\electron-builder\Cache
-          key: electron-${{ runner.os }}-${{ hashFiles('desktop/package-lock.json') }}
-          restore-keys: electron-${{ runner.os }}-
+            ~/.cargo/registry
+            ~/.cargo/git
+            client/target
+          key: rust-${{ runner.os }}-${{ hashFiles('client/Cargo.lock') }}
+          restore-keys: rust-${{ runner.os }}-
 
-      - name: Install the desktop dependencies
-        working-directory: desktop
-        run: npm ci
+      - name: Test the app core
+        working-directory: client
+        run: cargo test --locked -p telinha-core
 
-      - name: Package the desktop app
-        working-directory: desktop
-        run: npm run dist -- --publish never
+      - name: Package the app
+        shell: pwsh
+        env:
+          TELINHA_UPDATES: '1'
+        run: |
+          $engine = Get-ChildItem build/msvc-release -Recurse -Filter telinha.exe -File |
+            Where-Object { $_.FullName -notmatch 'CMakeFiles' } | Select-Object -First 1
+          if (-not $engine) { throw 'the engine telinha.exe was not built' }
+          $env:TELINHA_ENGINE = $engine.FullName
+          Push-Location client
+          cargo build --release --locked -p telinha
+          if ($LASTEXITCODE -ne 0) { throw 'the app did not build' }
+          Pop-Location
+          New-Item -ItemType Directory -Force -Path client/dist | Out-Null
+          Copy-Item client/target/release/telinha.exe client/dist/Telinha.exe
+          Get-Item client/dist/Telinha.exe | Select-Object Name, Length
 
       - uses: actions/upload-artifact@v4
         with:
           name: telinha-app-windows-x64
-          path: desktop/dist/Telinha.exe
+          path: client/dist/Telinha.exe
           if-no-files-found: error
           compression-level: 0
 
@@ -214,5 +230,5 @@ jobs:
 
       - name: Check formatting
         run: |
-          mapfile -t files < <(git ls-files '*.hpp' '*.cpp')
+          mapfile -t files < <(git ls-files '*.hpp' '*.cpp' ':!client/')
           clang-format-18 --dry-run --Werror "${files[@]}"

@@ -1,0 +1,4 @@
+# The prebuilt libwebrtc links the static C runtime, so everything else has to as well. It also
+# means the app needs no Visual C++ runtime installed on the computer it runs on.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

@@ -38,3 +38,6 @@ compile_commands.json
 # Desktop app
 desktop/node_modules/
 desktop/dist/
+
+client/target/
+client/dist/

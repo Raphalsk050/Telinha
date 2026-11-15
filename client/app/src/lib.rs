@@ -1,0 +1,28 @@
+//! The window of Telinha, as a library so tests can draw it without opening anything on screen.
+
+pub mod app;
+pub mod avatar_picker;
+pub mod icons;
+pub mod theme;
+pub mod widgets;
+pub mod chat_view;
+pub mod pictures;
+pub mod dialogs;
+pub mod debug_view;
+pub mod crop_editor;
+pub mod room_view;
+pub mod lightbox;
+pub mod link_draft;
+pub mod name_style;
+pub mod attach;
+pub mod alerts;
+pub mod appearance;
+pub mod home_view;
+pub mod notify;
+pub mod prefs;
+pub mod settings;
+pub mod share_picker;
+pub mod soundboard_view;
+pub mod stream_settings;
+pub mod update_view;
+pub mod voice_popover;

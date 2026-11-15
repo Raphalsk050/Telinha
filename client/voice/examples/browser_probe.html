@@ -1,0 +1,130 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Telinha, sonda de chamada</title>
+<script>
+// One side of a call, done the way desktop/renderer/call.js does it, against the Rust call that
+// serves this page. The microphone is the browser's fake device, a beep.
+const selfId = 'page';
+const otherId = '__SELF__';
+const initiator = selfId < otherId;
+const STUN = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }];
+let pc = null;
+let session = null;
+let pending = [];
+
+const post = (path, body) => fetch(path, { method: 'POST', body: JSON.stringify(body) }).catch(() => {});
+const send = (payload) => post('/send', payload);
+
+async function microphone() {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  return stream.getAudioTracks()[0];
+}
+
+function connection() {
+  pc = new RTCPeerConnection({ iceServers: STUN });
+  pc.onicecandidate = ({ candidate }) => {
+    if (candidate) {
+      send({ kind: 'candidate', session, candidate: candidate.toJSON() });
+    }
+  };
+  pc.ontrack = ({ track }) => {
+    if (track.kind === 'audio') {
+      const audio = new Audio();
+      audio.srcObject = new MediaStream([track]);
+      audio.muted = true;
+      audio.play().catch(() => {});
+    }
+  };
+  return pc;
+}
+
+async function flush() {
+  const ready = pending.filter((item) => item.session === session);
+  pending = [];
+  for (const item of ready) {
+    await pc.addIceCandidate(item.candidate).catch(() => {});
+  }
+}
+
+async function startOffer() {
+  connection();
+  session = crypto.randomUUID();
+  const audio = pc.addTransceiver('audio', { direction: 'sendrecv' });
+  pc.addTransceiver('video', { direction: 'sendrecv' });
+  await audio.sender.replaceTrack(await microphone());
+  await pc.setLocalDescription(await pc.createOffer());
+  send({ kind: 'offer', session, description: pc.localDescription.toJSON() });
+}
+
+async function acceptOffer(payload) {
+  connection();
+  session = payload.session;
+  await pc.setRemoteDescription(payload.description);
+  for (const transceiver of pc.getTransceivers()) {
+    transceiver.direction = 'sendrecv';
+    if (transceiver.receiver.track.kind === 'audio') {
+      await transceiver.sender.replaceTrack(await microphone());
+    }
+  }
+  await flush();
+  await pc.setLocalDescription(await pc.createAnswer());
+  send({ kind: 'answer', session, description: pc.localDescription.toJSON() });
+}
+
+async function handle(payload) {
+  if (payload.kind === 'offer' && !initiator) {
+    if (!pc || session !== payload.session) {
+      await acceptOffer(payload);
+    }
+  } else if (payload.kind === 'answer' && pc && session === payload.session && pc.signalingState === 'have-local-offer') {
+    await pc.setRemoteDescription(payload.description);
+    await flush();
+  } else if (payload.kind === 'candidate' && payload.candidate) {
+    if (pc && session === payload.session && pc.remoteDescription) {
+      await pc.addIceCandidate(payload.candidate).catch(() => {});
+    } else {
+      pending.push({ session: payload.session, candidate: payload.candidate });
+    }
+  }
+}
+
+async function report() {
+  if (!pc) {
+    return;
+  }
+  const stats = await pc.getStats();
+  let inbound = null;
+  let outbound = null;
+  stats.forEach((stat) => {
+    if (stat.type === 'inbound-rtp' && stat.kind === 'audio') {
+      inbound = stat;
+    } else if (stat.type === 'outbound-rtp' && stat.kind === 'audio') {
+      outbound = stat;
+    }
+  });
+  post('/report', {
+    initiator,
+    state: pc.connectionState,
+    received: inbound ? inbound.packetsReceived : 0,
+    energy: inbound ? inbound.totalAudioEnergy : 0,
+    sent: outbound ? outbound.packetsSent : 0,
+    video: pc.getTransceivers().map((transceiver) => `${transceiver.receiver.track.kind}:${transceiver.currentDirection}`),
+  });
+}
+
+async function run() {
+  if (initiator) {
+    await startOffer();
+  }
+  setInterval(report, 1500);
+  for (;;) {
+    const messages = await fetch('/poll').then((response) => response.json()).catch(() => []);
+    for (const payload of messages) {
+      await handle(payload).catch((error) => post('/report', { error: String(error) }));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+run().catch((error) => post('/report', { error: String(error) }));
+</script>

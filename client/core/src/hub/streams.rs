@@ -171,6 +171,17 @@ impl Streams {
     }
 }
 
+fn short_id(id: &str) -> &str {
+    id.get(..4).unwrap_or(id)
+}
+
+/// How many addresses of each kind a description offers, for the log: with no `srflx` and no
+/// `relay`, a viewer in another house cannot be reached.
+fn candidate_summary(sdp: &str) -> String {
+    let count = |kind: &str| sdp.lines().filter(|line| line.starts_with("a=candidate:") && line.contains(&format!(" typ {kind}"))).count();
+    format!("{} host, {} srflx, {} relay", count("host"), count("srflx"), count("relay"))
+}
+
 fn limit(value: Option<i64>) -> i64 {
     value.filter(|value| *value > 0).unwrap_or(0)
 }
@@ -787,7 +798,10 @@ impl Hub {
                     return;
                 }
                 let command = match (text("sdp").filter(|sdp| sdp.len() <= MAX_SDP_LENGTH), text("code")) {
-                    (Some(sdp), _) => json!({ "command": "peer_sdp_answer", "peer": from, "sdp": sdp }),
+                    (Some(sdp), _) => {
+                        self.log.info(&format!("transmissao: resposta de {}, {}", short_id(&from), candidate_summary(sdp)));
+                        json!({ "command": "peer_sdp_answer", "peer": from, "sdp": sdp })
+                    }
                     (None, Some(code)) => json!({ "command": "peer_answer", "peer": from, "code": code }),
                     (None, None) => return,
                 };

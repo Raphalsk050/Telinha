@@ -44,6 +44,14 @@ impl WebRtcLink {
 pub(crate) struct Gathering {
     found: Arc<Mutex<Vec<IceCandidate>>>,
     complete: Arc<Notify>,
+    connection: PeerConnection,
+}
+
+/// A candidate the other side can reach from the internet: the public address the router gives
+/// (`srflx`) or a relay. Without one of these, a connection between two houses never opens.
+fn reaches_outside(candidate: &IceCandidate) -> bool {
+    let line = candidate.candidate();
+    line.contains(" typ srflx") || line.contains(" typ relay")
 }
 
 impl Gathering {
@@ -60,29 +68,45 @@ impl Gathering {
                 done.notify_one();
             }
         })));
-        Self { found, complete }
+        Self { found, complete, connection: connection.clone() }
     }
 
     /// Waits for the candidates and writes them into the description, which is how the other
     /// side gets them without a message for each.
     pub(crate) async fn finish(self, mut sdp: String) -> String {
-        // The end of the search is not always announced, so a search that found something and
-        // then went quiet for a moment also counts as over.
-        let count = || self.found.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).len();
+        // The end of the search is not always announced, so a search that went quiet for a
+        // moment also counts as over, but only once the public address came: the local ones come
+        // at once, the public one only after a server far away answers, and a description that
+        // goes without it only connects inside the same house.
+        let count = || {
+            let found = self.found.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            (found.len(), found.iter().any(reaches_outside))
+        };
         let quiet = async {
             let mut seen = 0;
             let mut still = 0;
-            while still < 4 || seen == 0 {
+            loop {
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                let now = count();
+                let (now, outside) = count();
                 still = if now == seen { still + 1 } else { 0 };
                 seen = now;
+                if outside && still >= 4 {
+                    break;
+                }
             }
         };
         tokio::select! {
             () = self.complete.notified() => {}
             () = quiet => {}
             () = tokio::time::sleep(GATHER_TIMEOUT) => {}
+        }
+        // The answer already holds its candidates, each under the media it belongs to, which is
+        // what a browser sends. Only an offer still waiting for its answer lacks them here.
+        if let Some(description) = self.connection.current_local_description() {
+            let text = description.to_string();
+            if text.contains("a=candidate:") {
+                return text;
+            }
         }
         if !sdp.ends_with('\n') {
             sdp.push_str("\r\n");

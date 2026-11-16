@@ -644,14 +644,16 @@ impl TelinhaApp {
         }
         let voice = self.room.voice.clone();
         let deaf = voice.as_ref().is_some_and(|voice| voice.deaf);
-        let mic = voice.as_ref().is_none_or(|voice| voice.mic);
+        // Deafened means the microphone is silent too, as in Discord.
+        let mic = voice.as_ref().is_none_or(|voice| voice.mic && !voice.deaf);
         let (deaf_icon, deaf_ink, deaf_tip) = if deaf { (icons::DEAF, palette.danger_text, "Voltar a ouvir") } else { (icons::HEADPHONES, palette.soft, "Ensurdecer") };
         if widgets::icon_button(&mut buttons, deaf_icon, 32.0, deaf_ink, palette.selected, deaf_tip).clicked() && voice.is_some() {
             self.hub.update_voice(None, None, Some(!deaf));
         }
         let (mic_icon, mic_ink, mic_tip) = if mic { (icons::MIC, palette.soft, "Silenciar microfone") } else { (icons::MIC_OFF, palette.danger_text, "Ativar microfone") };
         if widgets::icon_button(&mut buttons, mic_icon, 32.0, mic_ink, palette.selected, mic_tip).clicked() && voice.is_some() {
-            self.hub.update_voice(Some(!mic), None, None);
+            // Turning the microphone on while deafened also brings the sound back.
+            self.hub.update_voice(Some(!mic), None, (!mic && deaf).then_some(false));
         }
     }
 
@@ -1409,6 +1411,10 @@ impl TelinhaApp {
     }
 
     /// Shows a made-up link preview above the box of the open conversation. For the tests.
+    pub fn draft_for_test(&mut self, text: &str) {
+        self.chat.draft_for_test(text);
+    }
+
     pub fn link_for_test(&mut self, url: &str, site: &str, title: &str, description: &str) {
         self.chat.link_for_test(url, site, title, description);
     }

@@ -227,7 +227,9 @@ impl TelinhaApp {
                     }
                 }
                 if let (Some(call), Some(voice)) = (&self.room.call, &voice) {
-                    call.call.set_mic(voice.mic);
+                    // As in Discord, deafening also silences the microphone; hearing again
+                    // brings it back as it was.
+                    call.call.set_mic(voice.mic && !voice.deaf);
                     call.call.set_deaf(voice.deaf);
                 }
                 self.room.voice = voice;
@@ -597,7 +599,7 @@ impl TelinhaApp {
         let hub = Arc::clone(&self.hub);
         let space = space_id.clone();
         let _runtime = self.runtime.enter();
-        let (call, mut events) = Call::start(self.hub.instance_id(), ice_servers, self.room.sound, voice.mic, voice.deaf, move |to, payload| {
+        let (call, mut events) = Call::start(self.hub.instance_id(), ice_servers, self.room.sound, voice.mic && !voice.deaf, voice.deaf, move |to, payload| {
             hub.send_rtc(&space, to, &payload);
         });
         let context = self.context.clone();

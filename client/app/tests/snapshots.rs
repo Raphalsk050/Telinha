@@ -231,6 +231,11 @@ fn the_window_draws() {
     shoot(&mut scene, "unread");
     scene.app.link_for_test("https://example.com/receita", "example.com", "Receita de bolo de cenoura", "Fofinho, com cobertura de chocolate, pronto em 40 minutos.");
     shoot(&mut scene, "link-draft");
+    let pasted: Vec<String> = (1..=60).map(|line| format!("linha {line} de um texto colado bem comprido, que passa do limite de uma mensagem")).collect();
+    scene.app.draft_for_test(&pasted.join("
+"));
+    shoot(&mut scene, "long-draft");
+    scene.app.draft_for_test("");
     assert_eq!(scene.app.unread(&telinha_core::hub::Conversation::channel(&scene.server_id, &scene.text_channel)), 0);
     scene.app.ring_for_test("Keep", true);
     shoot(&mut scene, "incoming-call");

@@ -6,7 +6,7 @@ use std::sync::{Arc, LazyLock};
 use chrono::{Local, TimeZone};
 use egui::{Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use regex::Regex;
-use telinha_core::chats::{Embed, FileRef, ImageRef, Message};
+use telinha_core::chats::{Embed, FileRef, ImageRef, MAX_TEXT_LENGTH, Message};
 use telinha_core::hub::{Conversation, FileStatus, Hub, Outgoing};
 
 use crate::attach::{self, Attachment, MAX_INLINE_GIF_BYTES};
@@ -23,6 +23,7 @@ const IMAGE_BOUNDS: Vec2 = Vec2::new(400.0, 300.0);
 const EMBED_BOUNDS: Vec2 = Vec2::new(400.0, 225.0);
 const CONTENT_LEFT: f32 = 72.0;
 const CHAT_FONT: f32 = 15.5;
+const COMPOSER_MAX: f32 = 200.0;
 
 static LINK_PATTERN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\b(?:https?://|www\.)[^\s<>"]+"#).unwrap());
 
@@ -79,6 +80,10 @@ pub struct ChatView {
     link: LinkDraft,
     /// A message held back for its preview to finish loading, and until when it waits.
     waiting_send: Option<f64>,
+    /// How tall the box at the bottom was drawn last time; it grows with the draft.
+    composer_height: f32,
+    /// How tall the text of the draft was last time, which the box follows up to its limit.
+    draft_height: f32,
 }
 
 pub fn format_time(timestamp: i64) -> String {
@@ -226,6 +231,10 @@ impl ChatView {
     }
 
     /// Shows a made-up link preview above the box. For the tests.
+    pub fn draft_for_test(&mut self, text: &str) {
+        self.draft = text.to_owned();
+    }
+
     pub fn link_for_test(&mut self, url: &str, site: &str, title: &str, description: &str) {
         self.link.show_for_test(url, site, title, description);
     }
@@ -313,10 +322,27 @@ impl ChatView {
         let Some(conversation) = self.conversation.clone() else {
             return;
         };
-        let text = self.draft.trim().to_owned();
+        let mut text = self.draft.trim().to_owned();
         if text.is_empty() && self.attachment.is_none() {
             self.waiting_send = None;
             return;
+        }
+        // Longer than a message carries: as in Discord, the whole text goes as a .txt file
+        // instead of being cut at the limit.
+        if too_long(&text) {
+            self.waiting_send = None;
+            if self.attachment.is_some() {
+                self.hint = format!("O texto passa de {MAX_TEXT_LENGTH} caracteres. Tire o anexo para enviá-lo como arquivo.");
+                return;
+            }
+            match attach::from_bytes("mensagem.txt", text.clone().into_bytes()) {
+                Ok(file) => self.attachment = Some(file),
+                Err(error) => {
+                    self.hint = format!("Não consegui enviar: {error}.");
+                    return;
+                }
+            }
+            text.clear();
         }
         let mut outgoing = Outgoing { text, ..Outgoing::default() };
         if !outgoing.text.is_empty() {
@@ -356,7 +382,7 @@ impl ChatView {
         self.take_dropped(ui);
         self.link.tend(ui.ctx(), &self.draft);
         let pending = if self.attachment.is_some() { 64.0 } else { 0.0 };
-        let composer_height = 44.0 + 28.0 + pending + self.link.height();
+        let composer_height = self.composer_height.max(44.0 + 28.0 + pending + self.link.height());
         let list_height = (ui.available_height() - composer_height).max(0.0);
         ui.allocate_ui(Vec2::new(ui.available_width(), list_height), |ui| {
             let to_bottom = std::mem::take(&mut self.to_bottom);
@@ -379,7 +405,11 @@ impl ChatView {
                 }
             });
         });
-        self.composer(ui, hub, palette, chrome);
+        // The box gets room to reach its full height even when the list above was laid out
+        // for a smaller one; the list makes way on the next frame, from the height measured.
+        let room = Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), composer_height.max(ui.available_height()) + COMPOSER_MAX));
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(room).layout(*ui.layout()));
+        self.composer(&mut child, hub, palette, chrome);
         action
     }
 
@@ -596,7 +626,7 @@ impl ChatView {
 
     fn composer(&mut self, ui: &mut Ui, hub: &Arc<Hub>, palette: &Palette, chrome: &Chrome) {
         let mut send = false;
-        Frame::new().inner_margin(Margin { left: 16, right: 16, top: 0, bottom: 0 }).show(ui, |ui| {
+        let drawn = Frame::new().inner_margin(Margin { left: 16, right: 16, top: 0, bottom: 0 }).show(ui, |ui| {
             self.pending_strip(ui, palette);
             self.link.show(ui, palette);
             Frame::new().fill(palette.raised).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(12, 7)).show(ui, |ui| {
@@ -620,7 +650,23 @@ impl ChatView {
                         .desired_rows(1)
                         .desired_width(width)
                         .return_key(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter));
-                    let response = ui.add(edit);
+                    // Grows with the draft up to 200 px, as `.composer-input`, then scrolls,
+                    // with the bar in sight and clear of the text.
+                    let scroll = &mut ui.spacing_mut().scroll;
+                    scroll.dormant_handle_opacity = 0.6;
+                    scroll.dormant_background_opacity = 0.25;
+                    let edit = edit.desired_width(width - 12.0);
+                    let scrolled = egui::ScrollArea::vertical()
+                        .id_salt("composer-input")
+                        .max_height(COMPOSER_MAX)
+                        .min_scrolled_height(self.draft_height.min(COMPOSER_MAX))
+                        .auto_shrink([true, true])
+                        .show(ui, |ui| ui.add(edit));
+                    if (scrolled.content_size.y - self.draft_height).abs() > 0.5 {
+                        self.draft_height = scrolled.content_size.y;
+                        ui.ctx().request_repaint();
+                    }
+                    let response = scrolled.inner;
                     if std::mem::take(&mut self.focus_input) {
                         response.request_focus();
                     }
@@ -647,9 +693,18 @@ impl ChatView {
                 });
             });
             ui.add_space(4.0);
-            let hint = if self.hint.is_empty() { &chrome.hint } else { &self.hint };
+            let long = too_long(self.draft.trim()).then(|| {
+                let count = self.draft.trim().encode_utf16().count();
+                format!("{count}/{MAX_TEXT_LENGTH} caracteres: o texto vai como o arquivo mensagem.txt.")
+            });
+            let hint = if !self.hint.is_empty() { &self.hint } else { long.as_ref().unwrap_or(&chrome.hint) };
             ui.label(RichText::new(hint).color(palette.muted).size(12.0));
         });
+        let height = drawn.response.rect.height();
+        if (height - self.composer_height).abs() > 0.5 {
+            self.composer_height = height;
+            ui.ctx().request_repaint();
+        }
         if send {
             self.send(hub, ui.ctx(), false);
         } else if let Some(deadline) = self.waiting_send {
@@ -695,6 +750,11 @@ impl ChatView {
             self.attachment_preview = None;
         }
     }
+}
+
+/// More than one message carries; the store would cut it at the limit.
+fn too_long(text: &str) -> bool {
+    text.encode_utf16().nth(MAX_TEXT_LENGTH).is_some()
 }
 
 fn same_block(previous: &Message, message: &Message) -> bool {

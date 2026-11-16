@@ -1425,6 +1425,15 @@ impl TelinhaApp {
 }
 
 impl eframe::App for TelinhaApp {
+    /// Runs before every frame and also while the window is minimized, when `ui` does not.
+    /// The hub and the call must keep being heard then: a minimized app that stops taking
+    /// events keeps calling people who already left and never sees who came back.
+    fn logic(&mut self, _context: &egui::Context, _frame: &mut eframe::Frame) {
+        let _runtime = self.runtime.enter();
+        self.drain_events();
+        self.drain_tasks();
+    }
+
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         TelinhaApp::ui(self, ui);
     }

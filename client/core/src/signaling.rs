@@ -219,6 +219,9 @@ struct State {
     /// Through which servers each peer of each space has been heard, and when.
     routes: HashMap<String, HashMap<String, HashMap<String, i64>>>,
     seen: IndexMap<String, i64>,
+    /// Instances replaced by a newer one of the same person: an app that was restarted. Their
+    /// late or repeated messages must not bring the old copy back.
+    retired: IndexMap<String, i64>,
     /// Where everything sent goes instead of the servers, when a test asked for it.
     tap: Option<mpsc::UnboundedSender<(String, Value)>>,
 }
@@ -625,15 +628,30 @@ impl Signaling {
                 return;
             }
 
+            if state.retired.contains_key(&from) {
+                return;
+            }
             let was_online = !state.peers(space_id, now).is_empty();
             let peers = state.presence.entry(space_id.to_owned()).or_default();
             let known = peers.get(&from).is_some_and(|entry| now - entry.seen_at < PRESENCE_TTL_MS);
             let mut list_changed = false;
+            let mut replaced = Vec::new();
 
             if message.get("online").is_some_and(is_truthy) {
                 let info = describe_peer(&from, &message);
                 list_changed = !known || peers.get(&from).is_some_and(|entry| entry.info != info);
                 let name = info.name.clone();
+                // A new instance of someone already here is that person's app restarted: the
+                // old one is gone at once instead of lingering as a copy until it times out,
+                // and a call moves to the new one right away.
+                if let Some(member_id) = info.member_id.clone().filter(|_| !known) {
+                    replaced = peers
+                        .iter()
+                        .filter(|(id, entry)| **id != from && entry.info.member_id.as_deref() == Some(member_id.as_str()))
+                        .map(|(id, _)| id.clone())
+                        .collect();
+                    list_changed |= !replaced.is_empty();
+                }
                 peers.insert(from.clone(), PresenceEntry { seen_at: now, info });
                 if !name.is_empty() {
                     events.push(SignalEvent::PeerName { space_id: space_id.to_owned(), name });
@@ -646,6 +664,24 @@ impl Signaling {
                 answer = !known;
             } else if peers.shift_remove(&from).is_some() {
                 list_changed = true;
+            }
+
+            // The old instance leaves every space it was in, not only this one.
+            let mut other_spaces = Vec::new();
+            for old in replaced {
+                for (other, peers) in state.presence.iter_mut() {
+                    if peers.shift_remove(&old).is_some() && other != space_id {
+                        other_spaces.push(other.clone());
+                    }
+                }
+                state.retired.insert(old, now);
+                if state.retired.len() > MAX_SEEN {
+                    state.retired.shift_remove_index(0);
+                }
+            }
+            for other in other_spaces {
+                let peers = state.peers(&other, now);
+                events.push(SignalEvent::Peers { space_id: other, peers });
             }
 
             let peers = state.peers(space_id, now);
@@ -859,6 +895,26 @@ mod tests {
         let mut message = json!({ "type": "presence", "online": true, "from": from, "at": now_ms(), "mid": new_uuid() });
         message.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
         message
+    }
+
+    #[test]
+    fn a_restarted_app_replaces_the_old_copy_of_the_person() {
+        let (signaling, mut events) = signaling(&["wss://a"]);
+        let member = json!({ "name": "Rafa", "memberId": "c".repeat(32) });
+        deliver(&signaling, 0, presence("peer-old", member.clone()));
+        deliver(&signaling, 0, presence("peer-other", json!({ "name": "Keep", "memberId": "b".repeat(32) })));
+        drain(&mut events);
+        deliver(&signaling, 0, presence("peer-new", member.clone()));
+        let ids = |signaling: &Signaling| {
+            let mut ids: Vec<String> = signaling.peers("space").into_iter().map(|peer| peer.id).collect();
+            ids.sort();
+            ids
+        };
+        assert_eq!(ids(&signaling), ["peer-new", "peer-other"]);
+        assert!(drain(&mut events).iter().any(|event| matches!(event, SignalEvent::Peers { .. })));
+        // A late message of the old app does not bring the copy back.
+        deliver(&signaling, 0, presence("peer-old", member));
+        assert_eq!(ids(&signaling), ["peer-new", "peer-other"]);
     }
 
     #[test]

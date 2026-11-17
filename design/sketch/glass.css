@@ -4,10 +4,10 @@
 [data-theme="glass"] {
   /* os cinco botões do painel "Vidro" do esboço (tweaks.js) mexem só nestes */
   --frost: 0;          /* jateamento: granulado + névoa branca, 0..1 */
-  --glass-dark: .49;  /* escurecimento do vidro, 0..1 */
-  --blur: 12px;        /* nível de desfoque */
-  --light: 1.03;       /* luz de fundo, 0..1.6 (acima de 1 clareia) */
-  --light-size: 1.2;    /* tamanho das luzes, multiplica o raio */
+  --glass-dark: .66;  /* escurecimento do vidro, 0..1 */
+  --blur: 16px;        /* nível de desfoque */
+  --light: .02;        /* luz de fundo, 0..1.6 (acima de 1 clareia) */
+  --light-size: 1.05;    /* tamanho das luzes, multiplica o raio */
 
   --rail: transparent;
   --sidebar: rgba(16, 18, 34, min(1, calc(var(--glass-dark) + .1)));
@@ -26,6 +26,8 @@
   --glass-shine: rgba(255, 255, 255, .10);
   --glass-blur: blur(var(--blur)) saturate(170%);
   --dot-ring: rgba(26, 28, 46, .95);
+  --scroll-thumb: rgba(255, 255, 255, .16);
+  --scroll-thumb-hover: rgba(255, 255, 255, .32);
 }
 
 /* fundo: manchas de cor que o vidro desfoca */
@@ -43,33 +45,39 @@ body[data-theme="glass"]::before {
   filter: brightness(max(1, var(--light)));
 }
 
-/* jateamento: granulado e névoa por cima do fundo do painel, por baixo do conteúdo */
-[data-theme="glass"] :is(.sidebar, .main, .settings) { position: relative; isolation: isolate; }
-[data-theme="glass"] #tweaks { isolation: isolate; }
+/* Regra de ouro do blur no Chromium: um elemento com backdrop-filter, filter, opacity < 1, mask,
+   clip-path ou mix-blend-mode vira "raiz de fundo", e todo vidro DENTRO dele só enxerga o que está
+   dentro dele (o texto de trás fica nítido). Por isso o vidro dos painéis fica numa camada ::before
+   (irmã do conteúdo, não pai), e nenhum painel leva esses efeitos no próprio elemento.
+   O check-blur.mjs confere isso em todas as telas. */
+[data-theme="glass"] :is(.sidebar, .main, .settings) { position: relative; z-index: 0; }
+[data-theme="glass"] :is(.sidebar, .main, .settings, #tweaks) {
+  background: transparent;
+  border-radius: 16px; overflow: hidden;
+  border: 1px solid var(--glass-edge);
+  box-shadow: inset 0 1px 0 var(--glass-shine), 0 12px 40px rgba(0, 0, 0, .35);
+}
+[data-theme="glass"] .sidebar { --tint: var(--sidebar); }
+[data-theme="glass"] :is(.main, .settings, #tweaks) { --tint: var(--main); }
 [data-theme="glass"] :is(.sidebar, .main, .settings, #tweaks)::before,
 [data-theme="glass"] :is(.sidebar, .main, .settings, #tweaks)::after {
   content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none; border-radius: inherit;
 }
+/* o vidro: desfoque do que está atrás + cor + névoa branca do jateamento */
 [data-theme="glass"] :is(.sidebar, .main, .settings, #tweaks)::before {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .6 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  opacity: calc(var(--frost) * .5);
-  mix-blend-mode: overlay;
+  backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
+  background:
+    linear-gradient(rgba(255, 255, 255, calc(var(--frost) * .12)), rgba(255, 255, 255, calc(var(--frost) * .12))),
+    var(--tint);
 }
+/* o granulado do jateamento, sem mix-blend-mode (que também viraria raiz de fundo) */
 [data-theme="glass"] :is(.sidebar, .main, .settings, #tweaks)::after {
-  background: rgba(255, 255, 255, calc(var(--frost) * .12));
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .5 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  opacity: calc(var(--frost) * .35);
 }
 
 /* painéis flutuando com espaço entre eles */
 [data-theme="glass"] #app { padding: 10px 10px 10px 0; gap: 10px; }
-[data-theme="glass"] .sidebar,
-[data-theme="glass"] .main,
-[data-theme="glass"] .settings,
-[data-theme="glass"] #tweaks {
-  border-radius: 16px; overflow: hidden;
-  border: 1px solid var(--glass-edge);
-  backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
-  box-shadow: inset 0 1px 0 var(--glass-shine), 0 12px 40px rgba(0, 0, 0, .35);
-}
 
 /* trilho: botões de vidro soltos */
 [data-theme="glass"] .rail-btn {
@@ -103,12 +111,10 @@ body[data-theme="glass"]::before {
 }
 /* a caixa de mensagem flutua por cima da conversa: as mensagens passam por trás do vidro */
 [data-theme="glass"] .chat { position: relative; }
-[data-theme="glass"] .messages {
-  padding-bottom: calc(var(--dock-h, 80px) + 8px);
-  /* some só embaixo do aviso, onde o texto de trás atrapalharia a leitura */
-  -webkit-mask-image: linear-gradient(to top, transparent 0, #000 26px);
-  mask-image: linear-gradient(to top, transparent 0, #000 26px);
-}
+[data-theme="glass"] .messages { padding-bottom: calc(var(--dock-h, 80px) + 8px); }
+/* o aviso embaixo também é vidro, para o texto que passa por trás não atrapalhar a leitura
+   (máscara na lista de mensagens viraria raiz de fundo) */
+[data-theme="glass"] .dock .footnote { backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); }
 [data-theme="glass"] .dock { position: absolute; left: 0; right: 0; bottom: 0; z-index: 1; pointer-events: none; }
 [data-theme="glass"] .dock > * { pointer-events: auto; }
 [data-theme="glass"] .dock .composer {
@@ -133,8 +139,10 @@ body[data-theme="glass"]::before {
 [data-theme="glass"] .tile { background: rgba(255, 255, 255, .07); border: 1px solid var(--line-soft); border-radius: 14px; }
 [data-theme="glass"] .round { background: rgba(255, 255, 255, .12); border: 1px solid var(--glass-edge); backdrop-filter: blur(12px); }
 [data-theme="glass"] .card { background: rgba(255, 255, 255, .06); border-color: var(--glass-edge); border-radius: 14px; backdrop-filter: blur(12px); }
-[data-theme="glass"] .overlay { background: rgba(5, 6, 14, .35); backdrop-filter: blur(6px); }
+[data-theme="glass"] .overlay { background: transparent; }
+[data-theme="glass"] .overlay::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: rgba(5, 6, 14, .35); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+}
+[data-theme="glass"] .overlay { isolation: auto; z-index: 10; }
 [data-theme="glass"] .settings-nav { background: rgba(0, 0, 0, .18); }
-
-/* a janela de controles do esboço usa o mesmo vidro */
-[data-theme="glass"] #tweaks { background: var(--main); }

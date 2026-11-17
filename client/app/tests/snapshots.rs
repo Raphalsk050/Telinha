@@ -246,7 +246,16 @@ fn the_glass_theme_draws() {
     }
     scene.app.navigate(Nav::Server { server_id: server_id.clone(), channel_id: Some(room) });
     shoot(&mut scene, "glass-room");
-    shoot_hovering(&mut scene.app, "glass-hang-up", egui::pos2(811.0, 535.0));
+    // The buttons coming out of one pill and pulling apart as the call opens.
+    for (index, seconds) in [0.12, 0.3, 0.55, 0.75, 0.9].into_iter().enumerate() {
+        scene.app.room_opening_for_test(Some(seconds));
+        shoot(&mut scene, &format!("glass-room-opening-{index}"));
+    }
+    scene.app.room_opening_for_test(None);
+    shoot_hovering(&mut scene.app, "glass-hang-up", egui::pos2(811.0, 672.0));
+    scene.app.room_chat_for_test(true);
+    shoot(&mut scene, "glass-room-chat");
+    scene.app.room_chat_for_test(false);
     shoot_clicking(&mut scene.app, "glass-menu", &[(egui::pos2(1190.0, 126.0), egui::PointerButton::Secondary)]);
     for name in ["Risada", "Buzina", "Tambores", "Aplausos"] {
         scene.hub.add_sound(name, "audio/mpeg", b"not really a sound").unwrap();

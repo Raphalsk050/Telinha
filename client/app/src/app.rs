@@ -413,6 +413,16 @@ impl TelinhaApp {
         crate::glass::finish(ui.ctx());
     }
 
+    /// Opens or closes the chat beside the stage of a voice channel, for the pictures of the tests.
+    /// Holds the opening of the stage of a call still, `seconds` after it began, or lets it run.
+    pub fn room_opening_for_test(&mut self, seconds: Option<f64>) {
+        self.room.opening_held = seconds;
+    }
+
+    pub fn room_chat_for_test(&mut self, open: bool) {
+        self.room.chat_open = open;
+    }
+
     pub fn set_parent_window(&mut self, window: crate::media::ParentWindow) {
         self.parent_window = Some(window);
     }
@@ -890,6 +900,17 @@ impl TelinhaApp {
             if widgets::icon_button(&mut tools, icons::INVITE, 32.0, palette.soft, palette.hover, "Convidar pessoas").clicked() {
                 self.open_invite();
             }
+            // In a voice channel the person is in, the chat of the channel opens beside the stage.
+            let in_voice_channel = match &self.nav {
+                Nav::Server { server_id, channel_id: Some(channel_id) } => self.joined_room(server_id, channel_id),
+                _ => false,
+            };
+            if in_voice_channel {
+                let (color, tip) = if self.room.chat_open { (palette.strong, "Esconder o chat") } else { (palette.soft, "Mostrar o chat") };
+                if widgets::icon_button(&mut tools, icons::CHAT, 32.0, color, palette.hover, tip).clicked() {
+                    self.room.chat_open = !self.room.chat_open;
+                }
+            }
         }
         // The members sit under the header, beside the conversation, as `.main-body` laid them.
         if self.prefs.show_members && self.current_server().is_some() {
@@ -923,9 +944,35 @@ impl TelinhaApp {
                 .map(|channel| (server_id.clone(), channel.id.clone())),
             _ => None,
         };
-        if let Some((space_id, room_id)) = room {
-            self.room_panel(ui, &space_id, &room_id);
+        // A voice channel the person is in is all stage, as in Discord; its chat opens beside it
+        // with the button of the header. A call with a contact keeps its chat under it.
+        let stage_only = room.as_ref().is_some_and(|(space_id, room_id)| room_id != telinha_core::hub::DM_ROOM && self.joined_room(space_id, room_id));
+        if let (Some((space_id, room_id)), true) = (&room, stage_only) {
+            let area = ui.available_rect_before_wrap();
+            let chat_width = if self.room.chat_open { 380.0f32.min(area.width() * 0.45) } else { 0.0 };
+            let stage_rect = Rect::from_min_max(area.min, egui::pos2(area.right() - chat_width, area.bottom()));
+            let mut stage = ui.new_child(egui::UiBuilder::new().max_rect(stage_rect).layout(Layout::top_down(Align::Min)));
+            stage.set_clip_rect(stage_rect.intersect(ui.clip_rect()));
+            self.room_panel(&mut stage, space_id, room_id, true);
+            if chat_width > 0.0 {
+                let chat_rect = Rect::from_min_max(egui::pos2(stage_rect.right(), area.top()), area.max);
+                ui.painter().vline(chat_rect.left(), chat_rect.y_range(), egui::Stroke::new(1.0, palette.line));
+                let mut column = ui.new_child(egui::UiBuilder::new().max_rect(chat_rect).layout(Layout::top_down(Align::Min)));
+                column.set_clip_rect(chat_rect.intersect(ui.clip_rect()));
+                self.chat_area(&mut column);
+            }
+            ui.allocate_rect(area, Sense::hover());
+            return;
         }
+        if let Some((space_id, room_id)) = room {
+            self.room_panel(ui, &space_id, &room_id, false);
+        }
+        self.chat_area(ui);
+    }
+
+    /// The conversation open, or the first screen, or the line that asks for one.
+    fn chat_area(&mut self, ui: &mut Ui) {
+        let palette = self.palette;
         match self.chrome() {
             Some(chrome) => {
                 let hub = Arc::clone(&self.hub);

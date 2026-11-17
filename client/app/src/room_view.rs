@@ -104,6 +104,12 @@ pub struct RoomState {
     pub(crate) feedback: String,
     /// Where a drag of the handle of the stage started: the pointer and the height of the tiles.
     resizing: Option<(f32, f32)>,
+    /// Whether the chat of a voice channel is open beside its stage, as the chat button of Discord.
+    pub(crate) chat_open: bool,
+    /// The room whose stage last opened, and when, for the stage and its buttons to unfold.
+    opened: Option<(String, f64)>,
+    /// For the pictures of the tests: the opening held still at this time, in seconds.
+    pub(crate) opening_held: Option<f64>,
     /// The balloon about the connection, above the call panel.
     pub(crate) popover: bool,
     pub(crate) popover_privacy: bool,
@@ -152,6 +158,9 @@ impl RoomState {
             focus: None,
             feedback: String::new(),
             resizing: None,
+            chat_open: false,
+            opened: None,
+            opening_held: None,
             popover: false,
             popover_privacy: false,
             popover_copied_at: None,
@@ -1048,7 +1057,9 @@ impl TelinhaApp {
 
     /// The room above the chat of a voice channel or of a contact: the lobby before entering,
     /// the stage after. Returns the height it used.
-    pub(crate) fn room_panel(&mut self, ui: &mut Ui, space_id: &str, room_id: &str) {
+    /// With `fill` the stage takes all the height it is given, as the stage of a voice channel of
+    /// Discord, with nothing under it.
+    pub(crate) fn room_panel(&mut self, ui: &mut Ui, space_id: &str, room_id: &str, fill: bool) {
         self.drain_tasks();
         let palette = self.palette;
         let people = self.people_in(space_id, room_id);
@@ -1057,10 +1068,42 @@ impl TelinhaApp {
             return;
         }
         if !joined {
+            if self.room.opened.as_ref().is_some_and(|(opened, _)| opened == room_id) {
+                self.room.opened = None;
+            }
             self.lobby(ui, &palette, space_id, room_id, &people);
             return;
         }
-        self.stage(ui, &palette, space_id, room_id, people);
+        if self.room.opened.as_ref().is_none_or(|(opened, _)| opened != room_id) {
+            let now = ui.input(|input| input.time);
+            self.room.opened = Some((room_id.to_owned(), now));
+        }
+        self.stage(ui, &palette, space_id, room_id, people, fill);
+    }
+
+    /// Whether the stage of `room_id` is in the room the person is in.
+    pub(crate) fn joined_room(&self, space_id: &str, room_id: &str) -> bool {
+        self.in_room(space_id, room_id)
+    }
+
+    /// How far the stage has unfolded since it opened, from 0 to 1, eased.
+    fn unfolded(&self, ui: &Ui, seconds: f64, delay: f64) -> f32 {
+        let Some((_, since)) = &self.room.opened else { return 1.0 };
+        let elapsed = self.room.opening_held.map_or_else(|| ui.input(|input| input.time) - since, |held| held) - delay;
+        if elapsed < seconds {
+            ui.ctx().request_repaint();
+        }
+        egui::emath::easing::cubic_out((elapsed / seconds).clamp(0.0, 1.0) as f32)
+    }
+
+    /// How far the stage has gone since it opened, from 0 to 1, not eased.
+    fn opening(&self, ui: &Ui, seconds: f64, delay: f64) -> f32 {
+        let Some((_, since)) = &self.room.opened else { return 1.0 };
+        let elapsed = self.room.opening_held.map_or_else(|| ui.input(|input| input.time) - since, |held| held) - delay;
+        if elapsed < seconds {
+            ui.ctx().request_repaint();
+        }
+        (elapsed / seconds).clamp(0.0, 1.0) as f32
     }
 
     /// The card of a room the person is not in: what it is, who is there and the way in.
@@ -1149,9 +1192,11 @@ impl TelinhaApp {
 
     /// The stage of the call, as `.room-stage` drew it: the tiles, the line of feedback, the
     /// round buttons and the handle that sets the height of the tiles.
-    fn stage(&mut self, ui: &mut Ui, palette: &Palette, space_id: &str, room_id: &str, people: Vec<Person>) {
+    fn stage(&mut self, ui: &mut Ui, palette: &Palette, space_id: &str, room_id: &str, people: Vec<Person>, fill: bool) {
         let window = ui.ctx().content_rect().height();
-        let cap = stage_cap(window, room_id != DM_ROOM, self.prefs.stage_height);
+        // Filling, the tiles get all the height but the buttons under them.
+        let room_for_buttons = 16.0 + TILE_GAP + 48.0 + 6.0 + 16.0;
+        let cap = if fill { (ui.available_height() - room_for_buttons).max(120.0) } else { stage_cap(window, room_id != DM_ROOM, self.prefs.stage_height) };
         let mut tiles: Vec<Tile> = self
             .room
             .streams
@@ -1165,21 +1210,31 @@ impl TelinhaApp {
         let focus = self.room.focus.as_ref().and_then(|id| tiles.iter().position(|tile| &tile.id() == id));
         let full = ui.available_width();
         let inner_width = (full - 32.0).max(0.0);
-        let (places, box_height) = place_tiles(tiles.len(), focus, inner_width, cap, self.prefs.stage_height.is_some());
+        let (places, box_height) = place_tiles(tiles.len(), focus, inner_width, cap, !fill && self.prefs.stage_height.is_some(), fill);
 
         let feedback = (!self.room.feedback.is_empty())
             .then(|| ui.painter().layout(self.room.feedback.clone(), FontId::proportional(13.0), palette.text, inner_width.max(10.0)));
         let feedback_height = feedback.as_ref().map_or(0.0, |galley| TILE_GAP + galley.size().y);
         let height = 16.0 + box_height + feedback_height + TILE_GAP + 48.0 + 6.0 + 10.0;
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(full, height + 1.0), Sense::hover());
+        let given = if fill { ui.available_height().max(height) } else { height + 1.0 };
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(full, given), Sense::hover());
         // On glass the stage darkens the panel instead of covering it: `.stage { background: rgba(0, 0, 0, .35) }`.
         let stage = if palette.glass { Color32::from_black_alpha(89) } else { STAGE };
-        ui.painter().rect_filled(Rect::from_min_max(rect.min, rect.max - Vec2::new(0.0, 1.0)), CornerRadius::ZERO, stage);
-        ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, palette.line));
+        let round = if fill { CornerRadius { nw: 0, ne: 0, sw: self.corner(), se: self.corner() } } else { CornerRadius::ZERO };
+        ui.painter().rect_filled(Rect::from_min_max(rect.min, rect.max - Vec2::new(0.0, if fill { 0.0 } else { 1.0 })), round, stage);
+        if !fill {
+            ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, palette.line));
+        }
 
-        let tiles_box = Rect::from_min_size(rect.min + Vec2::splat(16.0), Vec2::new(inner_width, box_height));
+        // Filling, the tiles and the buttons sit in the middle of the height. When the stage
+        // opens they rise into place and appear.
+        let open = self.unfolded(ui, 0.45, 0.0);
+        let rise = (1.0 - open) * 18.0;
+        let top_pad = if fill { ((given - height) / 2.0).max(0.0) } else { 0.0 } + rise;
+        let tiles_box = Rect::from_min_size(rect.min + Vec2::new(16.0, 16.0 + top_pad), Vec2::new(inner_width, box_height));
         let mut inside = ui.new_child(egui::UiBuilder::new().max_rect(tiles_box));
         inside.set_clip_rect(tiles_box.intersect(ui.clip_rect()));
+        inside.multiply_opacity(open);
         for (index, place, small) in places {
             self.draw_tile(&mut inside, palette, &tiles, index, place.translate(tiles_box.min.to_vec2()), small);
         }
@@ -1191,8 +1246,10 @@ impl TelinhaApp {
             top += size.y + TILE_GAP;
         }
         self.stage_buttons(ui, palette, rect.center().x, top);
-        let handle = Rect::from_min_max(egui::pos2(rect.left(), top + 48.0 + 6.0), egui::pos2(rect.right(), rect.bottom() - 1.0));
-        self.stage_handle(ui, palette, handle, window, box_height);
+        if !fill {
+            let handle = Rect::from_min_max(egui::pos2(rect.left(), top + 48.0 + 6.0), egui::pos2(rect.right(), rect.bottom() - 1.0));
+            self.stage_handle(ui, palette, handle, window, box_height);
+        }
     }
 
     fn outgoing_live(&self) -> bool {
@@ -1215,6 +1272,52 @@ impl TelinhaApp {
         }
         buttons.push((Round::Leave, icons::HANGUP, Look::Danger, "Desconectar"));
         let count = buttons.len() as f32;
+        // When the call opens, the buttons come out of one pill and pull apart as drops, with
+        // necks between them that stretch thin and let go; then the real buttons take their place.
+        let time = self.opening(ui, 0.95, 0.1);
+        let grown = egui::emath::easing::back_out((time / 0.3).clamp(0.0, 1.0));
+        let spread = ((time - 0.18) / 0.82).clamp(0.0, 1.0);
+        let settled = smooth_step(0.82, 1.0, spread);
+        if time < 1.0 {
+            // Tight while the pill grows, so it is one smooth capsule.
+            let gap = crate::motion::lerp(18.0 * grown.clamp(0.0, 1.0), 60.0, egui::emath::easing::cubic_in_out(spread));
+            let middle = egui::pos2(center, top + 24.0);
+            let centers: Vec<egui::Pos2> = (0..buttons.len()).map(|index| middle + Vec2::new((index as f32 - (count - 1.0) / 2.0) * gap, 0.0)).collect();
+            let colors: Vec<Color32> = buttons
+                .iter()
+                .map(|(_, _, look, _)| {
+                    let color = match look {
+                        _ if palette.glass => Color32::from_white_alpha(38),
+                        Look::Plain => palette.raised,
+                        Look::Off | Look::On => palette.strong,
+                        Look::Live => palette.green,
+                        Look::Danger | Look::Primary => palette.danger,
+                    };
+                    color.gamma_multiply(1.0 - settled)
+                })
+                .collect();
+            // The melt widens as they part, so the pill stays as tall as a button and the necks
+            // stretch long before they break; it is gone once the real buttons are in.
+            let melt = crate::motion::lerp(8.0, 20.0, smooth_step(0.0, 0.5, spread)) * (1.0 - settled);
+            crate::goo::paint(ui.painter(), &centers, &colors, 24.0 * grown.max(0.0), melt);
+            let shown = smooth_step(0.25, 0.7, spread) * (1.0 - settled);
+            for (center, (_, icon, look, _)) in centers.iter().zip(&buttons) {
+                let ink = match look {
+                    Look::Off => palette.danger,
+                    Look::On => Color32::from_rgb(0x11, 0x11, 0x11),
+                    Look::Live => Color32::WHITE,
+                    Look::Danger | Look::Primary if !palette.glass => Color32::WHITE,
+                    _ => palette.strong,
+                };
+                icon.image(22.0, ink.gamma_multiply(shown)).paint_at(ui, Rect::from_center_size(*center, Vec2::splat(22.0)));
+            }
+        }
+        if settled <= 0.0 {
+            return;
+        }
+        let mut layer = ui.new_child(egui::UiBuilder::new().id_salt("stage-buttons"));
+        layer.multiply_opacity(settled);
+        let ui = &mut layer;
         let mut x = center - (count * 48.0 + (count - 1.0) * 12.0) / 2.0;
         let mut clicked = None;
         for (which, icon, look, tip) in buttons {
@@ -1671,7 +1774,9 @@ fn stage_cap(window: f32, voice_channel: bool, dragged: Option<f32>) -> f32 {
 
 /// Where each tile goes in the box of the tiles, relative to its top left, whether it is one of
 /// the small ones under a focused tile, and the height of the box.
-fn place_tiles(count: usize, focus: Option<usize>, width: f32, cap: f32, fixed: bool) -> (Vec<(usize, Rect, bool)>, f32) {
+/// With `grid` a few more columns win over slightly larger tiles, as the grid of a voice channel
+/// of Discord: three people are two above and one under, not a tall column.
+fn place_tiles(count: usize, focus: Option<usize>, width: f32, cap: f32, fixed: bool, grid: bool) -> (Vec<(usize, Rect, bool)>, f32) {
     let mut places = Vec::with_capacity(count);
     if let Some(focused) = focus {
         let strip = if count > 1 { 96.0 + TILE_GAP } else { 0.0 };
@@ -1686,9 +1791,18 @@ fn place_tiles(count: usize, focus: Option<usize>, width: f32, cap: f32, fixed: 
     if count == 0 {
         return (places, if fixed { cap } else { 0.0 });
     }
-    let tile = tile_width(count, width, cap).min(width);
+    let mut tile = tile_width(count, width, cap).min(width);
+    let mut per_row = (((width + TILE_GAP) / (tile + TILE_GAP)).floor() as usize).max(1);
+    while grid && per_row < count {
+        let next = per_row + 1;
+        let rows = count.div_ceil(next) as f32;
+        let fits = ((width - (next as f32 - 1.0) * TILE_GAP) / next as f32).min((cap - (rows - 1.0) * TILE_GAP) / rows * 16.0 / 9.0);
+        if fits < tile * 0.8 {
+            break;
+        }
+        (tile, per_row) = (fits, next);
+    }
     let height = (tile * 9.0 / 16.0).min(cap).max(120.0);
-    let per_row = (((width + TILE_GAP) / (tile + TILE_GAP)).floor() as usize).max(1);
     let rows = count.div_ceil(per_row);
     let content = rows as f32 * height + (rows - 1) as f32 * TILE_GAP;
     let box_height = if fixed { cap } else { content.min(cap) };
@@ -1917,4 +2031,10 @@ impl TelinhaApp {
             }
         }
     }
+}
+
+/// 0 below `from`, 1 above `to`, and a smooth climb between.
+fn smooth_step(from: f32, to: f32, value: f32) -> f32 {
+    let t = ((value - from) / (to - from)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }

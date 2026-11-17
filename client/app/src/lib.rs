@@ -3,6 +3,7 @@
 pub mod app;
 pub mod app_icons;
 pub mod glass;
+pub mod goo;
 pub mod motion;
 pub mod avatar_picker;
 pub mod icons;

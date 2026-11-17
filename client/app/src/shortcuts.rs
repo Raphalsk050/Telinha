@@ -3,6 +3,11 @@
 //! thread of its own, sees every key going down and up and never swallows one. Push to talk and
 //! push to mute open and close the microphone right there, in the hook; the other actions go to
 //! the window, which takes them even while minimized (`App::logic`).
+//!
+//! Windows does not call that hook while a window of this same app is in front (seen on
+//! Windows 11 with `examples/hotkey_probe.rs`: silent with the window in front, heard with it
+//! minimized). So a second pair of hooks sits on the thread of the window, and sees the keys the
+//! window gets; a key both hooks saw counts once.
 
 use std::collections::BTreeSet;
 use std::sync::Mutex;
@@ -269,6 +274,18 @@ struct State {
     /// Asks Windows whether the keys thought held still are: a key let go on the lock screen or
     /// over a prompt of the administrator never reaches the hook. Off in the tests.
     check_real: bool,
+    /// The last key the hook of the whole system saw, going down or up, and when: the hook of the
+    /// window sees the same key right after, and must not count it twice.
+    last_global: Option<(u32, bool, std::time::Instant)>,
+}
+
+/// Where a key was seen.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Source {
+    /// The hook of the whole system, on its own thread.
+    Global,
+    /// The hook of the thread of the window, which sees the keys while the window is in front.
+    Window,
 }
 
 struct Recording {
@@ -285,6 +302,24 @@ fn with_state<R>(work: impl FnOnce(&mut State) -> R) -> Option<R> {
 }
 
 impl State {
+    /// A key went down or up, seen by one of the hooks.
+    fn key(&mut self, source: Source, code: u32, raw: u32, down: bool) {
+        match source {
+            Source::Global => self.last_global = Some((code, down, std::time::Instant::now())),
+            Source::Window => {
+                if self.last_global.is_some_and(|(seen, was_down, at)| seen == code && was_down == down && at.elapsed() < std::time::Duration::from_secs(1)) {
+                    self.last_global = None;
+                    return;
+                }
+            }
+        }
+        if down {
+            self.key_down(code, raw);
+        } else {
+            self.key_up(code);
+        }
+    }
+
     /// A key went down, by the code of the shortcuts and the one Windows gave it.
     fn key_down(&mut self, code: u32, raw: u32) {
         let vk = normalize(code);
@@ -381,16 +416,19 @@ impl State {
 pub struct Hotkeys {
     events: Receiver<Event>,
     thread: u32,
+    /// The hooks on the thread of the window, as Windows numbers them.
+    window_hooks: Vec<isize>,
 }
 
 impl Hotkeys {
-    /// Puts the hooks in place. None when Windows refuses them.
+    /// Puts the hooks in place: one for the whole system on a thread of its own, and one on the
+    /// calling thread, which must be the thread of the window. None when Windows refuses them.
     pub fn start(waker: &egui::Context, shortcuts: &[Shortcut]) -> Option<Self> {
         let (sender, events) = std::sync::mpsc::channel();
         *STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(State { shortcuts: shortcuts.to_vec(), events: Some(sender), waker: Some(waker.clone()), check_real: true, ..State::default() });
         with_state(|state| state.apply_gate());
         let thread = hook_thread()?;
-        Some(Self { events, thread })
+        Some(Self { events, thread, window_hooks: window_hooks() })
     }
 
     /// The shortcuts changed in the settings.
@@ -420,6 +458,7 @@ impl Hotkeys {
 impl Drop for Hotkeys {
     fn drop(&mut self) {
         stop_thread(self.thread);
+        remove_window_hooks(&self.window_hooks);
         *STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         telinha_voice::audio::set_key_gate(true);
     }
@@ -475,6 +514,80 @@ fn hook_thread() -> Option<u32> {
     None
 }
 
+/// Hooks the keyboard and the mouse of the calling thread, for while its window is in front.
+#[cfg(windows)]
+fn window_hooks() -> Vec<isize> {
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowsHookExW, WH_KEYBOARD, WH_MOUSE};
+    // SAFETY: hooks of this thread with plain functions; they are taken away on drop.
+    unsafe {
+        let thread = GetCurrentThreadId();
+        [SetWindowsHookExW(WH_KEYBOARD, Some(window_keyboard_proc), None, thread), SetWindowsHookExW(WH_MOUSE, Some(window_mouse_proc), None, thread)]
+            .into_iter()
+            .flatten()
+            .map(|hook| hook.0 as isize)
+            .collect()
+    }
+}
+
+#[cfg(not(windows))]
+fn window_hooks() -> Vec<isize> {
+    Vec::new()
+}
+
+#[cfg(windows)]
+fn remove_window_hooks(hooks: &[isize]) {
+    use windows::Win32::UI::WindowsAndMessaging::{HHOOK, UnhookWindowsHookEx};
+    for hook in hooks {
+        // SAFETY: hooks this app set, taken away once.
+        unsafe {
+            let _ = UnhookWindowsHookEx(HHOOK(*hook as *mut core::ffi::c_void));
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn remove_window_hooks(_hooks: &[isize]) {}
+
+/// The keys the window gets: `wparam` is the key, `lparam` the flags of WM_KEYDOWN.
+#[cfg(windows)]
+unsafe extern "system" fn window_keyboard_proc(code: i32, wparam: windows::Win32::Foundation::WPARAM, lparam: windows::Win32::Foundation::LPARAM) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::UI::WindowsAndMessaging::{CallNextHookEx, HC_ACTION};
+    // HC_ACTION is the message taken from the queue; a message only peeked at comes again.
+    if code == HC_ACTION as i32 {
+        let raw = wparam.0 as u32;
+        let flags = lparam.0 as u32;
+        let extended = flags & (1 << 24) != 0;
+        let down = flags & (1 << 31) == 0;
+        let code = from_hook(raw, extended);
+        with_state(|state| state.key(Source::Window, code, raw, down));
+    }
+    // SAFETY: every key goes on to the window untouched.
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+/// The side buttons and the middle one, clicked on the window.
+#[cfg(windows)]
+unsafe extern "system" fn window_mouse_proc(code: i32, wparam: windows::Win32::Foundation::WPARAM, lparam: windows::Win32::Foundation::LPARAM) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::UI::WindowsAndMessaging::{CallNextHookEx, HC_ACTION, MOUSEHOOKSTRUCTEX, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_NCXBUTTONDOWN, WM_NCXBUTTONUP, WM_XBUTTONDOWN, WM_XBUTTONUP};
+    if code == HC_ACTION as i32 {
+        let message = wparam.0 as u32;
+        // SAFETY: for HC_ACTION Windows passes a MOUSEHOOKSTRUCTEX in lparam.
+        let data = unsafe { (*(lparam.0 as *const MOUSEHOOKSTRUCTEX)).mouseData };
+        let button = match message {
+            WM_MBUTTONDOWN | WM_MBUTTONUP => Some(0x04),
+            WM_XBUTTONDOWN | WM_XBUTTONUP | WM_NCXBUTTONDOWN | WM_NCXBUTTONUP => Some(if data >> 16 == 1 { 0x05 } else { 0x06 }),
+            _ => None,
+        };
+        if let Some(vk) = button {
+            let down = matches!(message, WM_MBUTTONDOWN | WM_XBUTTONDOWN | WM_NCXBUTTONDOWN);
+            with_state(|state| state.key(Source::Window, vk, vk, down));
+        }
+    }
+    // SAFETY: every click goes on to the window untouched.
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
 #[cfg(windows)]
 fn stop_thread(thread: u32) {
     use windows::Win32::Foundation::{LPARAM, WPARAM};
@@ -497,10 +610,10 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: windows::Win32::Found
         let code = from_hook(data.vkCode, data.flags.contains(LLKHF_EXTENDED));
         match wparam.0 as u32 {
             WM_KEYDOWN | WM_SYSKEYDOWN => {
-                with_state(|state| state.key_down(code, data.vkCode));
+                with_state(|state| state.key(Source::Global, code, data.vkCode, true));
             }
             WM_KEYUP | WM_SYSKEYUP => {
-                with_state(|state| state.key_up(code));
+                with_state(|state| state.key(Source::Global, code, data.vkCode, false));
             }
             _ => {}
         }
@@ -523,11 +636,8 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: windows::Win32::Foundati
             _ => None,
         };
         if let Some(vk) = button {
-            if matches!(message, WM_MBUTTONDOWN | WM_XBUTTONDOWN) {
-                with_state(|state| state.key_down(vk, vk));
-            } else {
-                with_state(|state| state.key_up(vk));
-            }
+            let down = matches!(message, WM_MBUTTONDOWN | WM_XBUTTONDOWN);
+            with_state(|state| state.key(Source::Global, vk, vk, down));
         }
     }
     // SAFETY: every click goes on to the rest of Windows untouched.
@@ -645,6 +755,21 @@ mod tests {
         hotkeys.record(Some(0));
         press();
         assert_eq!(hotkeys.next_event(), Some(Event::Recorded { index: 0, keys: vec![0x87] }));
+    }
+
+    #[test]
+    fn a_key_both_hooks_saw_counts_once() {
+        let (mut state, events) = state(vec![keys(Action::ShowWindow, &[0x2C])]);
+        state.key(Source::Global, 0x2C, 0x2C, true);
+        state.key(Source::Window, 0x2C, 0x2C, true);
+        state.key(Source::Global, 0x2C, 0x2C, false);
+        state.key(Source::Window, 0x2C, 0x2C, false);
+        // Up seen twice would look like a key that only says it went up, and fire again.
+        assert_eq!(events.try_iter().collect::<Vec<_>>(), vec![Event::Pressed(Action::ShowWindow)]);
+        // With the window in front only its hook sees the key, and that is enough.
+        state.key(Source::Window, 0x2C, 0x2C, true);
+        state.key(Source::Window, 0x2C, 0x2C, false);
+        assert_eq!(events.try_iter().collect::<Vec<_>>(), vec![Event::Pressed(Action::ShowWindow)]);
     }
 
     #[test]

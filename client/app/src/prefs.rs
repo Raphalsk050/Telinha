@@ -130,6 +130,6 @@ mod tests {
         assert_eq!((old.appearance.theme, old.appearance.zoom), (ThemeChoice::Onyx, 150.0));
         std::fs::write(folder.path().join("interface.json"), r#"{"theme":"plaid","zoom":40}"#).unwrap();
         let odd = Prefs::load(folder.path());
-        assert_eq!((odd.appearance.theme, odd.appearance.zoom), (ThemeChoice::Ash, 200.0));
+        assert_eq!((odd.appearance.theme, odd.appearance.zoom), (ThemeChoice::Glass, 200.0));
     }
 }

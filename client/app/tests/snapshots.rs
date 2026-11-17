@@ -242,6 +242,9 @@ fn the_glass_theme_draws() {
 #[test]
 fn the_window_draws() {
     let mut scene = scene();
+    // The pictures of this test are of the gray theme; the glass has a test of its own.
+    let gray = telinha::appearance::Appearance { theme: telinha::appearance::ThemeChoice::Ash, ..telinha::appearance::Appearance::default() };
+    scene.app.set_appearance(gray);
     let (server_id, channel) = (scene.server_id.clone(), scene.text_channel.clone());
     scene.app.navigate(Nav::Server { server_id, channel_id: Some(channel) });
     shoot(&mut scene, "server");
@@ -284,7 +287,7 @@ fn the_window_draws() {
     scene.app.close_crop();
     {
         use telinha::appearance::{Appearance, Density, MessageStyle, ThemeChoice};
-        let plain = Appearance::default();
+        let plain = Appearance { theme: ThemeChoice::Ash, ..Appearance::default() };
         use telinha::settings::Page;
         scene.app.settings_page_for_test(Page::Voice);
         shoot(&mut scene, "settings-voice");

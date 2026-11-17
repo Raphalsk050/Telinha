@@ -22,7 +22,7 @@ const nameOf = (person, extra = "") => `<span class="name ${person.style ? "styl
 
 // ---- estado (fica no endereço, então sobrevive ao recarregar) ----
 const state = Object.assign(
-  { view: "chat", theme: "gray", members: true, channel: "geral", page: "profile", mic: true, sound: true },
+  { view: "chat", theme: "glass", members: true, channel: "geral", page: "profile", mic: true, sound: true },
   JSON.parse(decodeURIComponent(location.hash.slice(1) || "{}") || "{}"),
 );
 function set(patch) {

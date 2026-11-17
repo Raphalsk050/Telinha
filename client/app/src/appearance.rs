@@ -211,7 +211,8 @@ pub struct Appearance {
 impl Default for Appearance {
     fn default() -> Self {
         Self {
-            theme: ThemeChoice::Ash,
+            // Glass unless the person picks another one.
+            theme: ThemeChoice::Glass,
             dark_sidebar: false,
             motion: false,
             density: Density::Default,
@@ -507,6 +508,7 @@ mod tests {
         assert_eq!(Appearance::from_json(None), Appearance::default());
         assert_eq!(Appearance::from_json(Some(&json!({ "theme": "plaid", "density": 3 }))), Appearance::default());
         assert_eq!(Appearance::from_json(Some(&json!({ "theme": "gray" }))).theme, ThemeChoice::Ash);
+        assert_eq!(Appearance::from_json(None).theme, ThemeChoice::Glass);
         let glass = Appearance::from_json(Some(&json!({ "theme": "glass", "glass": { "frost": 0.4, "dark": 3, "blur": 12, "lightSize": "big" } })));
         assert_eq!(glass.theme, ThemeChoice::Glass);
         assert_eq!(glass.glass, GlassLook { frost: 0.4, dark: 1.0, blur: 12.0, ..GlassLook::default() });
@@ -518,7 +520,7 @@ mod tests {
 
     #[test]
     fn a_plain_theme_fills_the_regions_and_a_color_theme_veils_them() {
-        let plain = Appearance::default();
+        let plain = Appearance { theme: ThemeChoice::Ash, ..Appearance::default() };
         let (palette, regions) = plain.palette(false);
         assert_eq!(palette, Palette::GRAY);
         assert_eq!((regions.main, regions.side, regions.rail), (palette.main, palette.sidebar, palette.rail));

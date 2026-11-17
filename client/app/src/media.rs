@@ -2,7 +2,7 @@
 //! conversation. The sender only sends a still of a link; whoever reads it fetches the moving
 //! picture, as Discord shows a GIF of Tenor or Giphy playing.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -57,6 +57,8 @@ pub struct AnimatedLinks {
     previews: Arc<LinkPreviews>,
     /// By the address fetched: None while it comes, and for good when it is not a moving picture.
     found: HashMap<String, Option<Animated>>,
+    /// The addresses still on the way.
+    loading: HashSet<String>,
     sender: Sender<(String, Option<Animated>)>,
     receiver: Receiver<(String, Option<Animated>)>,
 }
@@ -64,14 +66,20 @@ pub struct AnimatedLinks {
 impl Default for AnimatedLinks {
     fn default() -> Self {
         let (sender, receiver) = channel();
-        Self { previews: Arc::new(LinkPreviews::default()), found: HashMap::new(), sender, receiver }
+        Self { previews: Arc::new(LinkPreviews::default()), found: HashMap::new(), loading: HashSet::new(), sender, receiver }
     }
 }
 
 impl AnimatedLinks {
+    /// Whether the moving picture of `source` was asked and has not arrived yet.
+    pub fn loading(&self, source: &str) -> bool {
+        self.loading.contains(source)
+    }
+
     /// The moving picture of `source`, once it arrived. The first call starts fetching it.
     pub fn get(&mut self, context: &egui::Context, source: &str) -> Option<Animated> {
         while let Ok((address, animated)) = self.receiver.try_recv() {
+            self.loading.remove(&address);
             self.found.insert(address, animated);
         }
         if let Some(found) = self.found.get(source) {
@@ -80,9 +88,10 @@ impl AnimatedLinks {
         self.found.insert(source.to_owned(), None);
         // The window draws inside the async runtime, which is where the fetch runs.
         let Ok(runtime) = tokio::runtime::Handle::try_current() else { return None };
+        self.loading.insert(source.to_owned());
         let (previews, sender, wake, address) = (Arc::clone(&self.previews), self.sender.clone(), context.clone(), source.to_owned());
         runtime.spawn(async move {
-            let image = previews.get(&address).await.and_then(|preview| preview.image);
+            let image = previews.picture(&address).await;
             let animated = image.and_then(|image| {
                 let format = animated_format(&image.data)?;
                 let size = image::ImageReader::new(std::io::Cursor::new(&image.data)).with_guessed_format().ok()?.into_dimensions().ok()?;

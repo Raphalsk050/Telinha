@@ -12,6 +12,9 @@ use url::Url;
 const TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_HTML_BYTES: usize = 1024 * 1024;
 const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+/// A GIF of Tenor or Giphy at full size passes 5 MB easily (a Tenor GIF of 73 frames is 7.4 MB).
+const MAX_MOVING_BYTES: usize = 24 * 1024 * 1024;
+const MOVING_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_REDIRECTS: usize = 5;
 const MAX_URL_LENGTH: usize = 2048;
 const CACHE_LIMIT: usize = 60;
@@ -264,9 +267,29 @@ impl Fetcher {
         Err("redirecionamentos demais".into())
     }
 
-    async fn fetch_image(&self, url: Url) -> Option<PreviewImage> {
+    async fn fetch_image(&self, url: Url, limit: usize) -> Option<PreviewImage> {
         let (response, _) = self.request(url, "image/webp,image/png,image/jpeg,image/gif;q=0.9").await.ok()?;
-        read_image(response).await
+        read_image(response, limit).await
+    }
+
+    /// The picture of a link at full size: the file itself, or the `og:image` of its page.
+    async fn fetch_picture(&self, address: &str) -> Option<PreviewImage> {
+        let url = Url::parse(address).ok()?;
+        let (response, landed) = self.request(url, "image/gif,image/webp,image/*;q=0.9,*/*;q=0.5").await.ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let content_type = response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|value| value.to_str().ok()).unwrap_or("").to_owned();
+        if image_type(&content_type).is_some() {
+            return read_image(response, MAX_MOVING_BYTES).await;
+        }
+        if !content_type.to_ascii_lowercase().contains("html") {
+            return None;
+        }
+        let (data, _) = read_body(response, MAX_HTML_BYTES, true).await;
+        let (meta, _) = extract_meta(&decode_html(&data, &content_type));
+        let image = ["og:image:secure_url", "og:image:url", "og:image", "twitter:image", "twitter:image:src"].iter().find_map(|key| meta.get(*key).filter(|value| !value.trim().is_empty()))?;
+        self.fetch_image(landed.join(&decode_entities(image.trim())).ok()?, MAX_MOVING_BYTES).await
     }
 
     async fn fetch(&self, address: &str) -> Option<Preview> {
@@ -278,7 +301,7 @@ impl Fetcher {
         let content_type = response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|value| value.to_str().ok()).unwrap_or("").to_owned();
         let site = landed.host_str().map(|host| host.strip_prefix("www.").unwrap_or(host).to_owned()).unwrap_or_default();
         if image_type(&content_type).is_some() {
-            let image = read_image(response).await?;
+            let image = read_image(response, MAX_IMAGE_BYTES).await?;
             let name = landed.path_segments().and_then(|mut parts| parts.rfind(|part| !part.is_empty())).unwrap_or("");
             let name = percent_decode(name);
             return Some(Preview { url: address.to_owned(), site_name: site, title: clean_text(&name, MAX_TITLE), description: String::new(), image: Some(image) });
@@ -300,7 +323,7 @@ impl Fetcher {
         let image_address = decode_entities(pick(&["og:image:secure_url", "og:image:url", "og:image", "twitter:image", "twitter:image:src"]).trim());
         if !image_address.is_empty() {
             if let Ok(image_url) = landed.join(&image_address) {
-                preview.image = self.fetch_image(image_url).await;
+                preview.image = self.fetch_image(image_url, MAX_IMAGE_BYTES).await;
             }
         }
         (!preview.title.is_empty() || !preview.description.is_empty() || preview.image.is_some()).then_some(preview)
@@ -350,13 +373,13 @@ async fn read_body(mut response: reqwest::Response, limit: usize, until_head_end
     (data, true)
 }
 
-async fn read_image(response: reqwest::Response) -> Option<PreviewImage> {
+async fn read_image(response: reqwest::Response, limit: usize) -> Option<PreviewImage> {
     let content_type = response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|value| value.to_str().ok()).unwrap_or("").to_owned();
     let mime = image_type(&content_type)?;
     if !response.status().is_success() {
         return None;
     }
-    let (data, complete) = read_body(response, MAX_IMAGE_BYTES, false).await;
+    let (data, complete) = read_body(response, limit, false).await;
     (complete && !data.is_empty()).then(|| PreviewImage { data, mime: mime.to_owned() })
 }
 
@@ -402,6 +425,16 @@ impl LinkPreviews {
         }
         cache.insert(address.to_owned(), (Instant::now(), preview.clone()));
         preview
+    }
+
+    /// The picture behind a link at full size, for a GIF that plays in the chat: allows up to
+    /// 24 MB, where a preview stops at 5. Not kept here; whoever shows it keeps it.
+    pub async fn picture(&self, address: &str) -> Option<PreviewImage> {
+        let url = Url::parse(address).ok()?;
+        if (url.scheme() != "http" && url.scheme() != "https") || url.as_str().len() > MAX_URL_LENGTH {
+            return None;
+        }
+        tokio::time::timeout(MOVING_TIMEOUT, self.fetcher.fetch_picture(address)).await.ok().flatten()
     }
 }
 
@@ -468,6 +501,17 @@ mod tests {
         let rich = previews.get("https://github.com/rust-lang/rust").await.expect("github answers");
         println!("{} | {} | picture: {:?}", rich.site_name, rich.title, rich.image.as_ref().map(|image| (image.mime.clone(), image.data.len())));
         assert!(rich.title.contains("rust") && rich.image.is_some());
+    }
+
+    /// A Tenor GIF of 7.4 MB, past the 5 MB of a preview, still comes whole to play.
+    #[tokio::test]
+    #[ignore]
+    async fn a_big_tenor_gif_comes_whole() {
+        let previews = LinkPreviews::default();
+        let address = "https://media1.tenor.com/m/B0piVWUiKaUAAAAC/patrick-drooling-patrick-star.gif";
+        let picture = previews.picture(address).await.expect("the GIF comes");
+        println!("{} {} bytes", picture.mime, picture.data.len());
+        assert!(picture.mime == "image/gif" && picture.data.starts_with(b"GIF8") && picture.data.len() > 5 * 1024 * 1024);
     }
 
     /// A page on this machine that redirects once, declares a preview in Latin-1 and has a

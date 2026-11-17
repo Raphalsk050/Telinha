@@ -14,3 +14,4 @@
 2. Numeric keypad keys record and work as themselves ("NUM 2", "NUM ENTER") with Num Lock on or off, instead of turning into arrows.
 3. Keys that Windows only reports when let go, such as Print Screen, can be recorded and used.
 4. The message box no longer runs under the member list in the glass theme.
+5. Large Tenor and Giphy GIFs (over 5 MB) play in the chat instead of showing as a link. A message that is only a GIF link shows just the GIF, with a spinner while it loads.

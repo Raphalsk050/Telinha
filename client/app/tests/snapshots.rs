@@ -574,6 +574,34 @@ fn the_window_draws() {
     scene.runtime.shutdown_background();
 }
 
+/// Run by hand, it asks Tenor: `cargo test -p telinha --test snapshots tenor -- --ignored`.
+/// A message that is only a Tenor GIF link shows the GIF playing and no link, also while it
+/// comes (a spinner in its place).
+#[test]
+#[ignore]
+fn a_tenor_link_shows_only_the_gif() {
+    let mut scene = scene();
+    let (server_id, channel) = (scene.server_id.clone(), scene.text_channel.clone());
+    let link = "https://media1.tenor.com/m/B0piVWUiKaUAAAAC/patrick-drooling-patrick-star.gif";
+    {
+        let _guard = scene.runtime.enter();
+        scene.hub.signaling().loopback(&server_id, &json!({
+            "type": "chat", "from": "peer-keep", "at": now_ms(), "mid": "mid-tenor", "messageId": "tenor", "channelId": channel,
+            "author": "Keep", "memberId": KEEP, "sentAt": now_ms(), "text": link,
+            "embed": { "url": link, "title": "Patrick Drooling Patrick Star GIF - Tenor GIF Keyboard", "description": "", "siteName": "Tenor" } }));
+        scene.runtime.block_on(async { tokio::time::sleep(Duration::from_millis(100)).await });
+    }
+    scene.app.navigate(Nav::Server { server_id, channel_id: Some(channel) });
+    let runtime = scene.runtime.handle().clone();
+    let guard = runtime.enter();
+    shoot(&mut scene, "tenor-waiting");
+    runtime.block_on(async { tokio::time::sleep(Duration::from_secs(6)).await });
+    shoot(&mut scene, "tenor-gif");
+    drop(guard);
+    drop(scene.app);
+    scene.runtime.shutdown_background();
+}
+
 /// Run by hand: `cargo test -p telinha --test snapshots real_profile -- --ignored --nocapture`.
 /// Draws the window over a copy of the data the Electron app left on this machine, without
 /// connecting anywhere. The picture stays in `client/target/snapshots` and holds private chat.

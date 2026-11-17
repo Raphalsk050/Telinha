@@ -755,8 +755,11 @@ impl ChatView {
                 }
                 // A message that is only a GIF link shows the GIF without the link, as Discord.
                 let link = first_link(&message.text);
-                let moving = link.as_deref().and_then(crate::media::animated_source).and_then(|source| self.animated.get(ui.ctx(), &source));
-                let only_link = moving.is_some() && link.as_deref() == Some(message.text.trim());
+                let source = link.as_deref().and_then(crate::media::animated_source);
+                let moving = source.as_deref().and_then(|source| self.animated.get(ui.ctx(), source));
+                // While the GIF comes the link stays hidden too, and a spinner holds its place.
+                let waiting = moving.is_none() && source.as_deref().is_some_and(|source| self.animated.loading(source));
+                let only_link = (moving.is_some() || waiting) && link.as_deref() == Some(message.text.trim());
                 if !message.text.is_empty() && !only_link {
                     paint_text(ui, palette, &message.text, chrome.font);
                 }
@@ -773,6 +776,8 @@ impl ChatView {
                     if let Some(found) = picture(ui, palette, Some(blob), IMAGE_BOUNDS, &format!("gif-{}.gif", message.sent_at)) {
                         action = Some(found);
                     }
+                } else if waiting {
+                    picture_waiting(ui, palette);
                 }
                 if let Some(image) = &message.image {
                     let blob = self.image_blob(hub, image);
@@ -915,11 +920,18 @@ impl ChatView {
         let mut action = None;
         let video = crate::media::video_of(&embed.url);
         // A GIF link plays: the moving picture is fetched here, in place of the still that came.
-        let moving = crate::media::animated_source(&embed.url).and_then(|source| self.animated.get(ui.ctx(), &source));
+        let source = crate::media::animated_source(&embed.url);
+        let moving = source.as_deref().and_then(|source| self.animated.get(ui.ctx(), source));
+        let waiting = moving.is_none() && source.as_deref().is_some_and(|source| self.animated.loading(source));
         let moving = moving.map(|found| Blob { uri: found.uri, bytes: found.bytes, size: found.size });
+        let only_picture = embed.title.is_empty() && embed.description.is_empty() || crate::media::gif_site(&embed.url);
+        if waiting && only_picture {
+            picture_waiting(ui, palette);
+            return None;
+        }
         if let Some(blob) = &moving {
             // A link that is only the picture shows only the picture, as Discord does.
-            if embed.title.is_empty() && embed.description.is_empty() || crate::media::gif_site(&embed.url) {
+            if only_picture {
                 return picture(ui, palette, Some(blob.clone()), IMAGE_BOUNDS, &format!("gif-{}.gif", message.sent_at));
             }
         }
@@ -1227,6 +1239,15 @@ fn same_block(previous: &Message, message: &Message) -> bool {
         && previous.author == message.author
         && previous.member_id == message.member_id
         && message.sent_at - previous.sent_at < GROUP_WINDOW_MS
+}
+
+/// The place of a GIF that is still on the way.
+fn picture_waiting(ui: &mut Ui, palette: &Palette) {
+    ui.add_space(4.0);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(220.0, 160.0), Sense::hover());
+    let round = CornerRadius::same(if palette.glass { 14 } else { 8 });
+    ui.painter().rect_filled(rect, round, palette.rail);
+    egui::Spinner::new().size(22.0).color(palette.muted).paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(22.0)));
 }
 
 /// A picture of a message, shrunk to fit the bounds. A click opens it, and the right button

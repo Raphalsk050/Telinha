@@ -369,6 +369,24 @@ fn the_window_draws() {
         shoot(&mut scene, "settings-appearance-2");
         scene.app.settings_page_for_test(Page::Messages);
         shoot(&mut scene, "settings-messages");
+        {
+            use telinha::shortcuts::{Action, Shortcut};
+            scene.app.settings_page_for_test(Page::Shortcuts);
+            shoot(&mut scene, "settings-shortcuts-empty");
+            let list = vec![
+                Shortcut { action: Action::ToggleMute, keys: vec![0x11, 0x10, 0x4D], enabled: true },
+                Shortcut { action: Action::PushToTalk, keys: vec![0x05], enabled: true },
+                Shortcut { action: Action::ToggleDeaf, keys: vec![0x12, 0x44], enabled: false },
+                Shortcut::new(Action::ShowWindow),
+            ];
+            scene.app.shortcuts_for_test(list.clone(), Some((3, Vec::new())));
+            shoot(&mut scene, "settings-shortcuts");
+            shoot_hovering(&mut scene.app, "settings-shortcuts-hover", egui::pos2(800.0, 300.0));
+            scene.app.shortcuts_for_test(list, Some((2, vec![0x11, 0x44])));
+            scene.app.scroll_settings_for_test(300.0);
+            shoot(&mut scene, "settings-shortcuts-2");
+            scene.app.shortcuts_for_test(Vec::new(), None);
+        }
         scene.app.update_info_for_test(true, "Você já tem a versão mais nova (0.4.0). Conferido agora há pouco.");
         scene.app.settings_page_for_test(Page::Updates);
         shoot(&mut scene, "settings-updates");

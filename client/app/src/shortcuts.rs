@@ -1,0 +1,579 @@
+//! Keyboard shortcuts that work anywhere in Windows, as Discord's: with the window minimized,
+//! behind a game or in another app. A low-level hook of the keyboard and of the mouse, on a
+//! thread of its own, sees every key going down and up and never swallows one. Push to talk and
+//! push to mute open and close the microphone right there, in the hook; the other actions go to
+//! the window, which takes them even while minimized (`App::logic`).
+
+use std::collections::BTreeSet;
+use std::sync::Mutex;
+use std::sync::mpsc::{Receiver, Sender};
+
+use serde_json::{Value, json};
+
+/// What a shortcut does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Action {
+    ToggleMute,
+    ToggleDeaf,
+    PushToTalk,
+    PushToMute,
+    ToggleCamera,
+    ToggleShare,
+    LeaveCall,
+    ShowWindow,
+}
+
+impl Action {
+    /// Every action, in the order of the list to pick from.
+    pub const ALL: [Action; 8] = [
+        Action::ToggleMute,
+        Action::ToggleDeaf,
+        Action::PushToTalk,
+        Action::PushToMute,
+        Action::ToggleCamera,
+        Action::ToggleShare,
+        Action::LeaveCall,
+        Action::ShowWindow,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Action::ToggleMute => "Alternar silenciar microfone",
+            Action::ToggleDeaf => "Alternar ensurdecer",
+            Action::PushToTalk => "Pressionar para falar",
+            Action::PushToMute => "Pressionar para silenciar",
+            Action::ToggleCamera => "Ligar ou desligar a câmera",
+            Action::ToggleShare => "Transmitir tela ou parar",
+            Action::LeaveCall => "Sair da chamada",
+            Action::ShowWindow => "Mostrar o Telinha",
+        }
+    }
+
+    /// The line under the action that tells what it does, when the name alone does not.
+    pub fn note(self) -> &'static str {
+        match self {
+            Action::PushToTalk => "Com este atalho ligado, o microfone só transmite enquanto as teclas estiverem pressionadas.",
+            Action::PushToMute => "O microfone para de transmitir enquanto as teclas estiverem pressionadas.",
+            Action::ToggleShare => "Sem transmissão, traz o Telinha para a frente e abre a escolha da tela.",
+            _ => "",
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            Action::ToggleMute => "toggleMute",
+            Action::ToggleDeaf => "toggleDeaf",
+            Action::PushToTalk => "pushToTalk",
+            Action::PushToMute => "pushToMute",
+            Action::ToggleCamera => "toggleCamera",
+            Action::ToggleShare => "toggleShare",
+            Action::LeaveCall => "leaveCall",
+            Action::ShowWindow => "showWindow",
+        }
+    }
+
+    fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|action| action.id() == id)
+    }
+
+    /// Whether the action lasts while the keys are held, instead of happening once.
+    pub fn held(self) -> bool {
+        matches!(self, Action::PushToTalk | Action::PushToMute)
+    }
+}
+
+/// One shortcut: what it does, its keys by virtual-key code, and whether it is on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shortcut {
+    pub action: Action,
+    pub keys: Vec<u32>,
+    pub enabled: bool,
+}
+
+impl Shortcut {
+    pub fn new(action: Action) -> Self {
+        Self { action, keys: Vec::new(), enabled: true }
+    }
+
+    pub fn to_json(&self) -> Value {
+        json!({ "action": self.action.id(), "keys": self.keys, "enabled": self.enabled })
+    }
+
+    pub fn from_json(value: &Value) -> Option<Self> {
+        let action = Action::from_id(value.get("action")?.as_str()?)?;
+        let keys = value.get("keys").and_then(Value::as_array).map(|keys| keys.iter().filter_map(|key| u32::try_from(key.as_u64()?).ok()).filter(|key| *key > 0 && *key < 256).take(MAX_KEYS).collect()).unwrap_or_default();
+        Some(Self { action, keys: canonical(keys), enabled: value.get("enabled").and_then(Value::as_bool).unwrap_or(true) })
+    }
+}
+
+/// The most keys a shortcut takes.
+pub const MAX_KEYS: usize = 4;
+
+const SHIFT: u32 = 0x10;
+const CTRL: u32 = 0x11;
+const ALT: u32 = 0x12;
+const WIN: u32 = 0x5B;
+/// The modifiers, in the order they are written.
+const MODIFIERS: [u32; 4] = [CTRL, SHIFT, ALT, WIN];
+
+/// The left and the right keys of a modifier count as one, as Discord does.
+fn normalize(vk: u32) -> u32 {
+    match vk {
+        0xA0 | 0xA1 => SHIFT,
+        0xA2 | 0xA3 => CTRL,
+        0xA4 | 0xA5 => ALT,
+        0x5C => WIN,
+        other => other,
+    }
+}
+
+fn is_modifier(vk: u32) -> bool {
+    MODIFIERS.contains(&vk)
+}
+
+/// The keys in the order they are written: the modifiers first, in their order, then the rest as
+/// they were pressed, each once.
+pub fn canonical(keys: Vec<u32>) -> Vec<u32> {
+    let keys: Vec<u32> = keys.into_iter().map(normalize).collect();
+    let mut out: Vec<u32> = MODIFIERS.into_iter().filter(|modifier| keys.contains(modifier)).collect();
+    for key in keys {
+        if !out.contains(&key) {
+            out.push(key);
+        }
+    }
+    out
+}
+
+/// "CTRL + SHIFT + M", as Discord writes a shortcut.
+pub fn describe(keys: &[u32]) -> String {
+    keys.iter().map(|key| key_name(*key)).collect::<Vec<_>>().join(" + ")
+}
+
+/// The name of one key, in capitals.
+pub fn key_name(vk: u32) -> String {
+    let fixed = match vk {
+        CTRL => "CTRL",
+        SHIFT => "SHIFT",
+        ALT => "ALT",
+        WIN => "WIN",
+        0x04 => "BOTÃO DO MEIO",
+        0x05 => "MOUSE 4",
+        0x06 => "MOUSE 5",
+        0x08 => "BACKSPACE",
+        0x09 => "TAB",
+        0x0D => "ENTER",
+        0x13 => "PAUSE",
+        0x14 => "CAPS LOCK",
+        0x1B => "ESC",
+        0x20 => "ESPAÇO",
+        0x21 => "PAGE UP",
+        0x22 => "PAGE DOWN",
+        0x23 => "END",
+        0x24 => "HOME",
+        0x25 => "←",
+        0x26 => "↑",
+        0x27 => "→",
+        0x28 => "↓",
+        0x2C => "PRINT SCREEN",
+        0x2D => "INSERT",
+        0x2E => "DELETE",
+        0x5D => "MENU",
+        0x6A => "NUM *",
+        0x6B => "NUM +",
+        0x6D => "NUM -",
+        0x6E => "NUM ,",
+        0x6F => "NUM /",
+        0x90 => "NUM LOCK",
+        0x91 => "SCROLL LOCK",
+        0xAD => "SEM SOM",
+        0xAE => "VOLUME -",
+        0xAF => "VOLUME +",
+        0xB0 => "PRÓXIMA FAIXA",
+        0xB1 => "FAIXA ANTERIOR",
+        0xB2 => "PARAR MÍDIA",
+        0xB3 => "TOCAR/PAUSAR",
+        _ => "",
+    };
+    if !fixed.is_empty() {
+        return fixed.to_owned();
+    }
+    match vk {
+        0x30..=0x39 | 0x41..=0x5A => char::from_u32(vk).map(String::from).unwrap_or_default(),
+        0x60..=0x69 => format!("NUM {}", vk - 0x60),
+        0x70..=0x87 => format!("F{}", vk - 0x6F),
+        _ => layout_name(vk).unwrap_or_else(|| format!("TECLA {vk}")),
+    }
+}
+
+/// What the keyboard layout writes with this key, for the keys that change between layouts
+/// (Ç, ´, ~ and the like).
+#[cfg(windows)]
+fn layout_name(vk: u32) -> Option<String> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{MAPVK_VK_TO_CHAR, MapVirtualKeyW};
+    // SAFETY: a plain lookup with no pointers.
+    let code = unsafe { MapVirtualKeyW(vk, MAPVK_VK_TO_CHAR) } & 0x7FFF;
+    let letter = char::from_u32(code).filter(|letter| !letter.is_control() && !letter.is_whitespace())?;
+    Some(letter.to_uppercase().collect())
+}
+
+#[cfg(not(windows))]
+fn layout_name(_vk: u32) -> Option<String> {
+    None
+}
+
+/// What the hook tells the window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    /// The keys of a shortcut went down.
+    Pressed(Action),
+    /// The keys being recorded were all let go: the shortcut at this place takes them.
+    Recorded { index: usize, keys: Vec<u32> },
+}
+
+/// What the hook knows, shared between the window and the hook's thread.
+#[derive(Default)]
+struct State {
+    shortcuts: Vec<Shortcut>,
+    /// The keys down now, as the hook saw them.
+    down: BTreeSet<u32>,
+    /// The shortcuts whose keys are held now, by their place.
+    active: BTreeSet<usize>,
+    /// While the settings show the shortcuts, none of them acts, as in Discord.
+    suspended: bool,
+    recording: Option<Recording>,
+    events: Option<Sender<Event>>,
+    waker: Option<egui::Context>,
+    /// Asks Windows whether the keys thought held still are: a key let go on the lock screen or
+    /// over a prompt of the administrator never reaches the hook. Off in the tests.
+    check_real: bool,
+}
+
+struct Recording {
+    index: usize,
+    /// The keys pressed since the recording began, in order, and how many are held now.
+    keys: Vec<u32>,
+}
+
+static STATE: Mutex<Option<State>> = Mutex::new(None);
+
+fn with_state<R>(work: impl FnOnce(&mut State) -> R) -> Option<R> {
+    let mut guard = STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.as_mut().map(work)
+}
+
+impl State {
+    /// A key went down.
+    fn key_down(&mut self, vk: u32) {
+        let vk = normalize(vk);
+        if self.check_real {
+            self.down.retain(|key| *key == vk || still_down(*key));
+        }
+        if !self.down.insert(vk) {
+            // The repeat of a held key.
+            return;
+        }
+        if let Some(recording) = &mut self.recording {
+            if !recording.keys.contains(&vk) && recording.keys.len() < MAX_KEYS {
+                recording.keys.push(vk);
+            }
+            return;
+        }
+        if self.suspended {
+            return;
+        }
+        let modifiers: Vec<u32> = MODIFIERS.into_iter().filter(|modifier| self.down.contains(modifier)).collect();
+        for (index, shortcut) in self.shortcuts.iter().enumerate() {
+            if !shortcut.enabled || shortcut.keys.is_empty() || self.active.contains(&index) || !shortcut.keys.contains(&vk) {
+                continue;
+            }
+            // The modifiers must be exactly those of the shortcut, so Ctrl+M does not go off
+            // with Ctrl+Shift+M; other keys held along do not matter, so push to talk works
+            // while walking in a game.
+            let wanted: Vec<u32> = shortcut.keys.iter().copied().filter(|key| is_modifier(*key)).collect();
+            if wanted != modifiers || !shortcut.keys.iter().all(|key| self.down.contains(key)) {
+                continue;
+            }
+            self.active.insert(index);
+            if !shortcut.action.held() {
+                self.send(Event::Pressed(shortcut.action));
+            }
+        }
+        self.apply_gate();
+    }
+
+    fn key_up(&mut self, vk: u32) {
+        let vk = normalize(vk);
+        self.down.remove(&vk);
+        if let Some(recording) = &self.recording {
+            if self.down.is_empty() && !recording.keys.is_empty() {
+                let (index, keys) = (recording.index, canonical(recording.keys.clone()));
+                self.recording = None;
+                self.send(Event::Recorded { index, keys });
+            }
+            return;
+        }
+        let shortcuts = &self.shortcuts;
+        self.active.retain(|index| shortcuts.get(*index).is_some_and(|shortcut| !shortcut.keys.contains(&vk)));
+        self.apply_gate();
+    }
+
+    /// Opens or closes the microphone for push to talk and push to mute.
+    fn apply_gate(&self) {
+        let live = |action: Action| self.shortcuts.iter().any(|shortcut| shortcut.action == action && shortcut.enabled && !shortcut.keys.is_empty());
+        let held = |action: Action| !self.suspended && self.active.iter().any(|index| self.shortcuts.get(*index).is_some_and(|shortcut| shortcut.action == action));
+        let open = (!live(Action::PushToTalk) || held(Action::PushToTalk)) && !held(Action::PushToMute);
+        telinha_voice::audio::set_key_gate(open);
+    }
+
+    fn send(&self, event: Event) {
+        if let Some(events) = &self.events {
+            let _ = events.send(event);
+        }
+        if let Some(waker) = &self.waker {
+            waker.request_repaint();
+        }
+    }
+}
+
+/// The global shortcuts of this app. One per process: dropping it takes the hooks away.
+pub struct Hotkeys {
+    events: Receiver<Event>,
+    thread: u32,
+}
+
+impl Hotkeys {
+    /// Puts the hooks in place. None when Windows refuses them.
+    pub fn start(waker: &egui::Context, shortcuts: &[Shortcut]) -> Option<Self> {
+        let (sender, events) = std::sync::mpsc::channel();
+        *STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(State { shortcuts: shortcuts.to_vec(), events: Some(sender), waker: Some(waker.clone()), check_real: true, ..State::default() });
+        with_state(|state| state.apply_gate());
+        let thread = hook_thread()?;
+        Some(Self { events, thread })
+    }
+
+    /// The shortcuts changed in the settings.
+    pub fn set_shortcuts(&self, shortcuts: &[Shortcut]) {
+        with_state(|state| {
+            state.shortcuts = shortcuts.to_vec();
+            state.active.clear();
+            state.apply_gate();
+        });
+    }
+
+    /// Holds every shortcut while the settings show them, or lets them act again.
+    pub fn set_suspended(&self, suspended: bool) {
+        with_state(|state| {
+            if state.suspended != suspended {
+                state.suspended = suspended;
+                state.active.clear();
+                state.apply_gate();
+            }
+        });
+    }
+
+    /// Starts recording the keys of the shortcut at this place, or stops with None.
+    pub fn record(&self, index: Option<usize>) {
+        with_state(|state| state.recording = index.map(|index| Recording { index, keys: Vec::new() }));
+    }
+
+    /// The place being recorded, and the keys pressed so far.
+    pub fn recording(&self) -> Option<(usize, Vec<u32>)> {
+        with_state(|state| state.recording.as_ref().map(|recording| (recording.index, canonical(recording.keys.clone())))).flatten()
+    }
+
+    pub fn next_event(&self) -> Option<Event> {
+        self.events.try_recv().ok()
+    }
+}
+
+impl Drop for Hotkeys {
+    fn drop(&mut self) {
+        stop_thread(self.thread);
+        *STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        telinha_voice::audio::set_key_gate(true);
+    }
+}
+
+#[cfg(windows)]
+fn still_down(vk: u32) -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    // SAFETY: a plain lookup with no pointers.
+    unsafe { GetAsyncKeyState(vk as i32) as u16 & 0x8000 != 0 }
+}
+
+#[cfg(not(windows))]
+fn still_down(_vk: u32) -> bool {
+    true
+}
+
+#[cfg(windows)]
+fn hook_thread() -> Option<u32> {
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+    use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, MSG, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL};
+
+    let (ready, answer) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("telinha-atalhos".into())
+        .spawn(move || {
+            // SAFETY: the hooks are set and taken away on this thread, which pumps the messages
+            // that make Windows call them; the procedures are plain functions.
+            unsafe {
+                let keyboard = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), None, 0);
+                let mouse = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), None, 0);
+                if keyboard.is_err() {
+                    let _ = ready.send(None);
+                    return;
+                }
+                let _ = ready.send(Some(GetCurrentThreadId()));
+                let mut message = MSG::default();
+                while GetMessageW(&mut message, None, 0, 0).as_bool() {}
+                if let Ok(hook) = keyboard {
+                    let _ = UnhookWindowsHookEx(hook);
+                }
+                if let Ok(hook) = mouse {
+                    let _ = UnhookWindowsHookEx(hook);
+                }
+            }
+        })
+        .ok()?;
+    answer.recv().ok().flatten()
+}
+
+#[cfg(not(windows))]
+fn hook_thread() -> Option<u32> {
+    None
+}
+
+#[cfg(windows)]
+fn stop_thread(thread: u32) {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
+    // SAFETY: a message to a thread of this process; nothing is borrowed.
+    unsafe {
+        let _ = PostThreadMessageW(thread, WM_QUIT, WPARAM(0), LPARAM(0));
+    }
+}
+
+#[cfg(not(windows))]
+fn stop_thread(_thread: u32) {}
+
+#[cfg(windows)]
+unsafe extern "system" fn keyboard_proc(code: i32, wparam: windows::Win32::Foundation::WPARAM, lparam: windows::Win32::Foundation::LPARAM) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::UI::WindowsAndMessaging::{CallNextHookEx, HC_ACTION, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP};
+    if code == HC_ACTION as i32 {
+        // SAFETY: for HC_ACTION Windows passes a KBDLLHOOKSTRUCT in lparam.
+        let vk = unsafe { (*(lparam.0 as *const KBDLLHOOKSTRUCT)).vkCode };
+        match wparam.0 as u32 {
+            WM_KEYDOWN | WM_SYSKEYDOWN => {
+                with_state(|state| state.key_down(vk));
+            }
+            WM_KEYUP | WM_SYSKEYUP => {
+                with_state(|state| state.key_up(vk));
+            }
+            _ => {}
+        }
+    }
+    // SAFETY: every key goes on to the rest of Windows untouched.
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn mouse_proc(code: i32, wparam: windows::Win32::Foundation::WPARAM, lparam: windows::Win32::Foundation::LPARAM) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::UI::WindowsAndMessaging::{CallNextHookEx, HC_ACTION, MSLLHOOKSTRUCT, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_XBUTTONDOWN, WM_XBUTTONUP};
+    if code == HC_ACTION as i32 {
+        let message = wparam.0 as u32;
+        // SAFETY: for HC_ACTION Windows passes a MSLLHOOKSTRUCT in lparam.
+        let data = unsafe { (*(lparam.0 as *const MSLLHOOKSTRUCT)).mouseData };
+        // The side buttons and the middle one; the left and right clicks never make a shortcut.
+        let button = match message {
+            WM_MBUTTONDOWN | WM_MBUTTONUP => Some(0x04),
+            WM_XBUTTONDOWN | WM_XBUTTONUP => Some(if data >> 16 == 1 { 0x05 } else { 0x06 }),
+            _ => None,
+        };
+        if let Some(vk) = button {
+            if matches!(message, WM_MBUTTONDOWN | WM_XBUTTONDOWN) {
+                with_state(|state| state.key_down(vk));
+            } else {
+                with_state(|state| state.key_up(vk));
+            }
+        }
+    }
+    // SAFETY: every click goes on to the rest of Windows untouched.
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(shortcuts: Vec<Shortcut>) -> (State, Receiver<Event>) {
+        let (sender, events) = std::sync::mpsc::channel();
+        (State { shortcuts, events: Some(sender), ..State::default() }, events)
+    }
+
+    fn keys(action: Action, keys: &[u32]) -> Shortcut {
+        Shortcut { action, keys: keys.to_vec(), enabled: true }
+    }
+
+    #[test]
+    fn a_shortcut_goes_off_once_with_exactly_its_modifiers() {
+        let (mut state, events) = state(vec![keys(Action::ToggleMute, &[CTRL, 0x4D])]);
+        state.key_down(0xA2);
+        state.key_down(0x4D);
+        state.key_down(0x4D);
+        state.key_up(0x4D);
+        state.key_up(0xA2);
+        assert_eq!(events.try_iter().collect::<Vec<_>>(), vec![Event::Pressed(Action::ToggleMute)]);
+        // With Shift held too it is another shortcut.
+        state.key_down(0xA3);
+        state.key_down(0xA0);
+        state.key_down(0x4D);
+        assert!(events.try_recv().is_err());
+        state.key_up(0x4D);
+        state.key_up(0xA0);
+        state.key_up(0xA3);
+        // Off, or held while the settings show the shortcuts, nothing happens.
+        state.suspended = true;
+        state.key_down(CTRL);
+        state.key_down(0x4D);
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn push_to_talk_works_while_other_keys_are_held() {
+        let (mut state, _events) = state(vec![keys(Action::PushToTalk, &[0x05])]);
+        state.apply_gate();
+        assert!(!telinha_voice::audio::key_gate());
+        state.key_down(0x57);
+        state.key_down(0x05);
+        assert!(telinha_voice::audio::key_gate());
+        state.key_up(0x57);
+        assert!(telinha_voice::audio::key_gate());
+        state.key_up(0x05);
+        assert!(!telinha_voice::audio::key_gate());
+        state.shortcuts.clear();
+        state.apply_gate();
+        assert!(telinha_voice::audio::key_gate());
+    }
+
+    #[test]
+    fn recording_takes_the_keys_once_all_are_let_go() {
+        let (mut state, events) = state(vec![Shortcut::new(Action::ToggleDeaf)]);
+        state.recording = Some(Recording { index: 0, keys: Vec::new() });
+        state.key_down(0x4D);
+        state.key_down(0xA1);
+        state.key_up(0x4D);
+        assert!(events.try_recv().is_err());
+        state.key_up(0xA1);
+        assert_eq!(events.try_recv(), Ok(Event::Recorded { index: 0, keys: vec![SHIFT, 0x4D] }));
+        assert_eq!(describe(&[SHIFT, 0x4D]), "SHIFT + M");
+        assert_eq!(describe(&[CTRL, ALT, 0x70]), "CTRL + ALT + F1");
+    }
+
+    #[test]
+    fn shortcuts_survive_the_file() {
+        let shortcut = Shortcut { action: Action::PushToMute, keys: vec![ALT, 0x43], enabled: false };
+        assert_eq!(Shortcut::from_json(&shortcut.to_json()), Some(shortcut));
+        assert_eq!(Shortcut::from_json(&json!({ "action": "nope", "keys": [1] })), None);
+    }
+}

@@ -1047,7 +1047,7 @@ impl TelinhaApp {
         }
     }
 
-    fn toggle_share(&mut self) {
+    pub(crate) fn toggle_share(&mut self) {
         if self.room.streams.outgoing.is_some() {
             self.hub.stop_live();
         } else {

@@ -41,6 +41,8 @@ pub struct Prefs {
     pub video_hidden: BTreeSet<String>,
     /// The last choice of quality of a share, as `Quality::to_json` writes it.
     pub share_quality: Option<Value>,
+    /// The keyboard shortcuts, which work anywhere in Windows.
+    pub shortcuts: Vec<crate::shortcuts::Shortcut>,
 }
 
 impl Prefs {
@@ -78,6 +80,7 @@ impl Prefs {
             blur: field("blur").and_then(Value::as_bool).unwrap_or(false),
             share_quality: field("shareQuality").filter(|value| value.is_object()).cloned(),
             video_hidden: field("videoHidden").and_then(Value::as_array).map(|ids| ids.iter().filter_map(|id| id.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
+            shortcuts: field("shortcuts").and_then(Value::as_array).map(|list| list.iter().filter_map(crate::shortcuts::Shortcut::from_json).collect()).unwrap_or_default(),
             file,
         }
     }
@@ -100,6 +103,7 @@ impl Prefs {
             "streamVolumes": self.stream_volumes, "muted": self.muted, "soundVolume": self.sound_volume,
             "stageHeight": self.stage_height, "cameraId": self.camera, "blur": self.blur,
             "videoHidden": self.video_hidden, "shareQuality": self.share_quality,
+            "shortcuts": self.shortcuts.iter().map(crate::shortcuts::Shortcut::to_json).collect::<Vec<_>>(),
         });
         if let Ok(text) = serde_json::to_string_pretty(&data) {
             // The choice still holds for this run when the disk refuses it.

@@ -9,6 +9,7 @@ use telinha_core::profile::{NameStyle, Style};
 use crate::appearance::{Appearance, COLOR_THEMES, CustomTheme, Density, GlassLook, Gradient, MAX_CUSTOM_COLORS, MessageStyle, ThemeChoice};
 use crate::dialogs::{Tone, button, text_field_hint};
 use crate::name_style::{CARD_WIDTH, CardFace, card_spots, parse_color, write_color};
+use crate::shortcuts::{Action, Shortcut};
 use crate::theme::{self, Palette, ThemeName};
 use crate::widgets;
 
@@ -39,6 +40,10 @@ pub enum SettingsAction {
     /// Look for a new version now.
     CheckUpdates,
     Notice(String),
+    /// The keyboard shortcuts as they are now, to keep and to put in force.
+    Shortcuts(Vec<Shortcut>),
+    /// Start recording the keys of the shortcut at this place, or stop with None.
+    Record(Option<usize>),
 }
 
 pub struct Settings {
@@ -92,6 +97,11 @@ pub struct SettingsView<'a> {
     pub preview: Option<egui::load::SizedTexture>,
     pub camera_status: &'a str,
     pub update: UpdateInfo,
+    pub shortcuts: &'a [Shortcut],
+    /// The shortcut whose keys are being recorded, and the keys pressed so far.
+    pub recording: Option<(usize, Vec<u32>)>,
+    /// Why the shortcuts cannot work anywhere in Windows, when they cannot.
+    pub shortcuts_problem: Option<&'a str>,
 }
 
 const EFFECTS: [(&str, &str, usize, usize); 5] = [("", "Nenhum", 0, 0), ("solid", "Sólido", 1, 1), ("gradient", "Degradê", 2, 2), ("neon", "Neon", 1, 1), ("prism", "Prisma", 2, 5)];
@@ -116,15 +126,17 @@ pub enum Page {
     Voice,
     Appearance,
     Messages,
+    Shortcuts,
     Updates,
 }
 
 /// The lines of the sidebar, in their groups.
-const PAGES: [(&str, Page, crate::icons::Icon, &str); 5] = [
+const PAGES: [(&str, Page, crate::icons::Icon, &str); 6] = [
     ("USUÁRIO", Page::Profile, crate::icons::PERSON, "Perfil"),
     ("APP", Page::Voice, crate::icons::MIC, "Voz e vídeo"),
     ("APP", Page::Appearance, crate::icons::PALETTE, "Aparência"),
     ("APP", Page::Messages, crate::icons::CHAT, "Mensagens"),
+    ("APP", Page::Shortcuts, crate::icons::KEYBOARD, "Atalhos"),
     ("TELINHA", Page::Updates, crate::icons::REFRESH, "Atualizações"),
 ];
 
@@ -1020,6 +1032,7 @@ impl Settings {
                                 slider_field(ui, palette, "Tamanho da fonte do chat", font, &mut look.chat_font, 12.0..=24.0, 0.5);
                                 slider_field(ui, palette, "Espaço entre grupos de mensagens", format!("{:.0} px", look.message_gap), &mut look.message_gap, 0.0..=24.0, 4.0);
                             }
+                            Page::Shortcuts => shortcuts_page(ui, palette, &view, &mut actions),
                             Page::Updates => self.updates_page(ui, palette, &view, &mut actions),
                         }
                         ui.add_space(12.0);
@@ -1166,6 +1179,238 @@ impl Settings {
             });
         });
     }
+}
+
+/// The keyboard shortcuts, as Discord lays them out: a row per shortcut with what it does, its
+/// keys and a switch, and the button that adds one at the top.
+fn shortcuts_page(ui: &mut Ui, palette: &Palette, view: &SettingsView<'_>, actions: &mut Vec<SettingsAction>) {
+    let mut list = view.shortcuts.to_vec();
+    let mut changed = false;
+    ui.add_space(8.0);
+    ui.horizontal_top(|ui| {
+        ui.set_width(WIDTH);
+        ui.vertical(|ui| {
+            ui.set_width(WIDTH - 220.0);
+            ui.spacing_mut().item_spacing.y = 6.0;
+            ui.label(RichText::new("Atalhos do teclado").color(palette.strong).size(17.0).family(theme::semibold()));
+            ui.add(egui::Label::new(RichText::new("Funcionam em qualquer lugar do Windows: com o Telinha minimizado, atrás de um jogo ou em outro app.").color(palette.muted).size(13.0)).wrap());
+        });
+        ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+            if add_button(ui, palette) {
+                list.push(Shortcut::new(Action::ToggleMute));
+                changed = true;
+                // The new one starts recording at once: nobody adds a shortcut to leave it empty.
+                actions.push(SettingsAction::Record(Some(list.len() - 1)));
+            }
+        });
+    });
+    ui.add_space(20.0);
+    let (note, tone) = match view.shortcuts_problem {
+        Some(problem) => (problem, palette.danger),
+        None => ("Os atalhos ficam desativados enquanto esta tela estiver aberta.", palette.accent),
+    };
+    info_banner(ui, palette, note, tone);
+    ui.add_space(8.0);
+
+    if list.is_empty() {
+        ui.add_space(36.0);
+        ui.vertical_centered(|ui| {
+            ui.add(crate::icons::KEYBOARD.image(44.0, palette.muted));
+            ui.add_space(12.0);
+            ui.label(RichText::new("Nenhum atalho ainda").color(palette.strong).size(15.0).family(theme::semibold()));
+            ui.add_space(4.0);
+            ui.label(RichText::new("Adicione um para silenciar, ensurdecer ou falar com uma tecla.").color(palette.muted).size(13.0));
+        });
+        ui.add_space(20.0);
+    }
+    let mut remove = None;
+    for index in 0..list.len() {
+        let recording = view.recording.as_ref().filter(|(at, _)| *at == index).map(|(_, keys)| keys.as_slice());
+        match shortcut_row(ui, palette, index, &list[index], recording) {
+            RowAnswer::Action(action) => {
+                list[index].action = action;
+                changed = true;
+            }
+            RowAnswer::Toggle => {
+                list[index].enabled = !list[index].enabled;
+                changed = true;
+            }
+            RowAnswer::Record(on) => actions.push(SettingsAction::Record(on.then_some(index))),
+            RowAnswer::Remove => remove = Some(index),
+            RowAnswer::None => {}
+        }
+    }
+    if let Some(index) = remove {
+        list.remove(index);
+        changed = true;
+        if view.recording.is_some() {
+            actions.push(SettingsAction::Record(None));
+        }
+    }
+
+    ui.add_space(24.0);
+    ui.add(
+        egui::Label::new(RichText::new("Um jogo aberto como administrador pode esconder as teclas do Telinha enquanto estiver na frente. Nesse caso, abra o Telinha como administrador também.").color(palette.muted).size(12.5))
+            .wrap(),
+    );
+    if changed {
+        actions.push(SettingsAction::Shortcuts(list));
+    }
+}
+
+/// What the person did on one row of the shortcuts.
+enum RowAnswer {
+    None,
+    Action(Action),
+    Toggle,
+    Record(bool),
+    Remove,
+}
+
+/// The width of the two columns of a row of shortcuts.
+const ACTION_WIDTH: f32 = 236.0;
+const KEYS_WIDTH: f32 = WIDTH - ACTION_WIDTH - 20.0 - 40.0 - 32.0;
+
+/// One shortcut: "Ação" with its list, "Atalho" with the keys and the button that records them,
+/// and the switch at the right edge. A round cross to remove it shows under the mouse.
+fn shortcut_row(ui: &mut Ui, palette: &Palette, index: usize, shortcut: &Shortcut, recording: Option<&[u32]>) -> RowAnswer {
+    let mut answer = RowAnswer::None;
+    let left = ui.cursor().left();
+    let top = ui.cursor().top();
+    let fade = if shortcut.enabled || recording.is_some() { 1.0 } else { 0.5 };
+    let round = CornerRadius::same(if palette.glass { 10 } else { 6 });
+    let mut field = Rect::NOTHING;
+    ui.add_space(20.0);
+    ui.horizontal_top(|ui| {
+        ui.set_width(WIDTH);
+        ui.spacing_mut().item_spacing.x = 20.0;
+        ui.vertical(|ui| {
+            ui.set_width(ACTION_WIDTH);
+            ui.spacing_mut().item_spacing.y = 8.0;
+            ui.multiply_opacity(fade);
+            ui.label(RichText::new("Ação").color(palette.soft).size(13.0).family(theme::semibold()));
+            let (rect, response) = ui.allocate_exact_size(Vec2::new(ACTION_WIDTH, 40.0), Sense::click());
+            let lit = crate::motion::hover(ui.ctx(), response.id, response.hovered());
+            ui.painter().rect_filled(rect, round, field_fill(palette));
+            ui.painter().rect_stroke(rect, round, Stroke::new(1.0, crate::motion::mix(palette.line_soft, palette.line, lit)), egui::StrokeKind::Inside);
+            widgets::paint_text_clipped(ui, rect.left_center() + Vec2::new(12.0, 0.0), rect.width() - 44.0, shortcut.action.label(), FontId::proportional(14.5), palette.text);
+            crate::icons::CHEVRON_DOWN.image(16.0, palette.soft).paint_at(ui, Rect::from_center_size(rect.right_center() - Vec2::new(18.0, 0.0), Vec2::splat(16.0)));
+            let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+            egui::Popup::menu(&response).width(rect.width()).show(|ui| {
+                for action in Action::ALL {
+                    if crate::app::menu_item(ui, palette, action.label(), false) && action != shortcut.action {
+                        answer = RowAnswer::Action(action);
+                    }
+                }
+            });
+            let note = shortcut.action.note();
+            if !note.is_empty() {
+                ui.add(egui::Label::new(RichText::new(note).color(palette.muted).size(12.0)).wrap());
+            }
+        });
+        ui.vertical(|ui| {
+            ui.set_width(KEYS_WIDTH);
+            ui.spacing_mut().item_spacing.y = 8.0;
+            ui.multiply_opacity(fade);
+            ui.label(RichText::new("Atalho").color(palette.soft).size(13.0).family(theme::semibold()));
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(KEYS_WIDTH, 40.0), Sense::hover());
+            field = rect;
+            let live = recording.is_some();
+            let pulse = if live {
+                ui.ctx().request_repaint();
+                ((ui.input(|input| input.time) * 3.0).sin() * 0.5 + 0.5) as f32
+            } else {
+                0.0
+            };
+            let fill = if live { crate::motion::mix(field_fill(palette), palette.danger, 0.10 + 0.06 * pulse) } else { field_fill(palette) };
+            ui.painter().rect_filled(rect, round, fill);
+            let edge = if live { Stroke::new(1.5, palette.danger) } else { Stroke::new(1.0, palette.line_soft) };
+            ui.painter().rect_stroke(rect, round, edge, egui::StrokeKind::Inside);
+
+            let label = match (recording, shortcut.keys.is_empty()) {
+                (Some(_), _) => "Parar gravação",
+                (None, true) => "Gravar atalho",
+                (None, false) => "Editar atalho",
+            };
+            let galley = ui.painter().layout_no_wrap(label.to_owned(), FontId::new(13.0, theme::semibold()), Color32::WHITE);
+            let button = Rect::from_min_size(egui::pos2(rect.right() - 6.0 - galley.size().x - 24.0, rect.top() + 6.0), Vec2::new(galley.size().x + 24.0, rect.height() - 12.0));
+            let response = ui.interact(button, ui.scope_id().with(("record", index)), Sense::click());
+            let lit = crate::motion::hover(ui.ctx(), response.id, response.hovered());
+            let (rest, over, ink) = if live { (palette.danger, palette.danger_hover, Color32::WHITE) } else { (palette.selected, palette.muted.gamma_multiply(0.55), palette.strong) };
+            ui.painter().rect_filled(button, CornerRadius::same(if palette.glass { 8 } else { 4 }), crate::motion::mix(rest, over, lit));
+            ui.painter().galley_with_override_text_color(button.center() - galley.size() / 2.0, galley, ink);
+            if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                answer = RowAnswer::Record(!live);
+            }
+
+            let room = button.left() - rect.left() - 20.0;
+            let at = rect.left_center() + Vec2::new(12.0, 0.0);
+            match recording {
+                Some([]) => widgets::paint_text_clipped(ui, at, room, "Pressione as teclas…", FontId::proportional(14.0), palette.danger_text),
+                Some(keys) => widgets::paint_text_clipped(ui, at, room, &crate::shortcuts::describe(keys), FontId::new(14.0, theme::bold()), palette.strong),
+                None if shortcut.keys.is_empty() => widgets::paint_text_clipped(ui, at, room, "Nenhum atalho definido", FontId::proportional(14.0), palette.muted),
+                None => widgets::paint_text_clipped(ui, at, room, &crate::shortcuts::describe(&shortcut.keys), FontId::new(14.0, theme::bold()), palette.strong),
+            }
+        });
+    });
+    // The switch at the right edge, level with the fields.
+    let switch_slot = Rect::from_center_size(egui::pos2(left + WIDTH - 20.0, field.center().y), Vec2::new(40.0, 24.0));
+    let response = ui.interact(switch_slot, ui.scope_id().with(("switch", index)), Sense::click());
+    paint_switch(ui, palette, response.id, switch_slot, shortcut.enabled, response.hovered());
+    let tip = if shortcut.enabled { "Desativar atalho" } else { "Ativar atalho" };
+    if response.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+        answer = RowAnswer::Toggle;
+    }
+    ui.add_space(20.0);
+    let row = Rect::from_min_max(egui::pos2(left, top), egui::pos2(left + WIDTH, ui.cursor().top()));
+    // The cross that removes the row, at the right of its titles while the mouse is over it.
+    let near = ui.rect_contains_pointer(row);
+    let shown = crate::motion::ease(ui.ctx(), ui.scope_id().with(("remove-shown", index)), near, crate::motion::STATE);
+    if shown > 0.0 {
+        let spot = Rect::from_center_size(egui::pos2(row.right() - 20.0, field.top() - 18.0), Vec2::splat(22.0));
+        let response = ui.interact(spot, ui.scope_id().with(("remove", index)), Sense::click());
+        let fill = if response.hovered() { palette.danger } else { palette.selected };
+        ui.painter().circle_filled(spot.center(), 11.0, fill.gamma_multiply(shown));
+        let ink = if response.hovered() { Color32::WHITE } else { palette.soft };
+        crate::icons::CLOSE.image(12.0, ink.gamma_multiply(shown)).paint_at(ui, Rect::from_center_size(spot.center(), Vec2::splat(12.0)));
+        if response.on_hover_text("Remover atalho").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            answer = RowAnswer::Remove;
+        }
+    }
+    let (line, _) = ui.allocate_exact_size(Vec2::new(WIDTH, 1.0), Sense::hover());
+    ui.painter().rect_filled(line, CornerRadius::ZERO, palette.line_soft);
+    answer
+}
+
+/// The fill of a field of the shortcuts.
+fn field_fill(palette: &Palette) -> Color32 {
+    if palette.glass { Color32::from_white_alpha(12) } else { palette.rail }
+}
+
+/// "+ Adicionar atalho", a quiet button with the plus at its left. True when clicked.
+fn add_button(ui: &mut Ui, palette: &Palette) -> bool {
+    let galley = ui.painter().layout_no_wrap("Adicionar atalho".to_owned(), FontId::new(14.0, theme::semibold()), palette.strong);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(galley.size().x + 52.0, 38.0), Sense::click());
+    let lit = crate::motion::hover(ui.ctx(), response.id, response.hovered());
+    let round = CornerRadius::same(if palette.glass { 10 } else { 6 });
+    ui.painter().rect_filled(rect, round, crate::motion::mix(palette.selected, palette.muted.gamma_multiply(0.55), lit));
+    ui.painter().rect_stroke(rect, round, Stroke::new(1.0, palette.line_soft), egui::StrokeKind::Inside);
+    crate::icons::PLUS.image(16.0, palette.strong).paint_at(ui, Rect::from_center_size(rect.left_center() + Vec2::new(22.0, 0.0), Vec2::splat(16.0)));
+    ui.painter().galley(rect.left_center() + Vec2::new(36.0, -galley.size().y / 2.0), galley, palette.strong);
+    response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+}
+
+/// A box with a round "i" and one line, edged in its color, as Discord's notices in the settings.
+fn info_banner(ui: &mut Ui, palette: &Palette, text: &str, tone: Color32) {
+    let galley = ui.painter().layout(text.to_owned(), FontId::new(13.5, theme::semibold()), palette.strong, WIDTH - 60.0);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(WIDTH, galley.size().y + 24.0), Sense::hover());
+    let round = CornerRadius::same(if palette.glass { 10 } else { 6 });
+    ui.painter().rect_filled(rect, round, tone.gamma_multiply(0.12));
+    ui.painter().rect_stroke(rect, round, Stroke::new(1.0, tone.gamma_multiply(0.8)), egui::StrokeKind::Inside);
+    let dot = egui::pos2(rect.left() + 22.0, rect.center().y);
+    ui.painter().circle_filled(dot, 8.0, tone);
+    ui.painter().text(dot + Vec2::new(0.0, 0.5), egui::Align2::CENTER_CENTER, "i", FontId::new(11.0, theme::bold()), Color32::WHITE);
+    ui.painter().galley(egui::pos2(rect.left() + 42.0, rect.center().y - galley.size().y / 2.0), galley, palette.strong);
 }
 
 /// The title of a part of the settings, as Discord sets them apart: in sentence case and larger,

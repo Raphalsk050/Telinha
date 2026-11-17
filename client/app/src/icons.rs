@@ -60,3 +60,4 @@ impl Icon {
 pub const BELL: Icon = Icon("bell", include_bytes!("../assets/icons/bell.svg"));
 pub const PIN: Icon = Icon("pin", include_bytes!("../assets/icons/pin.svg"));
 pub const THREAD: Icon = Icon("thread", include_bytes!("../assets/icons/thread.svg"));
+pub const KEYBOARD: Icon = Icon("keyboard", include_bytes!("../assets/icons/keyboard.svg"));

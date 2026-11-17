@@ -99,6 +99,13 @@ pub struct TelinhaApp {
     parent_window: Option<crate::media::ParentWindow>,
     player: Option<crate::media::Player>,
     player_failed: bool,
+    /// The keyboard shortcuts that work anywhere in Windows, once the hooks are in place.
+    hotkeys: Option<crate::shortcuts::Hotkeys>,
+    shortcuts_problem: Option<String>,
+    /// Whether the settings show the shortcuts now, which holds them, as in Discord.
+    shortcuts_page_open: bool,
+    /// The recording drawn by the tests, which have no hooks.
+    test_recording: Option<(usize, Vec<u32>)>,
 }
 
 impl TelinhaApp {
@@ -182,6 +189,10 @@ impl TelinhaApp {
             parent_window: None,
             player: None,
             player_failed: false,
+            hotkeys: None,
+            shortcuts_problem: None,
+            shortcuts_page_open: false,
+            test_recording: None,
         };
         app.use_chosen_devices();
         if app.prefs.app_icon != crate::app_icons::DEFAULT {
@@ -1239,6 +1250,95 @@ impl TelinhaApp {
         self.prefs.sensitivity_db = threshold;
     }
 
+    /// Puts the keyboard shortcuts in force anywhere in Windows. Only the real app does this: the
+    /// tests draw the window without hooking the keyboard of the machine.
+    pub fn enable_shortcuts(&mut self) {
+        self.hotkeys = crate::shortcuts::Hotkeys::start(&self.context, &self.prefs.shortcuts);
+        if self.hotkeys.is_none() {
+            self.shortcuts_problem = Some("O Windows não deixou o Telinha ouvir o teclado, então os atalhos não funcionam agora. Reinicie o Telinha para tentar de novo.".to_owned());
+            self.hub.log().error("atalhos: o gancho do teclado foi recusado");
+        }
+    }
+
+    /// Holds the shortcuts while their page is in front of the person, and does what the keys
+    /// asked for. Runs while the window is minimized too.
+    fn tend_shortcuts(&mut self, context: &egui::Context) {
+        let Some(hotkeys) = &self.hotkeys else { return };
+        let focused = context.input(|input| input.viewport().focused.unwrap_or(true));
+        hotkeys.set_suspended(self.shortcuts_page_open && focused);
+        let mut events = Vec::new();
+        while let Some(event) = hotkeys.next_event() {
+            events.push(event);
+        }
+        for event in events {
+            match event {
+                crate::shortcuts::Event::Pressed(action) => self.run_shortcut(context, action),
+                crate::shortcuts::Event::Recorded { index, keys } => {
+                    if let Some(shortcut) = self.prefs.shortcuts.get_mut(index) {
+                        shortcut.keys = keys;
+                        shortcut.enabled = true;
+                        self.save_shortcuts();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Sets the shortcuts and the one being recorded, for the pictures of the tests.
+    pub fn shortcuts_for_test(&mut self, shortcuts: Vec<crate::shortcuts::Shortcut>, recording: Option<(usize, Vec<u32>)>) {
+        self.prefs.shortcuts = shortcuts;
+        self.test_recording = recording;
+    }
+
+    fn save_shortcuts(&mut self) {
+        self.prefs.save();
+        if let Some(hotkeys) = &self.hotkeys {
+            hotkeys.set_shortcuts(&self.prefs.shortcuts);
+        }
+    }
+
+    fn bring_to_front(&self, context: &egui::Context) {
+        context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        context.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        context.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+
+    /// What a shortcut does, the same as the button it stands for.
+    fn run_shortcut(&mut self, context: &egui::Context, action: crate::shortcuts::Action) {
+        use crate::shortcuts::Action;
+        let voice = self.hub.voice();
+        match action {
+            Action::ToggleMute => {
+                if let Some(voice) = voice {
+                    let mic = voice.mic && !voice.deaf;
+                    // Turning the microphone on while deafened also brings the sound back.
+                    self.hub.update_voice(Some(!mic), None, (!mic && voice.deaf).then_some(false));
+                }
+            }
+            Action::ToggleDeaf => {
+                if let Some(voice) = voice {
+                    self.hub.update_voice(None, None, Some(!voice.deaf));
+                }
+            }
+            Action::ToggleCamera => {
+                if voice.is_some() {
+                    self.set_camera(!self.camera_on());
+                }
+            }
+            Action::ToggleShare => {
+                if self.room.streams.outgoing.is_some() {
+                    self.hub.stop_live();
+                } else if voice.is_some() {
+                    self.bring_to_front(context);
+                    self.toggle_share();
+                }
+            }
+            Action::LeaveCall => self.hub.leave_voice(),
+            Action::ShowWindow => self.bring_to_front(context),
+            Action::PushToTalk | Action::PushToMute => {}
+        }
+    }
+
     pub fn open_settings(&mut self) {
         // The tests draw the window without asking Windows what is plugged in.
         let audible = self.room.audible();
@@ -1445,6 +1545,16 @@ impl TelinhaApp {
         };
         let camera = self.prefs.camera.clone();
         let camera_status = self.camera_status.clone();
+        let shortcuts = self.prefs.shortcuts.clone();
+        let recording = match &self.hotkeys {
+            Some(hotkeys) => hotkeys.recording(),
+            None => self.test_recording.clone(),
+        };
+        if recording.is_some() {
+            // The keys being recorded are for the shortcut, not for the window: Esc must not
+            // close it nor a letter land in a field.
+            context.input_mut(|input| input.events.retain(|event| !matches!(event, egui::Event::Key { .. } | egui::Event::Text(_) | egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_))));
+        }
         let update = self.update_info();
         if update.busy {
             context.request_repaint_after(std::time::Duration::from_millis(300));
@@ -1472,8 +1582,18 @@ impl TelinhaApp {
             preview,
             camera_status: &camera_status,
             update,
+            shortcuts: &shortcuts,
+            recording: recording.clone(),
+            shortcuts_problem: self.shortcuts_problem.as_deref(),
         };
         let (actions, open) = settings.show(context, &self.palette, view);
+        let on_shortcuts = open && settings.page() == crate::settings::Page::Shortcuts;
+        if !on_shortcuts && recording.is_some() {
+            if let Some(hotkeys) = &self.hotkeys {
+                hotkeys.record(None);
+            }
+        }
+        self.shortcuts_page_open = on_shortcuts;
         if open {
             self.settings = Some(settings);
         } else {
@@ -1557,6 +1677,15 @@ impl TelinhaApp {
                     }
                 }
                 SettingsAction::Notice(text) => self.notice(text),
+                SettingsAction::Shortcuts(list) => {
+                    self.prefs.shortcuts = list;
+                    self.save_shortcuts();
+                }
+                SettingsAction::Record(index) => {
+                    if let Some(hotkeys) = &self.hotkeys {
+                        hotkeys.record(index);
+                    }
+                }
             }
         }
     }
@@ -1846,10 +1975,11 @@ impl eframe::App for TelinhaApp {
     /// Runs before every frame and also while the window is minimized, when `ui` does not.
     /// The hub and the call must keep being heard then: a minimized app that stops taking
     /// events keeps calling people who already left and never sees who came back.
-    fn logic(&mut self, _context: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         let _runtime = self.runtime.enter();
         self.drain_events();
         self.drain_tasks();
+        self.tend_shortcuts(context);
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {

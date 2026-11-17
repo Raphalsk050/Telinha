@@ -41,6 +41,18 @@ pub fn set_sensitivity(auto: bool, threshold_db: f32) {
     SENSITIVITY_DB.store(threshold_db.clamp(*SENSITIVITY_RANGE.start(), *SENSITIVITY_RANGE.end()).to_bits(), Ordering::Relaxed);
 }
 
+/// Whether a key lets the voice out: closed while push to talk is set and its key is up, or
+/// while the key of push to mute is held. Set from the thread of the global shortcuts.
+static KEY_GATE: AtomicBool = AtomicBool::new(true);
+
+pub fn set_key_gate(open: bool) {
+    KEY_GATE.store(open, Ordering::Relaxed);
+}
+
+pub fn key_gate() -> bool {
+    KEY_GATE.load(Ordering::Relaxed)
+}
+
 pub fn sensitivity() -> (bool, f32) {
     (SENSITIVITY_AUTO.load(Ordering::Relaxed), f32::from_bits(SENSITIVITY_DB.load(Ordering::Relaxed)))
 }
@@ -598,7 +610,7 @@ fn open_input(
             let mut frame: Vec<i16> = pending.drain(..FRAME).collect();
             // The gate listens to the microphone as it arrives, the same sound the test of the
             // settings measures, before the cleaning changes its level.
-            let open = gate.feed(decibels(level_of(&frame)), 10.0);
+            let open = gate.feed(decibels(level_of(&frame)), 10.0) && key_gate();
             processing.capture(&mut frame);
             if mic_on.load(Ordering::Relaxed) {
                 // Closed, the piece goes out as silence; the change fades over the 10 ms so it

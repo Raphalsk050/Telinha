@@ -230,6 +230,8 @@ pub struct Outgoing {
     pub text: String,
     /// A call for attention, as the nudge of MSN: the window of whoever gets it shakes.
     pub nudge: bool,
+    /// The message whose thread this one answers.
+    pub thread: Option<String>,
     pub image: Option<OutgoingImage>,
     pub file: Option<OutgoingFile>,
     pub embed: Option<Value>,
@@ -1049,6 +1051,7 @@ impl Hub {
             "file-want" | "file-have" | "file-signal" => self.handle_file_message(space_id, &kind, &message),
             "chat" => self.handle_chat(space_id, &message),
             "chat-delete" => self.handle_chat_delete(space_id, &message),
+            "chat-pin" => self.handle_chat_pin(space_id, &message),
             "rtc" => {
                 let wanted = self.voice().is_some_and(|voice| {
                     voice.space_id == space_id && message.get("roomId").and_then(Value::as_str) == Some(&voice.room_id)
@@ -1195,7 +1198,7 @@ impl Hub {
             image: image_ref,
             file,
             embed: embed_ref,
-            extra: if message.get("nudge").and_then(Value::as_bool) == Some(true) { Map::from_iter([("nudge".to_owned(), Value::Bool(true))]) } else { Map::new() },
+            extra: incoming_extra(message),
         };
         if !inner.chats.append(&key, stored.clone()) {
             for blob_id in stored.blob_ids() {
@@ -1268,6 +1271,47 @@ impl Hub {
             drop(inner);
             self.emit(HubEvent::ChatRemove { conversation, message_id });
         }
+    }
+
+    /// Anyone in a conversation pins or unpins its messages, for everyone in it.
+    fn handle_chat_pin(&self, space_id: &str, message: &Value) {
+        let mut inner = self.lock();
+        let Some(conversation) = Self::chat_target(&inner, space_id, message) else {
+            return;
+        };
+        let key = conversation.key();
+        let message_id = message["messageId"].as_str().unwrap_or_default().to_owned();
+        let pinned = message.get("pinned").and_then(Value::as_bool) == Some(true);
+        let by = match inner.contacts.get(space_id) {
+            Some(contact) => contact.name.clone(),
+            None => clean_name(message.get("by").and_then(Value::as_str).unwrap_or(""), "Alguém"),
+        };
+        let changed = inner.chats.find(&key, &message_id).is_some_and(|stored| stored.is_pinned() != pinned);
+        if !changed {
+            return;
+        }
+        let updated = inner.chats.update(&key, &message_id, |stored| stored.set_pinned(pinned, &by));
+        drop(inner);
+        if let Some(updated) = updated {
+            self.emit(HubEvent::ChatUpdate { conversation, message: public_message(&updated) });
+        }
+    }
+
+    /// Pins or unpins a message here and for the others in the conversation. Gives whether a
+    /// message server took the change.
+    pub fn pin_message(&self, conversation: &Conversation, message_id: &str, pinned: bool) -> Option<bool> {
+        let mut inner = self.lock();
+        let key = Self::stored_conversation(&inner, conversation)?;
+        let by = inner.profile.name().to_owned();
+        let updated = inner.chats.update(&key, message_id, |stored| stored.set_pinned(pinned, &by))?;
+        let mut body = json!({ "messageId": message_id, "pinned": pinned, "by": by, "memberId": inner.profile.member_id() });
+        if inner.servers.contains(&conversation.space_id) {
+            body["channelId"] = conversation.channel_id.clone().into();
+        }
+        drop(inner);
+        let delivered = self.signaling.publish(&conversation.space_id, "chat-pin", body);
+        self.emit(HubEvent::ChatUpdate { conversation: conversation.clone(), message: public_message(&updated) });
+        Some(delivered)
     }
 
     /// Erases a message here and asks the others to erase it. Whoever is offline at the time
@@ -1364,6 +1408,11 @@ impl Hub {
         if outgoing.nudge {
             payload["nudge"] = true.into();
             message.extra.insert("nudge".into(), true.into());
+        }
+        // An answer in a thread names the message the thread hangs from, which must be here.
+        if let Some(thread) = outgoing.thread.filter(|thread| inner.chats.find(&key, thread).is_some()) {
+            payload["threadId"] = thread.clone().into();
+            message.extra.insert("threadId".into(), thread.into());
         }
         if let Some(image) = &image {
             payload["image"] = json!({
@@ -1605,6 +1654,19 @@ fn presence_for(inner: &Inner, space_id: &str) -> Map<String, Value> {
 }
 
 /// The key that encrypts a stored file stays in the hub: the window never needs it.
+/// What an incoming message carries besides its content: whether it calls for attention and the
+/// thread it answers.
+fn incoming_extra(message: &Value) -> Map<String, Value> {
+    let mut extra = Map::new();
+    if message.get("nudge").and_then(Value::as_bool) == Some(true) {
+        extra.insert("nudge".to_owned(), Value::Bool(true));
+    }
+    if let Some(thread) = message.get("threadId").and_then(Value::as_str).filter(|id| !id.is_empty() && id.len() <= 64) {
+        extra.insert("threadId".to_owned(), Value::String(thread.to_owned()));
+    }
+    extra
+}
+
 fn public_message(message: &Message) -> Message {
     let mut public = message.clone();
     if let Some(file) = &mut public.file {

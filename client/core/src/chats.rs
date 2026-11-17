@@ -132,6 +132,32 @@ impl Message {
         self.extra.get("nudge").and_then(Value::as_bool) == Some(true)
     }
 
+    /// The message whose thread this one answers, as the threads of Slack.
+    pub fn thread_id(&self) -> Option<&str> {
+        self.extra.get("threadId").and_then(Value::as_str).filter(|id| !id.is_empty())
+    }
+
+    /// Whether the message is pinned to its conversation.
+    pub fn is_pinned(&self) -> bool {
+        self.extra.get("pinned").and_then(Value::as_bool) == Some(true)
+    }
+
+    /// Who pinned the message, when it is pinned.
+    pub fn pinned_by(&self) -> Option<&str> {
+        self.is_pinned().then(|| self.extra.get("pinnedBy").and_then(Value::as_str)).flatten()
+    }
+
+    /// Pins or unpins the message, saying who did.
+    pub fn set_pinned(&mut self, pinned: bool, by: &str) {
+        if pinned {
+            self.extra.insert("pinned".into(), Value::Bool(true));
+            self.extra.insert("pinnedBy".into(), Value::String(by.to_owned()));
+        } else {
+            self.extra.remove("pinned");
+            self.extra.remove("pinnedBy");
+        }
+    }
+
     /// The ids of everything this message keeps on disk besides its own text.
     pub fn blob_ids(&self) -> Vec<&str> {
         let embed_image = self.embed.as_ref().and_then(|embed| embed.image.as_ref());

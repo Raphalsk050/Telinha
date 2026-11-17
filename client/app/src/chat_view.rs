@@ -1,6 +1,6 @@
 //! The conversation on screen: the messages, what they carry, and the box to write in.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
 
 use chrono::{Local, TimeZone};
@@ -30,6 +30,7 @@ const COMPOSER_MAX: f32 = 200.0;
 static LINK_PATTERN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\b(?:https?://|www\.)[^\s<>"]+"#).unwrap());
 
 /// What the window knows about the conversation that is open, besides the messages.
+#[derive(Clone)]
 pub struct Chrome {
     pub title: String,
     pub intro_icon: Option<icons::Icon>,
@@ -53,6 +54,17 @@ pub enum ChatAction {
     Notice(String),
     /// Show the profile card of who wrote a message, next to where the person clicked.
     Profile { member_id: Option<String>, name: String, anchor: Rect },
+    /// Open the thread that hangs from a message, beside the conversation.
+    OpenThread(String),
+}
+
+/// The answers in the thread of a message, for the bar under it.
+#[derive(Default)]
+struct ThreadSummary {
+    count: usize,
+    last_at: i64,
+    /// Who answered, the first three, by member and name.
+    faces: Vec<(Option<String>, String)>,
 }
 
 /// A picture ready to draw: where the loaders find it, its bytes, and its size in pixels.
@@ -102,6 +114,13 @@ pub struct ChatView {
     box_rect: Option<Rect>,
     /// How tall the text of the draft was last time, which the box follows up to its limit.
     draft_height: f32,
+    /// When this view shows a thread, as Slack: the id of the message it hangs from.
+    thread: Option<String>,
+    /// A message to bring into sight and light up for a moment, and when it was reached.
+    jump: Option<(String, Option<f64>)>,
+    /// The message whose tools showed on the last frame, and where the tools were: the pointer
+    /// on them keeps them, even over the message above.
+    tools_for: Option<(String, Rect)>,
 }
 
 pub fn format_time(timestamp: i64) -> String {
@@ -232,6 +251,47 @@ impl ChatView {
         self.focus_input = true;
         self.link.clear();
         self.waiting_send = None;
+    }
+
+    /// Shows the thread that hangs from `root` in `conversation`.
+    pub fn open_thread(&mut self, hub: &Hub, conversation: Conversation, root: &str) {
+        self.open(hub, Some(conversation));
+        self.thread = Some(root.to_owned());
+    }
+
+    /// The message the thread shown here hangs from, when this view shows a thread.
+    pub fn thread_root(&self) -> Option<&Message> {
+        let root = self.thread.as_deref()?;
+        self.messages.iter().find(|message| message.id == root)
+    }
+
+    /// The pinned messages of the conversation, the newest first.
+    pub fn pinned(&self) -> Vec<Message> {
+        self.messages.iter().rev().filter(|message| message.is_pinned()).cloned().collect()
+    }
+
+    pub fn message_by_id(&self, message_id: &str) -> Option<&Message> {
+        self.messages.iter().find(|message| message.id == message_id)
+    }
+
+    /// Brings a message into sight and lights it up for a moment.
+    pub fn jump_to(&mut self, message_id: &str) {
+        self.jump = Some((message_id.to_owned(), None));
+        self.to_bottom = false;
+        self.scroll_test = None;
+    }
+
+    /// Stops the video playing here.
+    pub fn stop_video(&mut self) {
+        self.playing = None;
+    }
+
+    /// Unpins or pins a message here and for everyone in the conversation.
+    fn set_pinned(&mut self, hub: &Hub, message_id: &str, pinned: bool) {
+        let Some(conversation) = self.conversation.clone() else { return };
+        if hub.pin_message(&conversation, message_id, pinned).is_none() {
+            self.hint = "Não consegui fixar essa mensagem.".to_owned();
+        }
     }
 
     /// The hub told where a large file stands. Kept for every conversation, since a file may be
@@ -373,7 +433,7 @@ impl ChatView {
             }
             text.clear();
         }
-        let mut outgoing = Outgoing { text, ..Outgoing::default() };
+        let mut outgoing = Outgoing { text, thread: self.thread.clone(), ..Outgoing::default() };
         if !outgoing.text.is_empty() {
             match self.link.for_send(context, &self.draft) {
                 ForSend::Wait if !force => {
@@ -457,6 +517,7 @@ impl ChatView {
     fn video_block(&mut self, ui: &mut Ui, palette: &Palette, key: &str, video: &crate::media::Video, still: Option<Blob>) {
         ui.add_space(4.0);
         let size = if video.tall { Vec2::new(243.0, 432.0) } else { Vec2::new(432.0, 243.0) };
+        let size = size * (ui.available_width().max(160.0) / size.x).min(1.0);
         let round = CornerRadius::same(if palette.glass { 14 } else { 8 });
         let playing = self.playing.as_ref().is_some_and(|(playing, _)| playing == key);
         let (rect, response) = ui.allocate_exact_size(size, if playing { Sense::hover() } else { Sense::click() });
@@ -519,6 +580,7 @@ impl ChatView {
         // On glass the message box floats over the conversation, which passes behind it.
         let floating = palette.glass;
         let list_top = ui.cursor().min.y;
+        let given = ui.max_rect();
         let list_height = if floating { ui.available_height() } else { (ui.available_height() - composer_height).max(0.0) };
         let list = ui.allocate_ui(Vec2::new(ui.available_width(), list_height), |ui| {
             let to_bottom = std::mem::take(&mut self.to_bottom);
@@ -533,17 +595,46 @@ impl ChatView {
             }
             let shown = area.show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                self.intro(ui, palette, chrome);
                 let messages = std::mem::take(&mut self.messages);
-                for (index, message) in messages.iter().enumerate() {
-                    let previous = index.checked_sub(1).map(|index| &messages[index]);
+                // The answers in threads stay in their threads; an answer whose message is gone
+                // shows in the conversation.
+                let ids: HashSet<&str> = messages.iter().map(|message| message.id.as_str()).collect();
+                let threaded = |message: &Message| message.thread_id().is_some_and(|root| ids.contains(root));
+                let mut threads: HashMap<&str, ThreadSummary> = HashMap::new();
+                for message in messages.iter().filter(|message| threaded(message)) {
+                    let summary = threads.entry(message.thread_id().unwrap_or_default()).or_default();
+                    summary.count += 1;
+                    summary.last_at = summary.last_at.max(message.sent_at);
+                    let member = if message.mine { Some(hub.member_id()) } else { message.member_id.clone() };
+                    if summary.faces.len() < 3 && !summary.faces.iter().any(|(known, name)| known == &member && name == &message.author) {
+                        summary.faces.push((member, message.author.clone()));
+                    }
+                }
+                let root = self.thread.clone();
+                let shown: Vec<&Message> = match root.as_deref() {
+                    None => messages.iter().filter(|message| !threaded(message)).collect(),
+                    Some(root) => messages.iter().filter(|message| message.id == root || message.thread_id() == Some(root)).collect(),
+                };
+                let pointer = ui.ctx().pointer_hover_pos();
+                let sticky = self.tools_for.take().filter(|(_, tools)| pointer.is_some_and(|pointer| tools.contains(pointer))).map(|(id, _)| id);
+                match root.as_deref() {
+                    None => self.intro(ui, palette, chrome),
+                    Some(_) => ui.add_space(8.0),
+                }
+                for (index, message) in shown.iter().enumerate() {
+                    let previous = index.checked_sub(1).map(|index| shown[index]);
                     if message.is_nudge() {
                         Self::nudge_line(ui, palette, chrome, message);
                         continue;
                     }
-                    let first = previous.is_none_or(|previous| previous.is_nudge() || !same_block(previous, message));
-                    if let Some(found) = self.message(ui, hub, pictures, styles, palette, chrome, message, first) {
+                    let after_root = previous.is_some_and(|previous| Some(previous.id.as_str()) == root.as_deref());
+                    let first = after_root || previous.is_none_or(|previous| previous.is_nudge() || !same_block(previous, message));
+                    let summary = if root.is_none() { threads.get(message.id.as_str()) } else { None };
+                    if let Some(found) = self.message(ui, hub, pictures, styles, palette, chrome, message, first, summary, sticky.as_deref()) {
                         action = Some(found);
+                    }
+                    if Some(message.id.as_str()) == root.as_deref() {
+                        thread_divider(ui, palette, shown.len() - 1);
                     }
                 }
                 self.messages = messages;
@@ -562,9 +653,9 @@ impl ChatView {
         // for a smaller one; the list makes way on the next frame, from the height measured.
         let room = if floating {
             let (bottom, column) = (list_top + list_height, list.response.rect);
-            Rect::from_min_size(egui::pos2(column.left(), bottom - self.composer_height), Vec2::new(column.width(), self.composer_height + COMPOSER_MAX))
+            Rect::from_min_size(egui::pos2(column.left(), bottom - self.composer_height), Vec2::new(given.right() - column.left(), self.composer_height + COMPOSER_MAX))
         } else {
-            Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), composer_height.max(ui.available_height()) + COMPOSER_MAX))
+            Rect::from_min_size(ui.cursor().min, Vec2::new(given.right() - ui.cursor().min.x, composer_height.max(ui.available_height()) + COMPOSER_MAX))
         };
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(room).layout(*ui.layout()));
         self.composer(&mut child, hub, palette, chrome);
@@ -575,6 +666,14 @@ impl ChatView {
     fn take_dropped(&mut self, ui: &Ui) {
         let dropped = ui.input(|input| input.raw.dropped_files.first().cloned());
         let Some(file) = dropped else { return };
+        // With a thread open beside the conversation, the file goes where it was dropped.
+        let here = match ui.ctx().pointer_latest_pos() {
+            Some(pointer) => ui.max_rect().contains(pointer),
+            None => self.thread.is_none(),
+        };
+        if !here {
+            return;
+        }
         self.attach(attach::from_path(file.path()));
     }
 
@@ -601,7 +700,19 @@ impl ChatView {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn message(&mut self, ui: &mut Ui, hub: &Arc<Hub>, pictures: &mut Pictures, styles: &Styles, palette: &Palette, chrome: &Chrome, message: &Message, first: bool) -> Option<ChatAction> {
+    fn message(
+        &mut self,
+        ui: &mut Ui,
+        hub: &Arc<Hub>,
+        pictures: &mut Pictures,
+        styles: &Styles,
+        palette: &Palette,
+        chrome: &Chrome,
+        message: &Message,
+        first: bool,
+        summary: Option<&ThreadSummary>,
+        sticky: Option<&str>,
+    ) -> Option<ChatAction> {
         let mut action = None;
         if first {
             ui.add_space(chrome.gap);
@@ -635,6 +746,10 @@ impl ChatView {
                             action = Some(ChatAction::Profile { member_id: member.clone(), name: message.author.clone(), anchor });
                         }
                         ui.label(RichText::new(format_time(message.sent_at)).color(palette.muted).size(12.0));
+                        if message.is_pinned() {
+                            let by = message.pinned_by().map_or_else(|| "Mensagem fixada".to_owned(), |by| format!("Fixada por {by}"));
+                            ui.add(icons::PIN.image(13.0, palette.muted)).on_hover_text(by);
+                        }
                     });
                 }
                 // A message that is only a GIF link shows the GIF without the link, as Discord.
@@ -677,46 +792,120 @@ impl ChatView {
                 if message.mine && message.delivered == Some(false) {
                     ui.label(RichText::new("(não enviada, sem conexão com o servidor)").color(palette.danger_text).size(12.0));
                 }
+                if let Some(summary) = summary {
+                    if thread_bar(ui, hub, pictures, palette, summary) {
+                        action = Some(ChatAction::OpenThread(message.id.clone()));
+                    }
+                }
             });
         });
 
-        // The tools of a message show on its right while the cursor is over it.
+        // The tools of a message float at its top right while the cursor is over it, as in
+        // Discord, and stay while the cursor is on them.
         let rect = Rect::from_min_max(egui::pos2(ui.max_rect().left(), row.response.rect.top()), egui::pos2(ui.max_rect().right(), row.response.rect.bottom()));
-        let hovered = ui.rect_contains_pointer(rect);
-        if hovered && palette.glass {
-            // `.message:hover`: a faint light under the message, 8 points around it.
-            let lit = Rect::from_min_max(egui::pos2(rect.left() + 8.0, rect.top() - 8.0), egui::pos2(rect.right() - 8.0, rect.bottom() + 8.0));
-            ui.painter().set(hover_fill, egui::Shape::rect_filled(lit, CornerRadius::same(12), Color32::from_white_alpha(10)));
+        let hovered = match sticky {
+            Some(id) => id == message.id,
+            None => ui.rect_contains_pointer(rect),
+        };
+        let now = ui.input(|input| input.time);
+        let jumped = self.jump.as_mut().filter(|(id, _)| id == &message.id).map(|(_, reached)| {
+            if reached.is_none() {
+                ui.scroll_to_rect(rect, Some(Align::Center));
+                *reached = Some(now);
+            }
+            reached.unwrap_or(now)
+        });
+        if let Some(reached) = jumped {
+            // The message reached lights up and fades out.
+            let light = (1.0 - (now - reached) as f32 / 1.8).clamp(0.0, 1.0);
+            if light > 0.0 {
+                ui.ctx().request_repaint();
+                let lit = Rect::from_min_max(egui::pos2(rect.left() + 8.0, rect.top() - 4.0), egui::pos2(rect.right() - 8.0, rect.bottom() + 4.0));
+                ui.painter().set(hover_fill, egui::Shape::rect_filled(lit, CornerRadius::same(if palette.glass { 12 } else { 4 }), palette.accent.gamma_multiply(0.22 * light)));
+            } else {
+                self.jump = None;
+            }
+        } else if hovered {
+            // `.message:hover`: a faint light under the message.
+            let lit = if palette.glass {
+                Rect::from_min_max(egui::pos2(rect.left() + 8.0, rect.top() - 8.0), egui::pos2(rect.right() - 8.0, rect.bottom() + 8.0))
+            } else {
+                Rect::from_min_max(egui::pos2(rect.left(), rect.top() - 1.0), egui::pos2(rect.right(), rect.bottom() + 1.0))
+            };
+            let fill = if palette.glass { Color32::from_white_alpha(10) } else { palette.hover.gamma_multiply(0.5) };
+            ui.painter().set(hover_fill, egui::Shape::rect_filled(lit, CornerRadius::same(if palette.glass { 12 } else { 0 }), fill));
         }
-        if hovered && message.mine {
-            let tool = Rect::from_min_size(egui::pos2(rect.right() - 44.0, rect.top() - 2.0), Vec2::splat(28.0));
-            let response = ui.interact(tool, ui.scope_id().with(("delete", &message.id)), Sense::click());
-            ui.painter().rect_filled(tool, CornerRadius::same(4), if response.hovered() { palette.danger } else { palette.panel });
-            ui.painter().rect_stroke(tool, CornerRadius::same(4), Stroke::new(1.0, palette.line), egui::StrokeKind::Inside);
-            let ink = if response.hovered() { Color32::WHITE } else { palette.soft };
-            icons::DELETE.image(16.0, ink).paint_at(ui, Rect::from_center_size(tool.center(), Vec2::splat(16.0)));
-            if response.on_hover_text("Apagar mensagem (Shift apaga sem perguntar)").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                let ask = !ui.input(|input| input.modifiers.shift);
-                action = Some(ChatAction::Delete { message_id: message.id.clone(), ask });
+        let in_thread_view = self.thread.is_some();
+        let mut tools: Vec<(Tool, icons::Icon, &str)> = Vec::new();
+        if !in_thread_view {
+            tools.push((Tool::Thread, icons::THREAD, "Responder em tópico"));
+        }
+        tools.push(if message.is_pinned() { (Tool::Unpin, icons::PIN, "Desafixar mensagem") } else { (Tool::Pin, icons::PIN, "Fixar mensagem") });
+        if message.mine {
+            tools.push((Tool::Delete, icons::DELETE, "Apagar mensagem (Shift apaga sem perguntar)"));
+        }
+        let mut chosen = None;
+        if hovered {
+            let size = 30.0;
+            let width = tools.len() as f32 * size + 8.0;
+            let top = (rect.top() - 16.0).max(ui.clip_rect().top() + 2.0);
+            let bar = Rect::from_min_size(egui::pos2(rect.right() - 16.0 - width, top), Vec2::new(width, size + 8.0));
+            self.tools_for = Some((message.id.clone(), bar));
+            let round = CornerRadius::same(if palette.glass { 12 } else { 6 });
+            if palette.glass {
+                let pane = crate::glass::Pane { blur: Some(12.0), shine: false, ..crate::glass::Pane::new(Color32::from_rgba_unmultiplied(40, 42, 64, 200), 12.0) };
+                crate::glass::pane(ui.painter(), bar, &pane);
+            } else {
+                ui.painter().add(egui::Shadow { offset: [0, 2], blur: 8, spread: 0, color: Color32::from_black_alpha(60) }.as_shape(bar, round));
+                ui.painter().rect_filled(bar, round, palette.panel);
+                ui.painter().rect_stroke(bar, round, Stroke::new(1.0, palette.line), egui::StrokeKind::Inside);
+            }
+            for (index, (tool, icon, tip)) in tools.iter().enumerate() {
+                let button = Rect::from_min_size(bar.min + Vec2::new(4.0 + index as f32 * size, 4.0), Vec2::splat(size));
+                let response = ui.interact(button, ui.scope_id().with(("tool", &message.id, index)), Sense::click());
+                let lit = crate::motion::hover(ui.ctx(), response.id, response.hovered());
+                let danger = *tool == Tool::Delete;
+                let over = if danger { palette.danger } else { palette.selected };
+                if lit > 0.0 {
+                    ui.painter().rect_filled(button.shrink(1.0), CornerRadius::same(if palette.glass { 8 } else { 4 }), over.gamma_multiply(lit));
+                }
+                let rest = if *tool == Tool::Unpin { palette.accent_text } else { palette.soft };
+                let ink = crate::motion::mix(rest, if danger { Color32::WHITE } else { palette.strong }, lit);
+                icon.image(18.0, ink).paint_at(ui, Rect::from_center_size(button.center(), Vec2::splat(18.0)));
+                if response.on_hover_text(*tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    chosen = Some(*tool);
+                }
             }
         }
         let menu = ui.interact(rect, ui.scope_id().with(("menu", &message.id)), Sense::hover());
         // The text cannot be selected here as it could there, so the menu also copies it.
-        if !message.text.is_empty() || message.mine {
-            crate::app::context_menu(&menu, palette, |ui| {
-                if !message.text.is_empty() && crate::app::menu_item(ui, palette, "Copiar texto", false) {
-                    ui.ctx().copy_text(message.text.clone());
+        crate::app::context_menu(&menu, palette, |ui| {
+            if !in_thread_view && crate::app::menu_item(ui, palette, "Responder em tópico", false) {
+                chosen = Some(Tool::Thread);
+            }
+            let pin = if message.is_pinned() { "Desafixar mensagem" } else { "Fixar mensagem" };
+            if crate::app::menu_item(ui, palette, pin, false) {
+                chosen = Some(if message.is_pinned() { Tool::Unpin } else { Tool::Pin });
+            }
+            if !message.text.is_empty() && crate::app::menu_item(ui, palette, "Copiar texto", false) {
+                ui.ctx().copy_text(message.text.clone());
+            }
+            if message.mine {
+                crate::app::menu_separator(ui, palette);
+                if crate::app::menu_item(ui, palette, "Apagar mensagem", true) {
+                    chosen = Some(Tool::Delete);
                 }
-                if message.mine {
-                    if !message.text.is_empty() {
-                        crate::app::menu_separator(ui, palette);
-                    }
-                    if crate::app::menu_item(ui, palette, "Apagar mensagem", true) {
-                        let ask = !ui.input(|input| input.modifiers.shift);
-                        action = Some(ChatAction::Delete { message_id: message.id.clone(), ask });
-                    }
-                }
-            });
+            }
+        });
+        match chosen {
+            Some(Tool::Thread) => action = Some(ChatAction::OpenThread(message.id.clone())),
+            Some(Tool::Pin) => self.set_pinned(hub, &message.id, true),
+            Some(Tool::Unpin) => self.set_pinned(hub, &message.id, false),
+            Some(Tool::Delete) => {
+                let ask = !ui.input(|input| input.modifiers.shift);
+                action = Some(ChatAction::Delete { message_id: message.id.clone(), ask });
+            }
+            None => {}
         }
         action
     }
@@ -741,7 +930,7 @@ impl ChatView {
             Frame::new().fill(palette.panel).corner_radius(CornerRadius::same(6)).inner_margin(Margin { left: 16, right: 14, top: 10, bottom: 12 })
         };
         let inner = frame.show(ui, |ui| {
-            ui.set_max_width(432.0);
+            ui.set_max_width(432.0f32.min(ui.available_width()));
             ui.spacing_mut().item_spacing.y = 4.0;
             if !embed.site_name.is_empty() {
                 ui.label(RichText::new(&embed.site_name).color(palette.muted).size(12.0));
@@ -867,7 +1056,7 @@ impl ChatView {
                         }
                     }
                     // Only a conversation between two people can call for attention, as in MSN.
-                    let direct = self.conversation.as_ref().is_some_and(|conversation| conversation.channel_id.is_none());
+                    let direct = self.thread.is_none() && self.conversation.as_ref().is_some_and(|conversation| conversation.channel_id.is_none());
                     let width = ui.available_width() - if direct { 82.0 } else { 40.0 };
                     let edit = egui::TextEdit::multiline(&mut self.draft)
                         .hint_text(RichText::new(&chrome.placeholder).color(palette.muted))
@@ -959,7 +1148,8 @@ impl ChatView {
                 let left = ui.max_rect().left() - 16.0;
                 let right = ui.max_rect().right() + 16.0;
                 let round = |touches: bool| if touches { 16 } else { 0 };
-                let corners = CornerRadius { nw: 0, ne: 0, sw: 16, se: round((whole.right() - right) < 12.0) };
+                // A thread beside the conversation has the conversation at its left, not a corner.
+                let corners = CornerRadius { nw: 0, ne: 0, sw: if self.thread.is_some() { 0 } else { 16 }, se: round((whole.right() - right) < 12.0) };
                 let band = Rect::from_min_max(egui::pos2(left, top), egui::pos2(right, ui.cursor().min.y));
                 let pane = crate::glass::Pane { corners, edge: false, shine: false, ..crate::glass::Pane::new(Color32::TRANSPARENT, 0.0) };
                 crate::glass::fill(ui.painter(), reserved, band, &pane);
@@ -1048,6 +1238,8 @@ fn picture(ui: &mut Ui, palette: &Palette, blob: Option<Blob>, bounds: Vec2, fil
         ui.painter().text(rect.center(), Align2::CENTER_CENTER, "imagem indisponível", FontId::proportional(12.0), palette.muted);
         return None;
     };
+    // A narrow column, as a thread's, makes the picture smaller instead of cutting it.
+    let bounds = Vec2::new(bounds.x.min(ui.available_width().max(120.0)), bounds.y);
     let scale = (bounds.x / blob.size.x).min(bounds.y / blob.size.y).min(1.0);
     let shown = (blob.size * scale).max(Vec2::splat(60.0));
     let (rect, response) = ui.allocate_exact_size(shown, Sense::click());
@@ -1134,4 +1326,75 @@ mod tests {
         assert_eq!(link_target("www.example.com"), "https://www.example.com");
         assert_eq!(link_target("http://example.com"), "http://example.com");
     }
+}
+
+/// What the tools over a message do.
+#[derive(Clone, Copy, PartialEq)]
+enum Tool {
+    Thread,
+    Pin,
+    Unpin,
+    Delete,
+}
+
+/// The bar under a message with answers, as Slack: the faces of who answered, how many answers
+/// and when the last came. True when it was clicked, to open the thread.
+fn thread_bar(ui: &mut Ui, hub: &Hub, pictures: &mut Pictures, palette: &Palette, summary: &ThreadSummary) -> bool {
+    ui.add_space(4.0);
+    let count = if summary.count == 1 { "1 resposta".to_owned() } else { format!("{} respostas", summary.count) };
+    let count_galley = ui.painter().layout_no_wrap(count, FontId::new(13.0, theme::semibold()), palette.link);
+    let last = format!("Última resposta {}", format_time(summary.last_at).to_lowercase());
+    let last_galley = ui.painter().layout_no_wrap(last, FontId::proportional(12.0), palette.muted);
+    let hint_galley = ui.painter().layout_no_wrap("Ver tópico".to_owned(), FontId::proportional(12.0), palette.muted);
+    let faces = summary.faces.len() as f32;
+    let width = 6.0 + 22.0 + (faces - 1.0).max(0.0) * 18.0 + 14.0 + count_galley.size().x + 10.0 + last_galley.size().x.max(hint_galley.size().x) + 12.0;
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width.min(ui.available_width()), 32.0), Sense::click());
+    let lit = crate::motion::hover(ui.ctx(), response.id, response.hovered());
+    let round = CornerRadius::same(if palette.glass { 10 } else { 6 });
+    if lit > 0.0 {
+        let fill = if palette.glass { Color32::from_white_alpha((15.0 * lit) as u8) } else { palette.panel.gamma_multiply(lit) };
+        ui.painter().rect_filled(rect, round, fill);
+        let edge = if palette.glass { crate::glass::EDGE } else { palette.line };
+        ui.painter().rect_stroke(rect, round, Stroke::new(1.0, edge.gamma_multiply(lit)), egui::StrokeKind::Inside);
+    }
+    // The faces overlap a little, each with a ring of the background around it.
+    let ring = if palette.glass { Color32::from_rgb(30, 31, 48) } else { palette.main };
+    let mut x = rect.left() + 6.0;
+    for (member, name) in &summary.faces {
+        let face = Rect::from_center_size(egui::pos2(x + 11.0, rect.center().y), Vec2::splat(22.0));
+        ui.painter().circle_filled(face.center(), 12.5, ring);
+        widgets::paint_avatar(ui, face, name, pictures.avatar(hub, member.as_deref()));
+        x += 18.0;
+    }
+    x += 4.0 + 10.0;
+    ui.painter().galley(egui::pos2(x, rect.center().y - count_galley.size().y / 2.0), count_galley.clone(), palette.link);
+    x += count_galley.size().x + 10.0;
+    // On hover the time gives way to the invitation, as Slack does.
+    if lit < 1.0 {
+        ui.painter().galley_with_override_text_color(egui::pos2(x, rect.center().y - last_galley.size().y / 2.0), last_galley, palette.muted.gamma_multiply(1.0 - lit));
+    }
+    if lit > 0.0 {
+        ui.painter().galley_with_override_text_color(egui::pos2(x, rect.center().y - hint_galley.size().y / 2.0), hint_galley, palette.strong.gamma_multiply(lit));
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+}
+
+/// The line under the message a thread hangs from: how many answers, and a rule.
+fn thread_divider(ui: &mut Ui, palette: &Palette, count: usize) {
+    ui.add_space(10.0);
+    let label = match count {
+        0 => "Nenhuma resposta ainda".to_owned(),
+        1 => "1 resposta".to_owned(),
+        count => format!("{count} respostas"),
+    };
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 18.0), Sense::hover());
+    let galley = ui.painter().layout_no_wrap(label, FontId::new(12.0, theme::semibold()), palette.muted);
+    let left = rect.left() + 16.0;
+    let width = galley.size().x;
+    ui.painter().galley(egui::pos2(left, rect.center().y - galley.size().y / 2.0), galley, palette.muted);
+    let line_left = left + width + 10.0;
+    if line_left < rect.right() - 16.0 {
+        ui.painter().hline(line_left..=rect.right() - 16.0, rect.center().y, Stroke::new(1.0, palette.line_soft));
+    }
+    ui.add_space(2.0);
 }

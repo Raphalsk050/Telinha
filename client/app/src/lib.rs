@@ -27,6 +27,7 @@ pub mod notify;
 pub mod prefs;
 pub mod settings;
 pub mod share_picker;
+pub mod pins_view;
 pub mod soundboard_view;
 pub mod stream_settings;
 pub mod update_view;

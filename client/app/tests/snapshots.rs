@@ -85,6 +85,9 @@ fn scene() -> Scene {
     };
     chat("m1", "Keep", KEEP, 50, json!({ "text": "alguém vai jogar hoje?" }));
     chat("m2", "Keep", KEEP, 49, json!({ "text": "to devendo o agiota, preciso de distração" }));
+    // Two answers in the thread of the first message, which stay out of the conversation.
+    chat("t1", "nanda", NANDA, 48, json!({ "text": "eu jogo! só depois das 21h", "threadId": "m1" }));
+    chat("t2", "pedro", PEDRO, 46, json!({ "text": "to dentro, chama no canal de voz", "threadId": "m1" }));
     chat("m3", "nanda", NANDA, 30, json!({ "text": "eu vou, só terminar aqui. olha isso https://example.com/receita" ,
         "embed": { "url": "https://example.com/receita", "title": "Receita de bolo de cenoura", "description": "Fofinho, com cobertura de chocolate, pronto em 40 minutos.", "siteName": "example.com" } }));
     chat("m4", "Keep", KEEP, 12, json!({ "text": "olha essa",
@@ -94,6 +97,8 @@ fn scene() -> Scene {
         "embed": { "url": "https://www.youtube.com/watch?v=aqz-KE-bpKQ", "title": "Big Buck Bunny 60fps 4K", "description": "", "siteName": "YouTube",
             "image": { "mime": "image/png", "width": 480, "height": 360, "data": encode_base64(&png(480, 360, 90)) } } }));
     chat("m6", "Keep", KEEP, 2, json!({ "text": "chamou a atenção!", "nudge": true }));
+    // nanda pinned the recipe.
+    signaling.loopback(&server.id, &json!({ "type": "chat-pin", "from": "peer-nanda", "at": now_ms(), "mid": "pin-m3", "messageId": "m3", "channelId": text_channel, "pinned": true, "by": "nanda" }));
 
     runtime.block_on(async { tokio::time::sleep(Duration::from_millis(150)).await });
     drop(guard);
@@ -214,6 +219,12 @@ fn the_glass_theme_draws() {
     scene.app.navigate(Nav::Server { server_id, channel_id: Some(channel) });
     scene.app.set_appearance(Appearance { theme: ThemeChoice::Glass, ..Appearance::default() });
     shoot(&mut scene, "glass-server");
+    scene.app.open_thread_for_test("m1");
+    shoot(&mut scene, "glass-thread");
+    scene.app.close_thread_for_test();
+    scene.app.pins_for_test(true);
+    shoot(&mut scene, "glass-pins");
+    scene.app.pins_for_test(false);
     scene.app.open_settings();
     scene.app.settings_page_for_test(telinha::settings::Page::Appearance);
     shoot(&mut scene, "glass-settings");
@@ -271,13 +282,18 @@ fn the_glass_theme_draws() {
     // The conversation scrolled so that its text runs under the message box.
     let channel = scene.text_channel.clone();
     scene.app.navigate(Nav::Server { server_id, channel_id: Some(channel) });
-    scene.app.scroll_chat_for_test(0.0);
+    // Past the bar of the thread of the first message, which pushes the rest down.
+    scene.app.scroll_chat_for_test(38.0);
     blurs(&mut scene, "glass-blur", &[
         // The name over the last message, under the message box and below what is written in it.
         ("message box", egui::Rect::from_min_max(egui::pos2(404.0, 806.0), egui::pos2(600.0, 817.0))),
         // The last message, under the band of the notice and below the notice itself.
         ("notice", egui::Rect::from_min_max(egui::pos2(404.0, 840.0), egui::pos2(456.0, 847.0))),
     ]);
+    // The tools over a message, and the bar of its thread.
+    scene.app.scroll_chat_for_test(0.0);
+    shoot_hovering(&mut scene.app, "glass-message-tools", egui::pos2(700.0, 300.0));
+    shoot_hovering(&mut scene.app, "glass-thread-bar", egui::pos2(470.0, 337.0));
 }
 
 #[test]
@@ -289,6 +305,12 @@ fn the_window_draws() {
     let (server_id, channel) = (scene.server_id.clone(), scene.text_channel.clone());
     scene.app.navigate(Nav::Server { server_id, channel_id: Some(channel) });
     shoot(&mut scene, "server");
+    scene.app.open_thread_for_test("m1");
+    shoot(&mut scene, "thread");
+    scene.app.close_thread_for_test();
+    scene.app.pins_for_test(true);
+    shoot(&mut scene, "pins");
+    scene.app.pins_for_test(false);
     shoot_clicking(&mut scene.app, "menu-server", &[(egui::pos2(190.0, 24.0), egui::PointerButton::Primary)]);
     shoot_clicking(&mut scene.app, "menu-person", &[(egui::pos2(1190.0, 113.0), egui::PointerButton::Secondary)]);
     shoot_clicking(&mut scene.app, "menu-user", &[(egui::pos2(150.0, 832.0), egui::PointerButton::Secondary)]);

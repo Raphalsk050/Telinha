@@ -80,6 +80,13 @@ pub struct TelinhaApp {
     pub(crate) card: Option<CardRequest>,
     pub(crate) card_opened: f64,
     chat: ChatView,
+    /// The thread open beside the conversation, as Slack shows them.
+    thread: Option<Box<ChatView>>,
+    /// The balloon of the pinned messages, and where its button was.
+    pub(crate) pins_open: bool,
+    pub(crate) pins_button: Option<Rect>,
+    /// The video the player was given last, to know which conversation asked for it last.
+    playing_key: Option<String>,
     pub(crate) pictures: Pictures,
     pub(crate) dialog: Option<Dialog>,
     pub(crate) room: RoomState,
@@ -165,6 +172,10 @@ impl TelinhaApp {
             card: None,
             card_opened: 0.0,
             chat: ChatView::default(),
+            thread: None,
+            pins_open: false,
+            pins_button: None,
+            playing_key: None,
             dialog: None,
             toast: None,
             sharp_glass: false,
@@ -202,6 +213,10 @@ impl TelinhaApp {
         if let Some(conversation) = &conversation {
             self.mark_read(conversation);
         }
+        if self.chat.conversation() != conversation.as_ref() {
+            self.thread = None;
+            self.pins_open = false;
+        }
         self.chat.open(&self.hub, conversation);
     }
 
@@ -232,18 +247,46 @@ impl TelinhaApp {
                     } else if !message.mine {
                         self.message_tone();
                     }
+                    if let Some(thread) = &mut self.thread {
+                        thread.received(&conversation, message.clone());
+                    }
                     self.chat.received(&conversation, message);
                 }
                 HubEvent::Notify { title, body, member_id, open } => self.show_notice(&title, &body, member_id.as_deref(), open),
                 HubEvent::IncomingCall { contact_id, name, kind } => self.incoming_call(contact_id, name, kind == CallKind::Live),
-                HubEvent::FileStatus { file_id, status, .. } => self.chat.file_status(&file_id, status),
-                HubEvent::FileProgress { file_id, done, total, up, .. } => self.chat.file_progress(&file_id, done, total, up),
-                HubEvent::UploadProgress { file_id, done, total, .. } => self.chat.file_progress(&file_id, done, total, true),
+                HubEvent::FileStatus { file_id, status, .. } => {
+                    if let Some(thread) = &mut self.thread {
+                        thread.file_status(&file_id, status.clone());
+                    }
+                    self.chat.file_status(&file_id, status);
+                }
+                HubEvent::FileProgress { file_id, done, total, up, .. } => {
+                    if let Some(thread) = &mut self.thread {
+                        thread.file_progress(&file_id, done, total, up);
+                    }
+                    self.chat.file_progress(&file_id, done, total, up);
+                }
+                HubEvent::UploadProgress { file_id, done, total, .. } => {
+                    if let Some(thread) = &mut self.thread {
+                        thread.file_progress(&file_id, done, total, true);
+                    }
+                    self.chat.file_progress(&file_id, done, total, true);
+                }
                 HubEvent::Manual(event) => self.manual_event(&event),
                 HubEvent::ManualEnded { code, .. } => self.manual_ended(code),
                 HubEvent::ContactSaved { contact_id, created, .. } => self.contact_saved(contact_id, created),
-                HubEvent::ChatUpdate { conversation, message } => self.chat.updated(&conversation, message),
-                HubEvent::ChatRemove { conversation, message_id } => self.chat.removed(&conversation, &message_id),
+                HubEvent::ChatUpdate { conversation, message } => {
+                    if let Some(thread) = &mut self.thread {
+                        thread.updated(&conversation, message.clone());
+                    }
+                    self.chat.updated(&conversation, message);
+                }
+                HubEvent::ChatRemove { conversation, message_id } => {
+                    if let Some(thread) = &mut self.thread {
+                        thread.removed(&conversation, &message_id);
+                    }
+                    self.chat.removed(&conversation, &message_id);
+                }
                 HubEvent::Picture { member_id, banner } => self.pictures.forget(&member_id, banner),
                 HubEvent::Profile => {
                     self.pictures.forget_own();
@@ -399,6 +442,7 @@ impl TelinhaApp {
         self.show_avatar_picker(ui.ctx());
         self.show_crop(ui.ctx());
         self.show_soundboard(ui.ctx());
+        self.show_pins(ui.ctx());
         self.show_debug(ui.ctx());
         self.show_voice_popover(ui.ctx());
         self.show_dialog(ui.ctx());
@@ -430,7 +474,26 @@ impl TelinhaApp {
     /// Plays the video the conversation asks for, where it keeps its place, and hides the player
     /// while anything is drawn over that place: a menu, a window, a tooltip.
     fn tend_player(&mut self, context: &egui::Context) {
-        let wanted = self.chat.playing().map(|(key, video)| (key.to_owned(), video.clone()));
+        // The conversation and the thread may each want a video: the one asked for last plays and
+        // the other stops.
+        let main_key = self.chat.playing().map(|(key, _)| key.to_owned());
+        let thread_key = self.thread.as_ref().and_then(|thread| thread.playing()).map(|(key, _)| key.to_owned());
+        if main_key.is_some() && thread_key.is_some() {
+            if main_key != self.playing_key {
+                if let Some(thread) = &mut self.thread {
+                    thread.stop_video();
+                }
+            } else {
+                self.chat.stop_video();
+            }
+        }
+        let from_thread = self.chat.playing().is_none() && self.thread.as_ref().is_some_and(|thread| thread.playing().is_some());
+        let wanted = if from_thread {
+            self.thread.as_ref().and_then(|thread| thread.playing()).map(|(key, video)| (key.to_owned(), video.clone()))
+        } else {
+            self.chat.playing().map(|(key, video)| (key.to_owned(), video.clone()))
+        };
+        self.playing_key = wanted.as_ref().map(|(key, _)| key.clone());
         let Some((key, video)) = wanted else {
             if let Some(player) = &mut self.player {
                 player.stop();
@@ -450,7 +513,8 @@ impl TelinhaApp {
         }
         let Some(player) = &mut self.player else { return };
         player.play(&key, &video);
-        let rect = self.chat.player_rect().filter(|rect| {
+        let rect = if from_thread { self.thread.as_ref().and_then(|thread| thread.player_rect()) } else { self.chat.player_rect() };
+        let rect = rect.filter(|rect| {
             [rect.left_top(), rect.right_top(), rect.left_bottom(), rect.right_bottom(), rect.center()]
                 .into_iter()
                 .map(|corner| corner + (rect.center() - corner) * 0.02)
@@ -890,8 +954,8 @@ impl TelinhaApp {
             let at = left + Vec2::new(used + 10.0, 1.0);
             widgets::paint_text_clipped(ui, at, header.width() * 0.3, &topic, FontId::proportional(13.0), palette.muted);
         }
+        let mut tools = ui.new_child(egui::UiBuilder::new().max_rect(header.shrink2(Vec2::new(12.0, 8.0))).layout(Layout::right_to_left(Align::Center)));
         if self.current_server().is_some() {
-            let mut tools = ui.new_child(egui::UiBuilder::new().max_rect(header.shrink2(Vec2::new(12.0, 8.0))).layout(Layout::right_to_left(Align::Center)));
             let color = if self.prefs.show_members { palette.strong } else { palette.soft };
             if widgets::icon_button(&mut tools, icons::MEMBERS, 32.0, color, palette.hover, "Mostrar ou esconder os membros").clicked() {
                 self.prefs.show_members = !self.prefs.show_members;
@@ -910,6 +974,16 @@ impl TelinhaApp {
                 if widgets::icon_button(&mut tools, icons::CHAT, 32.0, color, palette.hover, tip).clicked() {
                     self.room.chat_open = !self.room.chat_open;
                 }
+            }
+        }
+        // The pinned messages of the conversation, in a balloon under the button.
+        self.pins_button = None;
+        if self.chat.conversation().is_some() && self.nav != Nav::Home {
+            let color = if self.pins_open { palette.strong } else { palette.soft };
+            let button = widgets::icon_button(&mut tools, icons::PIN, 32.0, color, palette.hover, "Mensagens fixadas");
+            self.pins_button = Some(button.rect);
+            if button.clicked() {
+                self.pins_open = !self.pins_open;
             }
         }
         // The members sit under the header, beside the conversation, as `.main-body` laid them.
@@ -970,38 +1044,149 @@ impl TelinhaApp {
         self.chat_area(ui);
     }
 
-    /// The conversation open, or the first screen, or the line that asks for one.
+    /// The conversation open, or the first screen, or the line that asks for one. A thread open
+    /// takes a column at the right, or all the room when it is narrow.
     fn chat_area(&mut self, ui: &mut Ui) {
         let palette = self.palette;
-        match self.chrome() {
-            Some(chrome) => {
-                let hub = Arc::clone(&self.hub);
-                match self.chat.show(ui, &hub, &mut self.pictures, &self.styles, &palette, &chrome) {
-                    Some(ChatAction::OpenImage { uri, bytes }) => self.lightbox = Lightbox::open(ui.ctx(), uri, bytes),
-                    Some(ChatAction::Profile { member_id, name, anchor }) => self.open_card(member_id, &name, anchor),
-                    Some(ChatAction::Delete { message_id, ask: true }) => {
-                        self.dialog = Some(Dialog::Confirm {
-                            danger: Danger::DeleteMessage(message_id),
-                            title: "Apagar a mensagem".to_owned(),
-                            text: "Ela some daqui e de quem estiver online agora. Quem estiver offline continua com ela.".to_owned(),
-                            confirm: "Apagar".to_owned(),
-                        });
-                    }
-                    Some(ChatAction::Delete { message_id, ask: false }) => {
-                        let context = ui.ctx().clone();
-                        self.apply_danger(&context, Danger::DeleteMessage(message_id));
-                    }
-                    Some(ChatAction::Notice(text)) => self.notice(text),
-                    None => {}
-                }
-            }
-            None if self.nav == Nav::Home => self.home_view(ui),
-            None => {
+        let Some(chrome) = self.chrome() else {
+            if self.nav == Nav::Home {
+                self.home_view(ui);
+            } else {
                 ui.centered_and_justified(|ui| {
                     ui.label(RichText::new("Escolha uma conversa à esquerda.").color(palette.muted));
                 });
             }
+            return;
+        };
+        // A thread of another conversation, or whose message is gone, closes.
+        if self.thread.as_ref().is_some_and(|thread| thread.conversation() != self.chat.conversation() || thread.thread_root().is_none()) {
+            self.thread = None;
         }
+        let hub = Arc::clone(&self.hub);
+        let mut actions = Vec::new();
+        match self.thread.take() {
+            None => actions.push((false, self.chat.show(ui, &hub, &mut self.pictures, &self.styles, &palette, &chrome))),
+            Some(mut thread) => {
+                let area = ui.available_rect_before_wrap();
+                let narrow = area.width() < 720.0;
+                let width = if narrow { area.width() } else { 420.0f32.min(area.width() * 0.42).round() };
+                let side_rect = Rect::from_min_max(egui::pos2(area.right() - width, area.top()), area.max);
+                if !narrow {
+                    let main_rect = Rect::from_min_max(area.min, egui::pos2(side_rect.left(), area.bottom()));
+                    let mut main = ui.new_child(egui::UiBuilder::new().id_salt("main-chat").max_rect(main_rect).layout(Layout::top_down(Align::Min)));
+                    main.set_clip_rect(main_rect.intersect(ui.clip_rect()));
+                    actions.push((false, self.chat.show(&mut main, &hub, &mut self.pictures, &self.styles, &palette, &chrome)));
+                    ui.painter().vline(side_rect.left(), side_rect.y_range(), egui::Stroke::new(1.0, palette.line));
+                }
+                let mut side = ui.new_child(egui::UiBuilder::new().id_salt("thread-chat").max_rect(side_rect).layout(Layout::top_down(Align::Min)));
+                side.set_clip_rect(side_rect.intersect(ui.clip_rect()));
+                let close = self.thread_header(&mut side, &chrome);
+                let author = thread.thread_root().map(|root| root.author.clone()).unwrap_or_default();
+                let thread_chrome = Chrome { placeholder: format!("Responder a {author}"), ..chrome.clone() };
+                actions.push((true, thread.show(&mut side, &hub, &mut self.pictures, &self.styles, &palette, &thread_chrome)));
+                ui.allocate_rect(area, Sense::hover());
+                let escape = ui.input(|input| input.key_pressed(egui::Key::Escape)) && self.dialog.is_none() && !self.pins_open && !egui::Popup::is_any_open(ui.ctx());
+                if !close && !escape {
+                    self.thread = Some(thread);
+                }
+            }
+        }
+        for (from_thread, action) in actions {
+            if let Some(action) = action {
+                self.chat_action(ui, action, from_thread);
+            }
+        }
+    }
+
+    /// The top of the thread beside the conversation: what it is, where, and the way to close it.
+    /// True when it was closed.
+    fn thread_header(&mut self, ui: &mut Ui, chrome: &Chrome) -> bool {
+        let palette = self.palette;
+        let height = self.prefs.appearance.density.header_height();
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
+        ui.painter().hline(rect.x_range(), rect.bottom(), egui::Stroke::new(1.0, palette.line_soft));
+        let mut left = rect.left_center() + Vec2::new(16.0, 0.0);
+        icons::THREAD.image(20.0, palette.muted).paint_at(ui, Rect::from_center_size(left + Vec2::new(10.0, 0.0), Vec2::splat(20.0)));
+        left.x += 30.0;
+        let used = widgets::paint_text_clipped(ui, left, rect.width() * 0.5, "Tópico", FontId::new(16.0, theme::semibold()), palette.strong);
+        let place = if matches!(self.nav, Nav::Direct(_)) { chrome.title.clone() } else { format!("#{}", chrome.title) };
+        widgets::paint_text_clipped(ui, left + Vec2::new(used + 10.0, 1.0), rect.width() - used - 120.0, &place, FontId::proportional(13.0), palette.muted);
+        let mut tools = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(12.0, 8.0))).layout(Layout::right_to_left(Align::Center)));
+        widgets::icon_button(&mut tools, icons::CLOSE, 32.0, palette.soft, palette.hover, "Fechar o tópico (Esc)").clicked()
+    }
+
+    /// Does what the person asked in the conversation or in its thread.
+    fn chat_action(&mut self, ui: &mut Ui, action: ChatAction, from_thread: bool) {
+        match action {
+            ChatAction::OpenImage { uri, bytes } => self.lightbox = Lightbox::open(ui.ctx(), uri, bytes),
+            ChatAction::Profile { member_id, name, anchor } => self.open_card(member_id, &name, anchor),
+            ChatAction::Delete { message_id, ask: true } => {
+                self.dialog = Some(Dialog::Confirm {
+                    danger: Danger::DeleteMessage(message_id),
+                    title: "Apagar a mensagem".to_owned(),
+                    text: "Ela some daqui e de quem estiver online agora. Quem estiver offline continua com ela.".to_owned(),
+                    confirm: "Apagar".to_owned(),
+                });
+            }
+            ChatAction::Delete { message_id, ask: false } => {
+                let context = ui.ctx().clone();
+                self.apply_danger(&context, Danger::DeleteMessage(message_id));
+            }
+            ChatAction::Notice(text) => self.notice(text),
+            ChatAction::OpenThread(root) if !from_thread => self.open_thread(&root),
+            ChatAction::OpenThread(_) => {}
+        }
+    }
+
+    /// Opens the thread that hangs from a message of the conversation open.
+    pub fn open_thread(&mut self, root: &str) {
+        let Some(conversation) = self.chat.conversation().cloned() else { return };
+        if self.thread.as_ref().and_then(|thread| thread.thread_root()).is_some_and(|open| open.id == root) {
+            return;
+        }
+        let mut thread = ChatView::default();
+        thread.open_thread(&self.hub, conversation, root);
+        self.thread = Some(Box::new(thread));
+        // In a voice channel the chat may be hidden behind the stage.
+        self.room.chat_open = true;
+    }
+
+    /// Brings a message of the conversation into sight, in its thread when it is an answer.
+    pub(crate) fn jump_to_message(&mut self, message_id: &str) {
+        let root = self.chat.message_by_id(message_id).and_then(|message| message.thread_id()).filter(|root| self.chat.message_by_id(root).is_some()).map(str::to_owned);
+        self.room.chat_open = true;
+        match root {
+            Some(root) => {
+                self.open_thread(&root);
+                if let Some(thread) = &mut self.thread {
+                    thread.jump_to(message_id);
+                }
+            }
+            None => self.chat.jump_to(message_id),
+        }
+    }
+
+    pub(crate) fn pinned_messages(&self) -> Vec<telinha_core::chats::Message> {
+        self.chat.pinned()
+    }
+
+    pub(crate) fn unpin(&mut self, message_id: &str) {
+        if let Some(conversation) = self.chat.conversation().cloned() {
+            self.hub.pin_message(&conversation, message_id, false);
+        }
+    }
+
+    /// Opens the thread of a message, for the pictures of the tests.
+    pub fn open_thread_for_test(&mut self, root: &str) {
+        self.open_thread(root);
+    }
+
+    pub fn close_thread_for_test(&mut self) {
+        self.thread = None;
+    }
+
+    pub fn pins_for_test(&mut self, open: bool) {
+        self.pins_open = open;
     }
 }
 

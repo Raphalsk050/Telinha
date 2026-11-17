@@ -1,0 +1,93 @@
+/* Tema "Vidro" (glassmorfismo): painéis translúcidos e desfocados sobre um fundo colorido.
+   Só vale com data-theme="glass"; os outros temas não mudam. */
+
+[data-theme="glass"] {
+  --rail: transparent;
+  --sidebar: rgba(16, 18, 34, .50);
+  --main: rgba(16, 18, 34, .40);
+  --panel: rgba(255, 255, 255, .05);
+  --raised: rgba(255, 255, 255, .08);
+  --hover: rgba(255, 255, 255, .07);
+  --selected: rgba(255, 255, 255, .14);
+  --line: rgba(255, 255, 255, .08);
+  --line-soft: rgba(255, 255, 255, .14);
+  --field: rgba(0, 0, 0, .22);
+  --float: rgba(16, 18, 30, .72);
+  --text: #e8eaf4; --strong: #fff; --muted: #a9aecb; --soft: #c8cce0;
+  --accent: #6d72ff; --accent-hover: #5a5ff0;
+  --glass-edge: rgba(255, 255, 255, .16);
+  --glass-shine: rgba(255, 255, 255, .10);
+  --glass-blur: blur(28px) saturate(170%);
+  --dot-ring: rgba(26, 28, 46, .95);
+}
+
+/* fundo: manchas de cor que o vidro desfoca */
+body[data-theme="glass"] {
+  background:
+    radial-gradient(60vw 60vw at 8% 10%, rgba(124, 58, 237, .85), transparent 70%),
+    radial-gradient(50vw 50vw at 95% 0%, rgba(6, 182, 212, .7), transparent 70%),
+    radial-gradient(60vw 60vw at 85% 100%, rgba(219, 39, 119, .75), transparent 70%),
+    radial-gradient(55vw 55vw at 15% 100%, rgba(37, 99, 235, .8), transparent 70%),
+    linear-gradient(135deg, #1b1446, #10183a 50%, #2a0f3a);
+}
+
+/* painéis flutuando com espaço entre eles */
+[data-theme="glass"] #app { padding: 10px 10px 10px 0; gap: 10px; }
+[data-theme="glass"] .sidebar,
+[data-theme="glass"] .main,
+[data-theme="glass"] .settings {
+  border-radius: 16px; overflow: hidden;
+  border: 1px solid var(--glass-edge);
+  backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: inset 0 1px 0 var(--glass-shine), 0 12px 40px rgba(0, 0, 0, .35);
+}
+
+/* trilho: botões de vidro soltos */
+[data-theme="glass"] .rail-btn {
+  background: rgba(255, 255, 255, .08); border: 1px solid var(--glass-edge);
+  backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
+}
+[data-theme="glass"] .rail-btn:hover,
+[data-theme="glass"] .rail-btn.active { background: linear-gradient(135deg, #6d72ff, #a855f7); border-color: transparent; }
+[data-theme="glass"] .rail-btn.add:hover { background: var(--green); }
+[data-theme="glass"] .dot,
+[data-theme="glass"] .rail-btn .dot { border-color: var(--dot-ring); }
+
+/* lista de membros: uma faixa mais escura dentro do painel principal */
+[data-theme="glass"] .members { background: rgba(0, 0, 0, .14); border-left: 1px solid var(--line); }
+[data-theme="glass"] .user-panel,
+[data-theme="glass"] .voice-panel { background: rgba(0, 0, 0, .18); border-top: 1px solid var(--line); }
+
+/* chat */
+[data-theme="glass"] .message { margin: 6px -8px 0; padding: 8px; border-radius: 12px; transition: background .12s; }
+[data-theme="glass"] .message:hover { background: rgba(255, 255, 255, .04); }
+[data-theme="glass"] .avatar { box-shadow: 0 0 0 2px rgba(255, 255, 255, .12); }
+[data-theme="glass"] .embed {
+  background: rgba(255, 255, 255, .06); border: 1px solid var(--line-soft); border-left: 3px solid var(--accent);
+  border-radius: 12px; backdrop-filter: blur(12px);
+}
+[data-theme="glass"] .image { border-radius: 14px; box-shadow: 0 8px 24px rgba(0, 0, 0, .3); }
+[data-theme="glass"] .composer {
+  margin: 0 16px; border-radius: 14px; padding: 4px 8px;
+  background: rgba(255, 255, 255, .08); border: 1px solid var(--glass-edge);
+  box-shadow: inset 0 1px 0 var(--glass-shine);
+}
+[data-theme="glass"] .composer:focus-within { border-color: rgba(109, 114, 255, .7); box-shadow: 0 0 0 3px rgba(109, 114, 255, .2); }
+[data-theme="glass"] .attach .icon::after { background: rgba(40, 42, 64, 1); }
+
+/* canais */
+[data-theme="glass"] .channel { border-radius: 8px; }
+[data-theme="glass"] .channel.selected { background: rgba(255, 255, 255, .13); box-shadow: inset 0 1px 0 var(--glass-shine); }
+[data-theme="glass"] .sidebar-head { border-bottom-color: var(--line); }
+
+/* botões */
+[data-theme="glass"] .primary { background: linear-gradient(135deg, #6d72ff, #a855f7); border-radius: 8px; }
+[data-theme="glass"] .primary:hover { filter: brightness(1.1); }
+
+/* sala de voz e configurações */
+[data-theme="glass"] .stage { background: rgba(0, 0, 0, .35); }
+[data-theme="glass"] .tile { background: rgba(255, 255, 255, .07); border: 1px solid var(--line-soft); border-radius: 14px; }
+[data-theme="glass"] .round { background: rgba(255, 255, 255, .12); border: 1px solid var(--glass-edge); backdrop-filter: blur(12px); }
+[data-theme="glass"] .card { background: rgba(255, 255, 255, .06); border-color: var(--glass-edge); border-radius: 14px; backdrop-filter: blur(12px); }
+[data-theme="glass"] .overlay { background: rgba(5, 6, 14, .35); backdrop-filter: blur(6px); }
+[data-theme="glass"] .settings-nav { background: rgba(0, 0, 0, .18); }

@@ -8,8 +8,9 @@
       dot.classList.remove("off");
       if (last && now.other !== last.other) return location.reload();
       if (last && now.css !== last.css) {
-        const link = document.getElementById("styles");
-        link.href = "styles.css?" + now.css;
+        for (const link of document.querySelectorAll('link[rel="stylesheet"]')) {
+          link.href = link.getAttribute("href").split("?")[0] + "?" + now.css;
+        }
       }
       last = now;
     } catch {

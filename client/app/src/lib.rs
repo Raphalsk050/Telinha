@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod glass;
+pub mod motion;
 pub mod avatar_picker;
 pub mod icons;
 pub mod theme;

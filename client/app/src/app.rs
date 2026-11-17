@@ -1533,32 +1533,38 @@ enum RailFace {
 fn rail_button(ui: &mut Ui, palette: &Palette, selected: bool, waiting: bool, face: RailFace, tip: &str) -> egui::Response {
     let (slot, response) = ui.allocate_exact_size(Vec2::new(RAIL_WIDTH, 48.0), Sense::click());
     let rect = Rect::from_center_size(slot.center(), Vec2::splat(48.0));
-    let lit = selected || response.hovered();
+    let lit_now = selected || response.hovered();
+    // The circle melts into a rounded square and the mark at the edge grows, both eased.
+    let lit = crate::motion::ease(ui.ctx(), response.id.with("rail-lit"), lit_now, crate::motion::HOVER + 0.04);
     let add = matches!(face, RailFace::Add);
-    let fill = match (lit, add) {
-        (true, true) => palette.green,
-        (true, false) => palette.accent,
-        (false, _) => palette.main,
-    };
-    let round = CornerRadius::same(if lit { 16 } else { 24 });
+    let on = if add { palette.green } else { palette.accent };
+    let fill = crate::motion::mix(palette.main, on, lit);
+    let round = CornerRadius::same(crate::motion::lerp(24.0, 16.0, lit).round() as u8);
     if !palette.glass {
         ui.painter().rect_filled(rect, round, fill);
-    } else if lit && !add {
-        // Lit glass buttons take the gradient of the accent.
-        crate::glass::accent_fill(ui.painter(), egui::Shape::rect_filled(rect, round, Color32::WHITE));
-    } else if lit {
-        ui.painter().rect_filled(rect, round, fill);
     } else {
-        let pane = crate::glass::Pane { shine: false, ..crate::glass::Pane::new(Color32::from_white_alpha(20), 24.0) };
-        crate::glass::pane(ui.painter(), rect, &pane);
+        if lit < 1.0 {
+            let pane = crate::glass::Pane { shine: false, ..crate::glass::Pane::new(Color32::from_white_alpha(20), f32::from(round.nw)) };
+            crate::glass::pane(ui.painter(), rect, &pane);
+        }
+        if lit > 0.0 {
+            if add {
+                ui.painter().rect_filled(rect, round, palette.green.gamma_multiply(lit));
+            } else {
+                // Lit glass buttons take the gradient of the accent.
+                crate::glass::accent_fill(ui.painter(), egui::Shape::rect_filled(rect, round, Color32::WHITE.gamma_multiply(lit)));
+            }
+        }
     }
     // The mark at the edge: tall for where the person is, short for messages waiting to be read.
-    if selected || response.hovered() || waiting {
-        let height = if selected { 40.0 } else if response.hovered() { 20.0 } else { 8.0 };
+    let target = if selected { 40.0 } else if response.hovered() { 20.0 } else if waiting { 8.0 } else { 0.0 };
+    let height = ui.ctx().animate_value_with_time(response.id.with("rail-mark"), target, crate::motion::STATE);
+    if height > 0.5 {
         let mark = Rect::from_center_size(egui::pos2(slot.left() + 2.0, slot.center().y), Vec2::new(8.0, height));
         ui.painter().rect_filled(mark, CornerRadius::same(4), palette.strong);
     }
-    let ink = if lit { Color32::WHITE } else if add { palette.green } else { palette.text };
+    let rest = if add { palette.green } else { palette.text };
+    let ink = crate::motion::mix(rest, Color32::WHITE, lit);
     match face {
         RailFace::Icon(icon) => icon.image(28.0, ink).paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(28.0))),
         RailFace::Add => icons::PLUS.image(24.0, ink).paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(24.0))),

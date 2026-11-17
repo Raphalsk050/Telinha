@@ -443,23 +443,21 @@ pub fn button(ui: &mut Ui, palette: &Palette, label: &str, tone: Tone) -> egui::
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     let enabled = ui.is_enabled();
     let hovered = response.hovered() && enabled;
-    let fill = match (tone, hovered) {
-        (Tone::Primary, false) => palette.accent,
-        (Tone::Primary, true) => palette.accent_hover,
-        (Tone::Danger, false) => palette.danger,
-        (Tone::Danger, true) => palette.danger_hover,
-        (Tone::Plain, false) => BUTTON,
-        (Tone::Plain, true) => BUTTON_HOVER,
-        (Tone::Ghost, false) => Color32::TRANSPARENT,
-        (Tone::Ghost, true) => palette.hover,
+    let lit = crate::motion::hover(ui.ctx(), response.id, hovered);
+    let (rest, over) = match tone {
+        Tone::Primary => (palette.accent, palette.accent_hover),
+        Tone::Danger => (palette.danger, palette.danger_hover),
+        Tone::Plain => (BUTTON, BUTTON_HOVER),
+        Tone::Ghost => (Color32::TRANSPARENT, palette.hover),
     };
+    let fill = crate::motion::mix(rest, over, lit);
     let fade = if enabled { 1.0 } else { 0.5 };
     if palette.glass && tone == Tone::Primary {
         // `.primary` on glass: the accent gradient, rounder, a little brighter under the mouse.
         let shape = egui::Shape::rect_filled(rect, CornerRadius::same(8), Color32::WHITE.gamma_multiply(fade));
         crate::glass::accent_fill(ui.painter(), shape);
-        if hovered {
-            ui.painter().rect_filled(rect, CornerRadius::same(8), Color32::from_white_alpha(18));
+        if lit > 0.0 {
+            ui.painter().rect_filled(rect, CornerRadius::same(8), Color32::from_white_alpha((18.0 * lit) as u8));
         }
     } else {
         ui.painter().rect_filled(rect, CornerRadius::same(4), fill.gamma_multiply(fade));

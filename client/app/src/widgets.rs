@@ -56,8 +56,9 @@ pub fn status_dot(ui: &Ui, avatar: Rect, online: bool, palette: &Palette, backdr
 /// A square button that is only an icon, with a rounded background on hover.
 pub fn icon_button(ui: &mut Ui, icon: Icon, side: f32, color: Color32, hover: Color32, tip: &str) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::click());
-    if response.hovered() {
-        ui.painter().rect_filled(rect, CornerRadius::same(4), hover);
+    let lit = crate::motion::hover(ui.ctx(), response.id, response.hovered());
+    if lit > 0.0 {
+        ui.painter().rect_filled(rect, CornerRadius::same(4), hover.gamma_multiply(lit));
     }
     let inner = Rect::from_center_size(rect.center(), Vec2::splat(side * 0.62));
     icon.image(inner.width(), color).paint_at(ui, inner);
@@ -68,14 +69,10 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, side: f32, color: Color32, hover: Co
 /// by the caller inside the returned rectangle.
 pub fn row(ui: &mut Ui, height: f32, selected: bool, palette: &Palette) -> (Rect, Response) {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::click());
-    let fill = if selected {
-        Some(palette.selected)
-    } else if response.hovered() {
-        Some(palette.hover)
-    } else {
-        None
-    };
-    if let Some(fill) = fill {
+    let lit = crate::motion::hover(ui.ctx(), response.id, response.hovered());
+    let chosen = crate::motion::ease(ui.ctx(), response.id.with("chosen"), selected, crate::motion::STATE);
+    if chosen > 0.0 || lit > 0.0 {
+        let fill = crate::motion::mix(palette.hover.gamma_multiply(lit), palette.selected, chosen);
         ui.painter().rect_filled(rect, CornerRadius::same(4), fill);
     }
     (rect, response.on_hover_cursor(egui::CursorIcon::PointingHand))
@@ -88,11 +85,14 @@ pub fn channel_row(ui: &mut Ui, height: f32, selected: bool, palette: &Palette) 
         return row(ui, height, selected, palette);
     }
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::click());
-    if selected {
-        ui.painter().rect_filled(rect, CornerRadius::same(8), Color32::from_white_alpha(33));
-        ui.painter().hline((rect.left() + 8.0)..=(rect.right() - 8.0), rect.top() + 0.5, egui::Stroke::new(1.0, crate::glass::SHINE));
-    } else if response.hovered() {
-        ui.painter().rect_filled(rect, CornerRadius::same(8), palette.hover);
+    let lit = crate::motion::hover(ui.ctx(), response.id, response.hovered());
+    let chosen = crate::motion::ease(ui.ctx(), response.id.with("chosen"), selected, crate::motion::STATE);
+    if chosen > 0.0 || lit > 0.0 {
+        let fill = crate::motion::mix(palette.hover.gamma_multiply(lit), Color32::from_white_alpha(33), chosen);
+        ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
+    }
+    if chosen > 0.0 {
+        ui.painter().hline((rect.left() + 8.0)..=(rect.right() - 8.0), rect.top() + 0.5, egui::Stroke::new(1.0, crate::glass::SHINE.gamma_multiply(chosen)));
     }
     (rect, response.on_hover_cursor(egui::CursorIcon::PointingHand))
 }

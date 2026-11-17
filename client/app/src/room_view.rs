@@ -1228,25 +1228,48 @@ impl TelinhaApp {
         for (which, icon, look, tip) in buttons {
             let rect = Rect::from_min_size(egui::pos2(x, top), Vec2::splat(48.0));
             x += 60.0;
-            let response = ui.interact(rect, ui.scope_id().with(("stage-button", tip)), Sense::click());
+            let id = ui.scope_id().with(("stage-button", format!("{which:?}")));
+            let response = ui.interact(rect, id, Sense::click());
             let hovered = response.hovered();
-            let (fill, ink) = match look {
-                Look::Plain => (if hovered { palette.selected } else { palette.raised }, palette.strong),
-                Look::Off => (if hovered { palette.selected } else { palette.strong }, palette.danger),
+            // The hover and the change of state ease in and out instead of jumping, and the
+            // button grows a little under the pointer.
+            let ctx = ui.ctx().clone();
+            let lit = crate::motion::hover(&ctx, id, hovered);
+            let grow = crate::motion::lerp(1.0, 1.07, lit);
+            let radius = 24.0 * grow;
+            let circle = Rect::from_center_size(rect.center(), Vec2::splat(radius * 2.0));
+            let (base, over, ink) = match look {
+                Look::Plain => (palette.raised, palette.selected, palette.strong),
+                Look::Off => (palette.strong, palette.selected, palette.danger),
                 // As `.room-control.on`: the light circle with a dark icon.
-                Look::On => (if hovered { palette.text } else { palette.strong }, Color32::from_rgb(0x11, 0x11, 0x11)),
-                Look::Live => (if hovered { palette.selected } else { palette.green }, Color32::WHITE),
-                Look::Danger | Look::Primary => (if hovered { palette.danger_hover } else { palette.danger }, Color32::WHITE),
+                Look::On => (palette.strong, palette.text, Color32::from_rgb(0x11, 0x11, 0x11)),
+                Look::Live => (palette.green, palette.selected, Color32::WHITE),
+                Look::Danger | Look::Primary => (palette.danger, palette.danger_hover, Color32::WHITE),
             };
+            let base = crate::motion::color(&ctx, id.with("base"), base, crate::motion::STATE);
+            let fill = crate::motion::mix(base, over, lit);
+            let mut ink = crate::motion::color(&ctx, id.with("ink"), ink, crate::motion::STATE);
             if palette.glass && matches!(look, Look::Plain | Look::Off | Look::Danger) {
-                // `.round` on glass, the hang up and the muted mic too: white at 12% over a blur,
-                // with the light edge, and the icon keeps its color.
-                let tint = Color32::from_white_alpha(if hovered { 46 } else { 31 });
-                crate::glass::pane(ui.painter(), rect, &crate::glass::Pane { blur: Some(12.0), shine: false, ..crate::glass::Pane::new(tint, 24.0) });
+                // `.round` on glass, the muted mic too: white at 12% over a blur, with the light
+                // edge, and the icon keeps its color. The hang up looks like the others until the
+                // pointer is on it, and then it glows red.
+                let danger = look == Look::Danger;
+                if danger {
+                    ink = crate::motion::mix(palette.strong, Color32::WHITE, lit);
+                    let glow = egui::Shadow { offset: [0, 6], blur: 22, spread: 0, color: palette.danger.gamma_multiply(0.55 * lit) };
+                    ui.painter().add(glow.as_shape(circle, CornerRadius::same(radius.round() as u8)));
+                }
+                let tint = Color32::from_white_alpha(crate::motion::lerp(31.0, 46.0, if danger { 0.0 } else { lit }).round() as u8);
+                crate::glass::pane(ui.painter(), circle, &crate::glass::Pane { blur: Some(12.0), shine: false, ..crate::glass::Pane::new(tint, radius) });
+                if danger && lit > 0.0 {
+                    ui.painter().circle_filled(circle.center(), radius, palette.danger.gamma_multiply(lit));
+                    ui.painter().circle_stroke(circle.center(), radius - 0.5, Stroke::new(1.0, Color32::from_white_alpha((46.0 * lit) as u8)));
+                }
             } else {
-                ui.painter().circle_filled(rect.center(), 24.0, fill);
+                ui.painter().circle_filled(circle.center(), radius, fill);
             }
-            icon.image(22.0, ink).paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(22.0)));
+            let size = 22.0 * grow;
+            icon.image(size, ink).paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(size)));
             if response.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 clicked = Some(which);
             }
@@ -1736,17 +1759,17 @@ fn tile_actions(ui: &Ui, palette: &Palette, rect: Rect, pieces: &[Piece], scale:
                 let galley = ui.painter().layout_no_wrap((*label).to_owned(), FontId::proportional(13.0 * scale), Color32::WHITE);
                 let button = Rect::from_min_size(egui::pos2(right - galley.size().x - 20.0 * scale, middle - row / 2.0), Vec2::new(galley.size().x + 20.0 * scale, row));
                 let response = ui.interact(button, ui.scope_id().with((salt, index)), Sense::click());
-                let hovered = response.hovered();
+                let lit = crate::motion::hover(ui.ctx(), response.id, response.hovered());
                 let fill = match look {
-                    Look::Primary => if hovered { palette.accent_hover } else { palette.accent },
-                    Look::Danger => if hovered { palette.danger_hover } else { palette.danger },
-                    _ => if hovered { ACTION_HOVER } else { ACTION },
+                    Look::Primary => crate::motion::mix(palette.accent, palette.accent_hover, lit),
+                    Look::Danger => crate::motion::mix(palette.danger, palette.danger_hover, lit),
+                    _ => crate::motion::mix(ACTION, ACTION_HOVER, lit),
                 };
                 if palette.glass && *look == Look::Primary {
                     // `.primary` on glass: the accent gradient, rounder.
                     crate::glass::accent_fill(ui.painter(), egui::epaint::RectShape::filled(button, CornerRadius::same(8), Color32::WHITE).into());
-                    if hovered {
-                        ui.painter().rect_filled(button, CornerRadius::same(8), Color32::from_white_alpha(18));
+                    if lit > 0.0 {
+                        ui.painter().rect_filled(button, CornerRadius::same(8), Color32::from_white_alpha((18.0 * lit) as u8));
                     }
                 } else {
                     ui.painter().rect_filled(button, CornerRadius::same(4), fill);
@@ -1766,11 +1789,13 @@ fn tile_actions(ui: &Ui, palette: &Palette, rect: Rect, pieces: &[Piece], scale:
 fn panel_button(ui: &Ui, palette: &Palette, rect: Rect, icon: icons::Icon, look: Look, enabled: bool, tip: &str) -> bool {
     let response = ui.interact(rect, ui.scope_id().with(("call-action", tip)), if enabled { Sense::click() } else { Sense::hover() });
     let hovered = enabled && response.hovered();
+    let lit = crate::motion::hover(ui.ctx(), response.id, hovered);
     let (fill, ink) = match look {
         Look::Primary => (palette.accent, Color32::WHITE),
         Look::Live => (palette.green, Color32::WHITE),
-        _ => (if hovered { palette.selected } else { palette.raised }, palette.text),
+        _ => (crate::motion::mix(palette.raised, palette.selected, lit), palette.text),
     };
+    let fill = crate::motion::color(ui.ctx(), response.id.with("fill"), fill, crate::motion::STATE);
     let fade = if enabled { 1.0 } else { 0.4 };
     ui.painter().rect_filled(rect, CornerRadius::same(4), fill.gamma_multiply(fade));
     icon.image(20.0, ink.gamma_multiply(fade)).paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(20.0)));

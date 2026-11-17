@@ -113,6 +113,15 @@ fn shoot_app(app: &mut TelinhaApp, name: &str) -> image::RgbaImage {
 
 /// Takes the picture after clicking at each place, with the pointer left on the last one.
 fn shoot_clicking(app: &mut TelinhaApp, name: &str, clicks: &[(egui::Pos2, egui::PointerButton)]) -> image::RgbaImage {
+    shoot_with(app, name, clicks, None)
+}
+
+/// Takes the picture with the pointer resting on `pos`, after its hover has eased in.
+fn shoot_hovering(app: &mut TelinhaApp, name: &str, pos: egui::Pos2) -> image::RgbaImage {
+    shoot_with(app, name, &[], Some(pos))
+}
+
+fn shoot_with(app: &mut TelinhaApp, name: &str, clicks: &[(egui::Pos2, egui::PointerButton)], hover: Option<egui::Pos2>) -> image::RgbaImage {
     let folder = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("target").join("snapshots");
     // Every picture is drawn in a window of its own, which starts without the app's colors.
     app.restyle();
@@ -146,6 +155,10 @@ fn shoot_clicking(app: &mut TelinhaApp, name: &str, clicks: &[(egui::Pos2, egui:
             harness.run_steps(1);
         }
         harness.run_steps(2);
+    }
+    if let Some(pos) = hover {
+        harness.hover_at(pos);
+        harness.run_steps(40);
     }
     // The lightbox waits a moment for a picture of the window, which no test window gives.
     std::thread::sleep(Duration::from_millis(300));
@@ -222,6 +235,7 @@ fn the_glass_theme_draws() {
     }
     scene.app.navigate(Nav::Server { server_id: server_id.clone(), channel_id: Some(room) });
     shoot(&mut scene, "glass-room");
+    shoot_hovering(&mut scene.app, "glass-hang-up", egui::pos2(811.0, 535.0));
     shoot_clicking(&mut scene.app, "glass-menu", &[(egui::pos2(1190.0, 126.0), egui::PointerButton::Secondary)]);
     for name in ["Risada", "Buzina", "Tambores", "Aplausos"] {
         scene.hub.add_sound(name, "audio/mpeg", b"not really a sound").unwrap();

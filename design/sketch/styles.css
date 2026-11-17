@@ -278,3 +278,25 @@ small { font-size: 12px; color: var(--muted); }
 .attach .icon { width: 20px; height: 20px; border-radius: 50%; background: var(--soft); -webkit-mask: none; mask: none; position: relative; }
 .attach .icon::after { content: ""; position: absolute; inset: 3px; background: var(--raised); -webkit-mask: var(--src) center / contain no-repeat; mask: var(--src) center / contain no-repeat; }
 .attach:hover .icon { background: var(--strong); }
+
+/* ---- janela de controles do vidro (não é do app) ---- */
+#tweaks {
+  display: none; position: fixed; right: 16px; bottom: 60px; z-index: 100; width: 270px;
+  padding: 0 14px 14px; border-radius: 16px; color: var(--text); font: 12px "Segoe UI", system-ui;
+  user-select: none;
+}
+body[data-theme="glass"] #tweaks { display: block; }
+#tweaks.dragging { opacity: .92; }
+.tweaks-head { display: flex; align-items: center; gap: 6px; height: 40px; margin: 0 -14px 4px; padding: 0 10px 0 14px; cursor: grab; border-bottom: 1px solid var(--line); }
+#tweaks.dragging .tweaks-head { cursor: grabbing; }
+.tweaks-head strong { flex: 1; font-size: 13px; color: var(--strong); }
+.tweaks-head button { height: 24px; padding: 0 8px; border-radius: 6px; background: rgba(255, 255, 255, .08); border: 1px solid var(--line-soft); }
+.tweaks-head button:hover { background: rgba(255, 255, 255, .16); }
+.tweaks-head .grip-dots { width: 14px; height: 14px; opacity: .5; background: radial-gradient(circle, currentColor 1.2px, transparent 1.6px) 0 0 / 5px 5px; }
+#tweaks.collapsed .knob { display: none; }
+#tweaks.collapsed { padding-bottom: 0; }
+#tweaks.collapsed .tweaks-head { margin-bottom: 0; border-bottom: 0; }
+.knob { display: block; margin-top: 10px; }
+.knob span { display: flex; justify-content: space-between; color: var(--soft); }
+.knob output { color: var(--muted); font-variant-numeric: tabular-nums; }
+.knob input { width: 100%; margin: 6px 0 0; accent-color: var(--accent); }

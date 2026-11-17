@@ -2,9 +2,16 @@
    Só vale com data-theme="glass"; os outros temas não mudam. */
 
 [data-theme="glass"] {
+  /* os cinco botões do painel "Vidro" do esboço (tweaks.js) mexem só nestes */
+  --frost: .15;        /* jateamento: granulado + névoa branca, 0..1 */
+  --glass-dark: .40;   /* escurecimento do vidro, 0..1 */
+  --blur: 28px;        /* nível de desfoque */
+  --light: 1;          /* luz de fundo, 0..1.6 (acima de 1 clareia) */
+  --light-size: 1;     /* tamanho das luzes, multiplica o raio */
+
   --rail: transparent;
-  --sidebar: rgba(16, 18, 34, .50);
-  --main: rgba(16, 18, 34, .40);
+  --sidebar: rgba(16, 18, 34, min(1, calc(var(--glass-dark) + .1)));
+  --main: rgba(16, 18, 34, var(--glass-dark));
   --panel: rgba(255, 255, 255, .05);
   --raised: rgba(255, 255, 255, .08);
   --hover: rgba(255, 255, 255, .07);
@@ -17,25 +24,47 @@
   --accent: #6d72ff; --accent-hover: #5a5ff0;
   --glass-edge: rgba(255, 255, 255, .16);
   --glass-shine: rgba(255, 255, 255, .10);
-  --glass-blur: blur(28px) saturate(170%);
+  --glass-blur: blur(var(--blur)) saturate(170%);
   --dot-ring: rgba(26, 28, 46, .95);
 }
 
 /* fundo: manchas de cor que o vidro desfoca */
-body[data-theme="glass"] {
+body[data-theme="glass"] { background: #0b0a1c; }
+body[data-theme="glass"]::before {
+  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  --r: calc(var(--light-size) * 1vw);
   background:
-    radial-gradient(60vw 60vw at 8% 10%, rgba(124, 58, 237, .85), transparent 70%),
-    radial-gradient(50vw 50vw at 95% 0%, rgba(6, 182, 212, .7), transparent 70%),
-    radial-gradient(60vw 60vw at 85% 100%, rgba(219, 39, 119, .75), transparent 70%),
-    radial-gradient(55vw 55vw at 15% 100%, rgba(37, 99, 235, .8), transparent 70%),
+    radial-gradient(calc(60 * var(--r)) calc(60 * var(--r)) at 8% 10%, rgba(124, 58, 237, .85), transparent 70%),
+    radial-gradient(calc(50 * var(--r)) calc(50 * var(--r)) at 95% 0%, rgba(6, 182, 212, .7), transparent 70%),
+    radial-gradient(calc(60 * var(--r)) calc(60 * var(--r)) at 85% 100%, rgba(219, 39, 119, .75), transparent 70%),
+    radial-gradient(calc(55 * var(--r)) calc(55 * var(--r)) at 15% 100%, rgba(37, 99, 235, .8), transparent 70%),
     linear-gradient(135deg, #1b1446, #10183a 50%, #2a0f3a);
+  opacity: min(1, var(--light));
+  filter: brightness(max(1, var(--light)));
+}
+
+/* jateamento: granulado e névoa por cima do fundo do painel, por baixo do conteúdo */
+[data-theme="glass"] :is(.sidebar, .main, .settings) { position: relative; isolation: isolate; }
+[data-theme="glass"] #tweaks { isolation: isolate; }
+[data-theme="glass"] :is(.sidebar, .main, .settings, #tweaks)::before,
+[data-theme="glass"] :is(.sidebar, .main, .settings, #tweaks)::after {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none; border-radius: inherit;
+}
+[data-theme="glass"] :is(.sidebar, .main, .settings, #tweaks)::before {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .6 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  opacity: calc(var(--frost) * .5);
+  mix-blend-mode: overlay;
+}
+[data-theme="glass"] :is(.sidebar, .main, .settings, #tweaks)::after {
+  background: rgba(255, 255, 255, calc(var(--frost) * .12));
 }
 
 /* painéis flutuando com espaço entre eles */
 [data-theme="glass"] #app { padding: 10px 10px 10px 0; gap: 10px; }
 [data-theme="glass"] .sidebar,
 [data-theme="glass"] .main,
-[data-theme="glass"] .settings {
+[data-theme="glass"] .settings,
+[data-theme="glass"] #tweaks {
   border-radius: 16px; overflow: hidden;
   border: 1px solid var(--glass-edge);
   backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
@@ -91,3 +120,6 @@ body[data-theme="glass"] {
 [data-theme="glass"] .card { background: rgba(255, 255, 255, .06); border-color: var(--glass-edge); border-radius: 14px; backdrop-filter: blur(12px); }
 [data-theme="glass"] .overlay { background: rgba(5, 6, 14, .35); backdrop-filter: blur(6px); }
 [data-theme="glass"] .settings-nav { background: rgba(0, 0, 0, .18); }
+
+/* a janela de controles do esboço usa o mesmo vidro */
+[data-theme="glass"] #tweaks { background: var(--main); }

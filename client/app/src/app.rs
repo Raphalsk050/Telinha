@@ -166,6 +166,9 @@ impl TelinhaApp {
             sharp_glass: false,
         };
         app.use_chosen_devices();
+        if app.prefs.app_icon != crate::app_icons::DEFAULT {
+            crate::app_icons::apply(context, &app.prefs.app_icon);
+        }
         app.remember_own_style();
         app.navigate(nav);
         app
@@ -1131,6 +1134,7 @@ impl TelinhaApp {
         let activity = self.activity_of(Some(&own));
         let appearance = self.prefs.appearance.clone();
         self.check_preview();
+        let app_icon = self.prefs.app_icon.clone();
         let mic_level = self.mic_test.as_ref().map_or(0.0, telinha_voice::audio::MicTest::level);
         let mic_db = self.mic_test.as_ref().map_or(*telinha_voice::audio::SENSITIVITY_RANGE.start(), telinha_voice::audio::MicTest::decibels);
         let (gate_open, gate_threshold) = self.mic_test.as_ref().map_or((false, -50.0), telinha_voice::audio::MicTest::gate);
@@ -1167,6 +1171,7 @@ impl TelinhaApp {
             gate_threshold,
             sensitivity_auto: self.prefs.sensitivity_auto,
             sensitivity_db: self.prefs.sensitivity_db,
+            app_icon: &app_icon,
             camera: camera.as_deref(),
             blur: self.prefs.blur,
             previewing: self.previewing,
@@ -1217,6 +1222,11 @@ impl TelinhaApp {
                     self.prefs.sensitivity_db = threshold;
                     self.prefs.save();
                     telinha_voice::audio::set_sensitivity(auto, threshold);
+                }
+                SettingsAction::AppIcon(id) => {
+                    crate::app_icons::apply(context, &id);
+                    self.prefs.app_icon = id;
+                    self.prefs.save();
                 }
                 SettingsAction::Camera(camera) => {
                     self.prefs.camera = camera;

@@ -21,6 +21,8 @@ pub struct Prefs {
     /// The input sensitivity: automatic, or where the gate of the microphone opens, in dB.
     pub sensitivity_auto: bool,
     pub sensitivity_db: f32,
+    /// The icon of the window and the taskbar, by the id of `app_icons`.
+    pub app_icon: String,
     /// How loud each person is played, in percent, by the id that names the person.
     pub volumes: BTreeMap<String, f32>,
     /// How loud each person's stream is played, in percent, by the same id.
@@ -59,6 +61,7 @@ impl Prefs {
             input_device: field("inputDevice").and_then(Value::as_str).map(str::to_owned),
             output_device: field("outputDevice").and_then(Value::as_str).map(str::to_owned),
             sensitivity_auto: field("sensitivityAuto").and_then(Value::as_bool).unwrap_or(true),
+            app_icon: crate::app_icons::known(field("appIcon").and_then(Value::as_str).unwrap_or(crate::app_icons::DEFAULT)),
             sensitivity_db: field("sensitivityDb").and_then(Value::as_f64).map_or(-50.0, |db| (db as f32).clamp(-80.0, 0.0)),
             volumes: field("volumes")
                 .and_then(Value::as_object)
@@ -88,7 +91,7 @@ impl Prefs {
         let data = json!({
             "version": 2, "appearance": self.appearance.to_json(), "showMembers": self.show_members,
             "inputDevice": self.input_device, "outputDevice": self.output_device,
-            "sensitivityAuto": self.sensitivity_auto, "sensitivityDb": self.sensitivity_db, "volumes": self.volumes,
+            "sensitivityAuto": self.sensitivity_auto, "sensitivityDb": self.sensitivity_db, "appIcon": self.app_icon, "volumes": self.volumes,
             "streamVolumes": self.stream_volumes, "muted": self.muted, "soundVolume": self.sound_volume,
             "stageHeight": self.stage_height, "cameraId": self.camera, "blur": self.blur,
             "videoHidden": self.video_hidden, "shareQuality": self.share_quality,

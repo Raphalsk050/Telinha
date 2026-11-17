@@ -28,6 +28,8 @@ pub enum SettingsAction {
     Devices { input: Option<String>, output: Option<String> },
     /// The input sensitivity: automatic, or where the gate opens, in decibels.
     Sensitivity { auto: bool, threshold: f32 },
+    /// The icon of the window and the taskbar, by the id of `app_icons`.
+    AppIcon(String),
     /// The camera to use, by name. None is the first one found.
     Camera(Option<String>),
     Blur(bool),
@@ -75,6 +77,7 @@ pub struct SettingsView<'a> {
     pub gate_threshold: f32,
     pub sensitivity_auto: bool,
     pub sensitivity_db: f32,
+    pub app_icon: &'a str,
     pub camera: Option<&'a str>,
     pub blur: bool,
     /// Whether the camera is being tested, and its last frame.
@@ -241,6 +244,28 @@ fn sensitivity_bar(ui: &mut Ui, palette: &Palette, view: &SettingsView) -> Optio
         return Some(db.round());
     }
     None
+}
+
+/// An icon to pick, as Discord shows them: a rounded square that rises a little under the
+/// mouse, with a ring and a check on the one in use. True when it was clicked.
+fn app_icon_tile(ui: &mut Ui, palette: &Palette, id: &str, name: &str, bytes: &'static [u8], chosen: bool) -> bool {
+    let (slot, response) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::click());
+    let lit = crate::motion::hover(ui.ctx(), response.id, response.hovered());
+    let picked = crate::motion::ease(ui.ctx(), response.id.with("picked"), chosen, crate::motion::STATE);
+    let rect = Rect::from_center_size(slot.center() - Vec2::new(0.0, 2.0 * lit), Vec2::splat(crate::motion::lerp(48.0, 51.0, lit)));
+    let round = CornerRadius::same(12);
+    ui.painter().add(egui::Shadow { offset: [0, 4], blur: 12, spread: 0, color: Color32::from_black_alpha((40.0 + 50.0 * lit) as u8) }.as_shape(rect, round));
+    egui::Image::from_bytes(format!("bytes://app-icon/{id}.png"), bytes).corner_radius(round).paint_at(ui, rect);
+    if picked > 0.0 {
+        ui.painter().rect_stroke(rect.expand(3.0), CornerRadius::same(15), Stroke::new(2.0, palette.accent.gamma_multiply(picked)), egui::StrokeKind::Middle);
+        let badge = egui::pos2(rect.right() + 1.0, rect.top() - 1.0);
+        ui.painter().circle_filled(badge, 9.0 * picked, palette.accent);
+        if picked > 0.6 {
+            let tick = [badge + Vec2::new(-4.0, 0.0), badge + Vec2::new(-1.0, 3.0), badge + Vec2::new(4.0, -3.0)];
+            ui.painter().add(egui::Shape::line(tick.to_vec(), Stroke::new(2.0, Color32::WHITE)));
+        }
+    }
+    response.on_hover_text(name).on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
 
 /// A square of a color that opens a picker, with a small cross to take the color away when it
@@ -761,6 +786,18 @@ impl Settings {
                                 if look.gradient().is_some() && check(ui, palette, look.motion, "Degradê em movimento") {
                                     look.motion = !look.motion;
                                 }
+
+                                section(ui, palette, "ÍCONE DO APLICATIVO", false);
+                                ui.label(RichText::new("Muda o ícone da janela e da barra de tarefas do Telinha.").color(palette.muted).size(13.0));
+                                ui.add_space(12.0);
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.spacing_mut().item_spacing = Vec2::new(14.0, 14.0);
+                                    for (id, name, bytes) in crate::app_icons::ICONS {
+                                        if app_icon_tile(ui, palette, id, name, bytes, view.app_icon == id) && view.app_icon != id {
+                                            actions.push(SettingsAction::AppIcon(id.to_owned()));
+                                        }
+                                    }
+                                });
 
                                 section(ui, palette, "DENSIDADE DA INTERFACE", false);
                                 ui.horizontal(|ui| {

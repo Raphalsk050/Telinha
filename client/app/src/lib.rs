@@ -1,6 +1,7 @@
 //! The window of Telinha, as a library so tests can draw it without opening anything on screen.
 
 pub mod app;
+pub mod app_icons;
 pub mod glass;
 pub mod motion;
 pub mod avatar_picker;

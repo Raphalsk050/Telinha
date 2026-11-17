@@ -213,6 +213,8 @@ fn the_glass_theme_draws() {
     scene.app.open_settings();
     scene.app.settings_page_for_test(telinha::settings::Page::Appearance);
     shoot(&mut scene, "glass-settings");
+    scene.app.scroll_settings_for_test(560.0);
+    shoot(&mut scene, "glass-settings-icons");
     scene.app.settings_page_for_test(telinha::settings::Page::Voice);
     shoot(&mut scene, "glass-voice-settings");
     scene.app.sensitivity_for_test(false, -45.0);

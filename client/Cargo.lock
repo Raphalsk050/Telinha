@@ -5477,6 +5477,7 @@ dependencies = [
  "telinha-voice",
  "tempfile",
  "tokio",
+ "url",
  "webp",
  "windows",
  "winresource",

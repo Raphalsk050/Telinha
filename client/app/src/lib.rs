@@ -16,6 +16,7 @@ pub mod crop_editor;
 pub mod room_view;
 pub mod lightbox;
 pub mod link_draft;
+pub mod media;
 pub mod name_style;
 pub mod attach;
 pub mod alerts;

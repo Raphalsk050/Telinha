@@ -75,6 +75,8 @@ pub struct ChatView {
     attachment_preview: Option<Blob>,
     to_bottom: bool,
     paste_was_down: bool,
+    /// The moving pictures of the GIF links shown.
+    animated: crate::media::AnimatedLinks,
     /// When the last call for attention went out, to space them.
     last_nudge: Option<f64>,
     focus_input: bool,
@@ -571,11 +573,21 @@ impl ChatView {
                         ui.label(RichText::new(format_time(message.sent_at)).color(palette.muted).size(12.0));
                     });
                 }
-                if !message.text.is_empty() {
+                // A message that is only a GIF link shows the GIF without the link, as Discord.
+                let link = first_link(&message.text);
+                let moving = link.as_deref().and_then(crate::media::animated_source).and_then(|source| self.animated.get(ui.ctx(), &source));
+                let only_link = moving.is_some() && link.as_deref() == Some(message.text.trim());
+                if !message.text.is_empty() && !only_link {
                     paint_text(ui, palette, &message.text, chrome.font);
                 }
                 if let Some(embed) = &message.embed {
                     if let Some(found) = self.embed(ui, hub, palette, message, embed) {
+                        action = Some(found);
+                    }
+                } else if let Some(found) = moving {
+                    // The link came without a preview: the GIF is still fetched and plays.
+                    let blob = Blob { uri: found.uri, bytes: found.bytes, size: found.size };
+                    if let Some(found) = picture(ui, palette, Some(blob), IMAGE_BOUNDS, &format!("gif-{}.gif", message.sent_at)) {
                         action = Some(found);
                     }
                 }
@@ -644,6 +656,15 @@ impl ChatView {
 
     fn embed(&mut self, ui: &mut Ui, hub: &Arc<Hub>, palette: &Palette, message: &Message, embed: &Embed) -> Option<ChatAction> {
         let mut action = None;
+        // A GIF link plays: the moving picture is fetched here, in place of the still that came.
+        let moving = crate::media::animated_source(&embed.url).and_then(|source| self.animated.get(ui.ctx(), &source));
+        let moving = moving.map(|found| Blob { uri: found.uri, bytes: found.bytes, size: found.size });
+        if let Some(blob) = &moving {
+            // A link that is only the picture shows only the picture, as Discord does.
+            if embed.title.is_empty() && embed.description.is_empty() || crate::media::gif_site(&embed.url) {
+                return picture(ui, palette, Some(blob.clone()), IMAGE_BOUNDS, &format!("gif-{}.gif", message.sent_at));
+            }
+        }
         ui.add_space(4.0);
         let glass = palette.glass.then(|| crate::glass::reserve(ui.painter()));
         let frame = if palette.glass {
@@ -666,7 +687,11 @@ impl ChatView {
             if !embed.description.is_empty() {
                 ui.label(RichText::new(&embed.description).color(palette.text).size(14.0));
             }
-            if let Some(image) = &embed.image {
+            if let Some(blob) = moving {
+                if let Some(found) = picture(ui, palette, Some(blob), EMBED_BOUNDS, &format!("gif-{}.gif", message.sent_at)) {
+                    action = Some(found);
+                }
+            } else if let Some(image) = &embed.image {
                 let blob = self.image_blob(hub, image);
                 if let Some(found) = picture(ui, palette, blob, EMBED_BOUNDS, &image_file_name(&image.mime, message.sent_at)) {
                     action = Some(found);

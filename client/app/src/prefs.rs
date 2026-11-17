@@ -41,6 +41,8 @@ pub struct Prefs {
     pub video_hidden: BTreeSet<String>,
     /// The last choice of quality of a share, as `Quality::to_json` writes it.
     pub share_quality: Option<Value>,
+    /// How loud the sound effects of the app play (someone came in, muted, a call), in percent.
+    pub effects_volume: f32,
     /// The keyboard shortcuts, which work anywhere in Windows.
     pub shortcuts: Vec<crate::shortcuts::Shortcut>,
 }
@@ -80,6 +82,7 @@ impl Prefs {
             blur: field("blur").and_then(Value::as_bool).unwrap_or(false),
             share_quality: field("shareQuality").filter(|value| value.is_object()).cloned(),
             video_hidden: field("videoHidden").and_then(Value::as_array).map(|ids| ids.iter().filter_map(|id| id.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
+            effects_volume: field("effectsVolume").and_then(Value::as_f64).map_or(100.0, |volume| (volume as f32).clamp(0.0, 200.0)),
             shortcuts: field("shortcuts").and_then(Value::as_array).map(|list| list.iter().filter_map(crate::shortcuts::Shortcut::from_json).collect()).unwrap_or_default(),
             file,
         }
@@ -103,6 +106,7 @@ impl Prefs {
             "streamVolumes": self.stream_volumes, "muted": self.muted, "soundVolume": self.sound_volume,
             "stageHeight": self.stage_height, "cameraId": self.camera, "blur": self.blur,
             "videoHidden": self.video_hidden, "shareQuality": self.share_quality,
+            "effectsVolume": self.effects_volume,
             "shortcuts": self.shortcuts.iter().map(crate::shortcuts::Shortcut::to_json).collect::<Vec<_>>(),
         });
         if let Ok(text) = serde_json::to_string_pretty(&data) {

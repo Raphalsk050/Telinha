@@ -102,8 +102,6 @@ pub struct TelinhaApp {
     /// The keyboard shortcuts that work anywhere in Windows, once the hooks are in place.
     hotkeys: Option<crate::shortcuts::Hotkeys>,
     shortcuts_problem: Option<String>,
-    /// Whether the settings show the shortcuts now, which holds them, as in Discord.
-    shortcuts_page_open: bool,
     /// The recording drawn by the tests, which have no hooks.
     test_recording: Option<(usize, Vec<u32>)>,
 }
@@ -191,7 +189,6 @@ impl TelinhaApp {
             player_failed: false,
             hotkeys: None,
             shortcuts_problem: None,
-            shortcuts_page_open: false,
             test_recording: None,
         };
         app.use_chosen_devices();
@@ -1242,6 +1239,7 @@ impl TelinhaApp {
             output: self.prefs.output_device.clone(),
         });
         telinha_voice::audio::set_sensitivity(self.prefs.sensitivity_auto, self.prefs.sensitivity_db);
+        telinha_voice::tones::set_volume(self.prefs.effects_volume / 100.0);
     }
 
     /// Sets the input sensitivity as the settings would, for the pictures of the tests.
@@ -1260,12 +1258,9 @@ impl TelinhaApp {
         }
     }
 
-    /// Holds the shortcuts while their page is in front of the person, and does what the keys
-    /// asked for. Runs while the window is minimized too.
+    /// Does what the keys of the shortcuts asked for. Runs while the window is minimized too.
     fn tend_shortcuts(&mut self, context: &egui::Context) {
         let Some(hotkeys) = &self.hotkeys else { return };
-        let focused = context.input(|input| input.viewport().focused.unwrap_or(true));
-        hotkeys.set_suspended(self.shortcuts_page_open && focused);
         let mut events = Vec::new();
         while let Some(event) = hotkeys.next_event() {
             events.push(event);
@@ -1583,6 +1578,7 @@ impl TelinhaApp {
             camera_status: &camera_status,
             update,
             shortcuts: &shortcuts,
+            effects_volume: self.prefs.effects_volume,
             recording: recording.clone(),
             shortcuts_problem: self.shortcuts_problem.as_deref(),
         };
@@ -1593,7 +1589,6 @@ impl TelinhaApp {
                 hotkeys.record(None);
             }
         }
-        self.shortcuts_page_open = on_shortcuts;
         if open {
             self.settings = Some(settings);
         } else {
@@ -1680,6 +1675,14 @@ impl TelinhaApp {
                 SettingsAction::Shortcuts(list) => {
                     self.prefs.shortcuts = list;
                     self.save_shortcuts();
+                }
+                SettingsAction::EffectsVolume { volume, test } => {
+                    self.prefs.effects_volume = volume;
+                    telinha_voice::tones::set_volume(volume / 100.0);
+                    self.prefs.save();
+                    if test && self.room.audible() {
+                        telinha_voice::tones::play(telinha_voice::tones::Tune::join());
+                    }
                 }
                 SettingsAction::Record(index) => {
                     if let Some(hotkeys) = &self.hotkeys {

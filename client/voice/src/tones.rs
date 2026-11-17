@@ -3,7 +3,7 @@
 //! notes the app has always played.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, StreamTrait};
@@ -138,11 +138,27 @@ impl Tune {
     }
 }
 
-/// Plays a tune on the default speakers and returns at once. A computer without speakers stays
-/// quiet.
+/// How loud the tunes play, where 1 is as they were made. Chosen in the settings.
+static VOLUME: AtomicU32 = AtomicU32::new(0x3F80_0000);
+
+/// Sets how loud the tunes play, from 0 (silent) to 2 (twice as loud).
+pub fn set_volume(volume: f32) {
+    VOLUME.store(volume.clamp(0.0, 2.0).to_bits(), Ordering::Relaxed);
+}
+
+pub fn volume() -> f32 {
+    f32::from_bits(VOLUME.load(Ordering::Relaxed))
+}
+
+/// Plays a tune on the default speakers and returns at once, as loud as the settings say. A
+/// computer without speakers stays quiet.
 pub fn play(tune: Tune) {
+    let volume = volume();
+    if volume <= 0.0 {
+        return;
+    }
     let _ = std::thread::Builder::new().name("telinha-tone".into()).spawn(move || {
-        let _ = play_with(|rate| tune.render(rate));
+        let _ = play_with(|rate| tune.render(rate).into_iter().map(|sample| (sample * volume).clamp(-1.0, 1.0)).collect());
     });
 }
 

@@ -1,7 +1,7 @@
 # Telinha release notes
 ## Features
 
-1. Keyboard shortcuts, as Discord (Settings > Atalhos): toggle mute, toggle deafen, push to talk, push to mute, camera, screen share, leave the call and show Telinha. They work anywhere in Windows, with Telinha minimized or behind a game, and take the mouse side buttons too. They are held while the shortcuts page is open.
+1. Sound effects volume (Settings > Voz e vídeo > Efeitos sonoros): from silent to twice as loud, for the join, leave, mute, message and call sounds. A sound plays when you let go of the slider.
 
 ## Improvements
 
@@ -9,4 +9,6 @@ None.
 
 ## Fixes
 
-None.
+1. Keyboard shortcuts work while Telinha is in front too, including with the shortcuts page open.
+2. Numeric keypad keys record and work as themselves ("NUM 2", "NUM ENTER") with Num Lock on or off, instead of turning into arrows.
+3. Keys that Windows only reports when let go, such as Print Screen, can be recorded and used.

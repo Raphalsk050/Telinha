@@ -101,7 +101,7 @@ impl Shortcut {
 
     pub fn from_json(value: &Value) -> Option<Self> {
         let action = Action::from_id(value.get("action")?.as_str()?)?;
-        let keys = value.get("keys").and_then(Value::as_array).map(|keys| keys.iter().filter_map(|key| u32::try_from(key.as_u64()?).ok()).filter(|key| *key > 0 && *key < 256).take(MAX_KEYS).collect()).unwrap_or_default();
+        let keys = value.get("keys").and_then(Value::as_array).map(|keys| keys.iter().filter_map(|key| u32::try_from(key.as_u64()?).ok()).filter(|key| *key > 0 && *key < 0x200).take(MAX_KEYS).collect()).unwrap_or_default();
         Some(Self { action, keys: canonical(keys), enabled: value.get("enabled").and_then(Value::as_bool).unwrap_or(true) })
     }
 }
@@ -113,6 +113,29 @@ const SHIFT: u32 = 0x10;
 const CTRL: u32 = 0x11;
 const ALT: u32 = 0x12;
 const WIN: u32 = 0x5B;
+/// The Enter of the numeric keypad, which Windows gives the same code as the big one.
+const NUM_ENTER: u32 = 0x10D;
+
+/// The key as the shortcuts know it, from what the hook of the keyboard saw. With Num Lock off the
+/// numeric keypad sends the codes of the arrows and of Home, End and the like; only the flag of
+/// the extended keys tells those apart, and a key of the keypad is always the same key here.
+pub fn from_hook(vk: u32, extended: bool) -> u32 {
+    match (vk, extended) {
+        (0x2D, false) => 0x60,
+        (0x23, false) => 0x61,
+        (0x28, false) => 0x62,
+        (0x22, false) => 0x63,
+        (0x25, false) => 0x64,
+        (0x0C, false) => 0x65,
+        (0x27, false) => 0x66,
+        (0x24, false) => 0x67,
+        (0x26, false) => 0x68,
+        (0x21, false) => 0x69,
+        (0x2E, false) => 0x6E,
+        (0x0D, true) => NUM_ENTER,
+        (other, _) => other,
+    }
+}
 /// The modifiers, in the order they are written.
 const MODIFIERS: [u32; 4] = [CTRL, SHIFT, ALT, WIN];
 
@@ -156,6 +179,8 @@ pub fn key_name(vk: u32) -> String {
         SHIFT => "SHIFT",
         ALT => "ALT",
         WIN => "WIN",
+        NUM_ENTER => "NUM ENTER",
+        0x0C => "NUM 5",
         0x04 => "BOTÃO DO MEIO",
         0x05 => "MOUSE 4",
         0x06 => "MOUSE 5",
@@ -234,12 +259,10 @@ pub enum Event {
 #[derive(Default)]
 struct State {
     shortcuts: Vec<Shortcut>,
-    /// The keys down now, as the hook saw them.
-    down: BTreeSet<u32>,
+    /// The keys down now, each with the code Windows gave it, to ask Windows about it later.
+    down: std::collections::BTreeMap<u32, u32>,
     /// The shortcuts whose keys are held now, by their place.
     active: BTreeSet<usize>,
-    /// While the settings show the shortcuts, none of them acts, as in Discord.
-    suspended: bool,
     recording: Option<Recording>,
     events: Option<Sender<Event>>,
     waker: Option<egui::Context>,
@@ -262,13 +285,11 @@ fn with_state<R>(work: impl FnOnce(&mut State) -> R) -> Option<R> {
 }
 
 impl State {
-    /// A key went down.
-    fn key_down(&mut self, vk: u32) {
-        let vk = normalize(vk);
-        if self.check_real {
-            self.down.retain(|key| *key == vk || still_down(*key));
-        }
-        if !self.down.insert(vk) {
+    /// A key went down, by the code of the shortcuts and the one Windows gave it.
+    fn key_down(&mut self, code: u32, raw: u32) {
+        let vk = normalize(code);
+        self.forget_stale(vk);
+        if self.down.insert(vk, raw).is_some() {
             // The repeat of a held key.
             return;
         }
@@ -278,10 +299,20 @@ impl State {
             }
             return;
         }
-        if self.suspended {
-            return;
+        self.fire(vk);
+    }
+
+    /// Lets go of keys Windows says are up: a key let go on the lock screen or over a prompt of
+    /// the administrator never reaches the hook.
+    fn forget_stale(&mut self, except: u32) {
+        if self.check_real {
+            self.down.retain(|key, raw| *key == except || still_down(*raw));
         }
-        let modifiers: Vec<u32> = MODIFIERS.into_iter().filter(|modifier| self.down.contains(modifier)).collect();
+    }
+
+    /// Starts the shortcuts that `vk`, just pressed, completes.
+    fn fire(&mut self, vk: u32) {
+        let modifiers: Vec<u32> = MODIFIERS.into_iter().filter(|modifier| self.down.contains_key(modifier)).collect();
         for (index, shortcut) in self.shortcuts.iter().enumerate() {
             if !shortcut.enabled || shortcut.keys.is_empty() || self.active.contains(&index) || !shortcut.keys.contains(&vk) {
                 continue;
@@ -290,7 +321,7 @@ impl State {
             // with Ctrl+Shift+M; other keys held along do not matter, so push to talk works
             // while walking in a game.
             let wanted: Vec<u32> = shortcut.keys.iter().copied().filter(|key| is_modifier(*key)).collect();
-            if wanted != modifiers || !shortcut.keys.iter().all(|key| self.down.contains(key)) {
+            if wanted != modifiers || !shortcut.keys.iter().all(|key| self.down.contains_key(key)) {
                 continue;
             }
             self.active.insert(index);
@@ -301,16 +332,27 @@ impl State {
         self.apply_gate();
     }
 
-    fn key_up(&mut self, vk: u32) {
-        let vk = normalize(vk);
-        self.down.remove(&vk);
-        if let Some(recording) = &self.recording {
+    fn key_up(&mut self, code: u32) {
+        let vk = normalize(code);
+        // Some keys, as Print Screen, only ever say that they went up.
+        let unseen = self.down.remove(&vk).is_none();
+        self.forget_stale(vk);
+        if let Some(recording) = &mut self.recording {
+            if unseen && !is_modifier(vk) && recording.keys.is_empty() {
+                recording.keys.push(vk);
+            }
             if self.down.is_empty() && !recording.keys.is_empty() {
+                let recording = self.recording.as_ref().expect("recording");
                 let (index, keys) = (recording.index, canonical(recording.keys.clone()));
                 self.recording = None;
                 self.send(Event::Recorded { index, keys });
             }
             return;
+        }
+        if unseen && !is_modifier(vk) {
+            self.down.insert(vk, vk);
+            self.fire(vk);
+            self.down.remove(&vk);
         }
         let shortcuts = &self.shortcuts;
         self.active.retain(|index| shortcuts.get(*index).is_some_and(|shortcut| !shortcut.keys.contains(&vk)));
@@ -320,7 +362,7 @@ impl State {
     /// Opens or closes the microphone for push to talk and push to mute.
     fn apply_gate(&self) {
         let live = |action: Action| self.shortcuts.iter().any(|shortcut| shortcut.action == action && shortcut.enabled && !shortcut.keys.is_empty());
-        let held = |action: Action| !self.suspended && self.active.iter().any(|index| self.shortcuts.get(*index).is_some_and(|shortcut| shortcut.action == action));
+        let held = |action: Action| self.active.iter().any(|index| self.shortcuts.get(*index).is_some_and(|shortcut| shortcut.action == action));
         let open = (!live(Action::PushToTalk) || held(Action::PushToTalk)) && !held(Action::PushToMute);
         telinha_voice::audio::set_key_gate(open);
     }
@@ -357,17 +399,6 @@ impl Hotkeys {
             state.shortcuts = shortcuts.to_vec();
             state.active.clear();
             state.apply_gate();
-        });
-    }
-
-    /// Holds every shortcut while the settings show them, or lets them act again.
-    pub fn set_suspended(&self, suspended: bool) {
-        with_state(|state| {
-            if state.suspended != suspended {
-                state.suspended = suspended;
-                state.active.clear();
-                state.apply_gate();
-            }
         });
     }
 
@@ -459,16 +490,17 @@ fn stop_thread(_thread: u32) {}
 
 #[cfg(windows)]
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: windows::Win32::Foundation::WPARAM, lparam: windows::Win32::Foundation::LPARAM) -> windows::Win32::Foundation::LRESULT {
-    use windows::Win32::UI::WindowsAndMessaging::{CallNextHookEx, HC_ACTION, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP};
+    use windows::Win32::UI::WindowsAndMessaging::{CallNextHookEx, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP};
     if code == HC_ACTION as i32 {
         // SAFETY: for HC_ACTION Windows passes a KBDLLHOOKSTRUCT in lparam.
-        let vk = unsafe { (*(lparam.0 as *const KBDLLHOOKSTRUCT)).vkCode };
+        let data = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
+        let code = from_hook(data.vkCode, data.flags.contains(LLKHF_EXTENDED));
         match wparam.0 as u32 {
             WM_KEYDOWN | WM_SYSKEYDOWN => {
-                with_state(|state| state.key_down(vk));
+                with_state(|state| state.key_down(code, data.vkCode));
             }
             WM_KEYUP | WM_SYSKEYUP => {
-                with_state(|state| state.key_up(vk));
+                with_state(|state| state.key_up(code));
             }
             _ => {}
         }
@@ -492,7 +524,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: windows::Win32::Foundati
         };
         if let Some(vk) = button {
             if matches!(message, WM_MBUTTONDOWN | WM_XBUTTONDOWN) {
-                with_state(|state| state.key_down(vk));
+                with_state(|state| state.key_down(vk, vk));
             } else {
                 with_state(|state| state.key_up(vk));
             }
@@ -518,24 +550,24 @@ mod tests {
     #[test]
     fn a_shortcut_goes_off_once_with_exactly_its_modifiers() {
         let (mut state, events) = state(vec![keys(Action::ToggleMute, &[CTRL, 0x4D])]);
-        state.key_down(0xA2);
-        state.key_down(0x4D);
-        state.key_down(0x4D);
+        state.key_down(0xA2, 0xA2);
+        state.key_down(0x4D, 0x4D);
+        state.key_down(0x4D, 0x4D);
         state.key_up(0x4D);
         state.key_up(0xA2);
         assert_eq!(events.try_iter().collect::<Vec<_>>(), vec![Event::Pressed(Action::ToggleMute)]);
         // With Shift held too it is another shortcut.
-        state.key_down(0xA3);
-        state.key_down(0xA0);
-        state.key_down(0x4D);
+        state.key_down(0xA3, 0xA3);
+        state.key_down(0xA0, 0xA0);
+        state.key_down(0x4D, 0x4D);
         assert!(events.try_recv().is_err());
         state.key_up(0x4D);
         state.key_up(0xA0);
         state.key_up(0xA3);
-        // Off, or held while the settings show the shortcuts, nothing happens.
-        state.suspended = true;
-        state.key_down(CTRL);
-        state.key_down(0x4D);
+        // Turned off, nothing happens.
+        state.shortcuts[0].enabled = false;
+        state.key_down(CTRL, CTRL);
+        state.key_down(0x4D, 0x4D);
         assert!(events.try_recv().is_err());
     }
 
@@ -544,8 +576,8 @@ mod tests {
         let (mut state, _events) = state(vec![keys(Action::PushToTalk, &[0x05])]);
         state.apply_gate();
         assert!(!telinha_voice::audio::key_gate());
-        state.key_down(0x57);
-        state.key_down(0x05);
+        state.key_down(0x57, 0x57);
+        state.key_down(0x05, 0x05);
         assert!(telinha_voice::audio::key_gate());
         state.key_up(0x57);
         assert!(telinha_voice::audio::key_gate());
@@ -560,14 +592,59 @@ mod tests {
     fn recording_takes_the_keys_once_all_are_let_go() {
         let (mut state, events) = state(vec![Shortcut::new(Action::ToggleDeaf)]);
         state.recording = Some(Recording { index: 0, keys: Vec::new() });
-        state.key_down(0x4D);
-        state.key_down(0xA1);
+        state.key_down(0x4D, 0x4D);
+        state.key_down(0xA1, 0xA1);
         state.key_up(0x4D);
         assert!(events.try_recv().is_err());
         state.key_up(0xA1);
         assert_eq!(events.try_recv(), Ok(Event::Recorded { index: 0, keys: vec![SHIFT, 0x4D] }));
         assert_eq!(describe(&[SHIFT, 0x4D]), "SHIFT + M");
         assert_eq!(describe(&[CTRL, ALT, 0x70]), "CTRL + ALT + F1");
+    }
+
+    #[test]
+    fn the_numeric_keypad_is_itself_with_num_lock_on_or_off() {
+        // Num Lock off: the 2 of the keypad comes as the down arrow, without the extended flag.
+        assert_eq!(from_hook(0x28, false), 0x62);
+        assert_eq!(from_hook(0x28, true), 0x28);
+        assert_eq!(from_hook(0x62, false), 0x62);
+        assert_eq!(from_hook(0x0D, true), NUM_ENTER);
+        assert_eq!(describe(&[from_hook(0x28, false)]), "NUM 2");
+        assert_eq!(describe(&[NUM_ENTER]), "NUM ENTER");
+        let (mut state, events) = state(vec![keys(Action::ToggleMute, &[0x62])]);
+        state.key_down(from_hook(0x28, false), 0x28);
+        assert_eq!(events.try_recv(), Ok(Event::Pressed(Action::ToggleMute)));
+        assert_eq!(Shortcut::from_json(&json!({ "action": "toggleMute", "keys": [NUM_ENTER] })).map(|shortcut| shortcut.keys), Some(vec![NUM_ENTER]));
+    }
+
+    #[test]
+    fn a_key_that_only_says_it_went_up_still_counts() {
+        let (mut state, events) = state(vec![keys(Action::ShowWindow, &[0x2C])]);
+        state.key_up(0x2C);
+        assert_eq!(events.try_recv(), Ok(Event::Pressed(Action::ShowWindow)));
+        state.recording = Some(Recording { index: 0, keys: Vec::new() });
+        state.key_up(0x2C);
+        assert_eq!(events.try_recv(), Ok(Event::Recorded { index: 0, keys: vec![0x2C] }));
+    }
+
+    /// Sends F24 through Windows itself and checks the hook hears it. F24 is on no keyboard
+    /// and types nothing, so it is safe on a desktop in use.
+    #[test]
+    #[ignore]
+    fn the_hook_hears_keys_sent_to_windows() {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY};
+        let hotkeys = Hotkeys::start(&egui::Context::default(), &[keys(Action::ShowWindow, &[0x87])]).expect("the hooks are in place");
+        let key = |up: bool| INPUT { r#type: INPUT_KEYBOARD, Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VIRTUAL_KEY(0x87), wScan: 0, dwFlags: if up { KEYEVENTF_KEYUP } else { Default::default() }, time: 0, dwExtraInfo: 0 } } };
+        let press = || {
+            // SAFETY: two plain keyboard inputs of the size Windows expects.
+            unsafe { SendInput(&[key(false), key(true)], std::mem::size_of::<INPUT>() as i32) };
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        };
+        press();
+        assert_eq!(hotkeys.next_event(), Some(Event::Pressed(Action::ShowWindow)));
+        hotkeys.record(Some(0));
+        press();
+        assert_eq!(hotkeys.next_event(), Some(Event::Recorded { index: 0, keys: vec![0x87] }));
     }
 
     #[test]

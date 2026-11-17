@@ -44,6 +44,8 @@ pub enum SettingsAction {
     Shortcuts(Vec<Shortcut>),
     /// Start recording the keys of the shortcut at this place, or stop with None.
     Record(Option<usize>),
+    /// How loud the sound effects play, in percent; `test` plays one to hear it.
+    EffectsVolume { volume: f32, test: bool },
 }
 
 pub struct Settings {
@@ -98,6 +100,8 @@ pub struct SettingsView<'a> {
     pub camera_status: &'a str,
     pub update: UpdateInfo,
     pub shortcuts: &'a [Shortcut],
+    /// How loud the sound effects play, in percent.
+    pub effects_volume: f32,
     /// The shortcut whose keys are being recorded, and the keys pressed so far.
     pub recording: Option<(usize, Vec<u32>)>,
     /// Why the shortcuts cannot work anywhere in Windows, when they cannot.
@@ -879,6 +883,16 @@ impl Settings {
                                     ui.add(egui::Label::new(RichText::new(view.mic_status).color(palette.muted).size(13.0)).wrap());
                                 }
 
+                                section(ui, palette, "EFEITOS SONOROS", false);
+                                ui.add(egui::Label::new(RichText::new("Os sons de quando alguém entra ou sai, de silenciar e ensurdecer, de mensagens e de chamadas.").color(palette.muted).size(13.0)).wrap());
+                                let mut volume = view.effects_volume;
+                                let shown = if volume <= 0.0 { "Sem som".to_owned() } else { format!("{volume:.0}%") };
+                                let slider = slider_field(ui, palette, "Volume dos efeitos", shown, &mut volume, 0.0..=200.0, 5.0);
+                                if slider.changed() || slider.drag_stopped() {
+                                    // A sound plays when the slider is let go, to hear how loud it came out.
+                                    actions.push(SettingsAction::EffectsVolume { volume, test: slider.drag_stopped() || (slider.changed() && !slider.dragged()) });
+                                }
+
                                 section(ui, palette, "VÍDEO", false);
                                 self.video_section(ui, palette, &view, &mut actions);
 
@@ -1207,7 +1221,7 @@ fn shortcuts_page(ui: &mut Ui, palette: &Palette, view: &SettingsView<'_>, actio
     ui.add_space(20.0);
     let (note, tone) = match view.shortcuts_problem {
         Some(problem) => (problem, palette.danger),
-        None => ("Os atalhos ficam desativados enquanto esta tela estiver aberta.", palette.accent),
+        None => ("Clique em “Gravar atalho” e pressione as teclas. A gravação termina quando você soltar todas.", palette.accent),
     };
     info_banner(ui, palette, note, tone);
     ui.add_space(8.0);

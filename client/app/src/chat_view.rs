@@ -75,6 +75,10 @@ pub struct ChatView {
     attachment_preview: Option<Blob>,
     to_bottom: bool,
     paste_was_down: bool,
+    /// The video playing here, by the key of its message and link, and where its player goes
+    /// this frame, when all of it is in sight.
+    playing: Option<(String, crate::media::Video)>,
+    player_rect: Option<Rect>,
     /// The moving pictures of the GIF links shown.
     animated: crate::media::AnimatedLinks,
     /// When the last call for attention went out, to space them.
@@ -218,6 +222,7 @@ impl ChatView {
         hub.set_viewing(conversation.as_ref());
         self.messages = conversation.as_ref().map_or_else(Vec::new, |conversation| hub.history(conversation));
         self.conversation = conversation;
+        self.playing = None;
         self.draft.clear();
         self.hint.clear();
         self.blobs.clear();
@@ -446,8 +451,67 @@ impl ChatView {
         }
     }
 
+    /// A video of a link, as Discord plays them: its picture with a play button, and in its place
+    /// the player once it was clicked. The player is a window of its own laid over the place kept
+    /// here, so only the place is drawn.
+    fn video_block(&mut self, ui: &mut Ui, palette: &Palette, key: &str, video: &crate::media::Video, still: Option<Blob>) {
+        ui.add_space(4.0);
+        let size = if video.tall { Vec2::new(243.0, 432.0) } else { Vec2::new(432.0, 243.0) };
+        let round = CornerRadius::same(if palette.glass { 14 } else { 8 });
+        let playing = self.playing.as_ref().is_some_and(|(playing, _)| playing == key);
+        let (rect, response) = ui.allocate_exact_size(size, if playing { Sense::hover() } else { Sense::click() });
+        if palette.glass {
+            ui.painter().add(egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(77) }.as_shape(rect, round));
+        }
+        ui.painter().rect_filled(rect, round, Color32::BLACK);
+        if playing {
+            // The player shows only while all of it is in sight and the message box is not over it.
+            let seen = ui.clip_rect().contains_rect(rect) && !self.box_rect.is_some_and(|boxed| boxed.intersects(rect));
+            if seen {
+                self.player_rect = Some(rect);
+            } else {
+                ui.painter().text(rect.center(), Align2::CENTER_CENTER, "Tocando…", FontId::proportional(14.0), palette.muted);
+            }
+            // The way to stop it, under the video, outside the window of the player.
+            ui.add_space(6.0);
+            let stop = ui.add(egui::Label::new(RichText::new("Fechar o vídeo").color(palette.link).size(13.0)).sense(Sense::click()));
+            if stop.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                self.playing = None;
+            }
+            return;
+        }
+        if let Some(still) = still {
+            // The picture fills the place, cut to its shape, with the round corners of the place.
+            let scale = (size.x / still.size.x).max(size.y / still.size.y);
+            let shown = still.size * scale;
+            let uv = Rect::from_center_size(egui::pos2(0.5, 0.5), Vec2::new(size.x / shown.x, size.y / shown.y));
+            egui::Image::from_bytes(still.uri.clone(), egui::load::Bytes::Shared(Arc::clone(&still.bytes))).uv(uv).corner_radius(round).paint_at(ui, rect);
+        }
+        let lit = crate::motion::hover(ui.ctx(), response.id, response.hovered());
+        let radius = crate::motion::lerp(28.0, 31.0, lit);
+        ui.painter().circle_filled(rect.center(), radius, crate::motion::mix(Color32::from_black_alpha(160), palette.accent, lit));
+        ui.painter().circle_stroke(rect.center(), radius, Stroke::new(1.0, Color32::from_white_alpha(60)));
+        let tip = rect.center() + Vec2::new(3.0, 0.0);
+        let triangle = vec![tip + Vec2::new(-8.0, -11.0), tip + Vec2::new(11.0, 0.0), tip + Vec2::new(-8.0, 11.0)];
+        ui.painter().add(egui::Shape::convex_polygon(triangle, Color32::WHITE, Stroke::NONE));
+        if response.on_hover_text("Assistir aqui").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            self.playing = Some((key.to_owned(), video.clone()));
+        }
+    }
+
+    /// The video playing in the conversation, by its key, and where its player goes this frame.
+    pub fn playing(&self) -> Option<(&str, &crate::media::Video)> {
+        self.playing.as_ref().map(|(key, video)| (key.as_str(), video))
+    }
+
+    pub fn player_rect(&self) -> Option<Rect> {
+        self.player_rect
+    }
+
+
     pub fn show(&mut self, ui: &mut Ui, hub: &Arc<Hub>, pictures: &mut Pictures, styles: &Styles, palette: &Palette, chrome: &Chrome) -> Option<ChatAction> {
         let mut action = None;
+        self.player_rect = None;
         self.take_dropped(ui);
         self.link.tend(ui.ctx(), &self.draft);
         let pending = if self.attachment.is_some() { 64.0 } else { 0.0 };
@@ -584,6 +648,9 @@ impl ChatView {
                     if let Some(found) = self.embed(ui, hub, palette, message, embed) {
                         action = Some(found);
                     }
+                } else if let Some((url, video)) = link.as_deref().and_then(|url| crate::media::video_of(url).map(|video| (url.to_owned(), video))) {
+                    // A video link that came without a preview still plays here.
+                    self.video_block(ui, palette, &format!("{}|{url}", message.id), &video, None);
                 } else if let Some(found) = moving {
                     // The link came without a preview: the GIF is still fetched and plays.
                     let blob = Blob { uri: found.uri, bytes: found.bytes, size: found.size };
@@ -656,6 +723,7 @@ impl ChatView {
 
     fn embed(&mut self, ui: &mut Ui, hub: &Arc<Hub>, palette: &Palette, message: &Message, embed: &Embed) -> Option<ChatAction> {
         let mut action = None;
+        let video = crate::media::video_of(&embed.url);
         // A GIF link plays: the moving picture is fetched here, in place of the still that came.
         let moving = crate::media::animated_source(&embed.url).and_then(|source| self.animated.get(ui.ctx(), &source));
         let moving = moving.map(|found| Blob { uri: found.uri, bytes: found.bytes, size: found.size });
@@ -687,7 +755,10 @@ impl ChatView {
             if !embed.description.is_empty() {
                 ui.label(RichText::new(&embed.description).color(palette.text).size(14.0));
             }
-            if let Some(blob) = moving {
+            if let Some(video) = &video {
+                let still = embed.image.as_ref().and_then(|image| self.image_blob(hub, image));
+                self.video_block(ui, palette, &format!("{}|{}", message.id, embed.url), video, still);
+            } else if let Some(blob) = moving {
                 if let Some(found) = picture(ui, palette, Some(blob), EMBED_BOUNDS, &format!("gif-{}.gif", message.sent_at)) {
                     action = Some(found);
                 }

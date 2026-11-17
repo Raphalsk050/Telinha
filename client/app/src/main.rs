@@ -167,6 +167,10 @@ fn main() -> eframe::Result {
             }
             let mut app = TelinhaApp::new(&creation.egui_ctx, hub, events, handle);
             app.enable_notices();
+            // Videos of the chat play in a browser laid inside the window.
+            if let Ok(window) = wry::raw_window_handle::HasWindowHandle::window_handle(creation) {
+                app.set_parent_window(telinha::media::ParentWindow::new(window.as_raw()));
+            }
             if let Some(updater) = updater {
                 app.set_updater(updater);
             }

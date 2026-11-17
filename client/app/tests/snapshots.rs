@@ -90,6 +90,9 @@ fn scene() -> Scene {
     chat("m4", "Keep", KEEP, 12, json!({ "text": "olha essa",
         "image": { "mime": "image/png", "width": 640, "height": 360, "data": encode_base64(&png(640, 360, 200)) } }));
     chat("m5", "nanda", NANDA, 3, json!({ "text": "kkkkk\nboa" }));
+    chat("m5v", "Keep", KEEP, 2, json!({ "text": "assiste isso https://www.youtube.com/watch?v=aqz-KE-bpKQ",
+        "embed": { "url": "https://www.youtube.com/watch?v=aqz-KE-bpKQ", "title": "Big Buck Bunny 60fps 4K", "description": "", "siteName": "YouTube",
+            "image": { "mime": "image/png", "width": 480, "height": 360, "data": encode_base64(&png(480, 360, 90)) } } }));
     chat("m6", "Keep", KEEP, 2, json!({ "text": "chamou a atenção!", "nudge": true }));
 
     runtime.block_on(async { tokio::time::sleep(Duration::from_millis(150)).await });

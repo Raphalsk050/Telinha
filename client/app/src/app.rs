@@ -88,6 +88,10 @@ pub struct TelinhaApp {
     toast: Option<(String, f64)>,
     /// The glass drawn without its blur, for the test that checks the blur.
     sharp_glass: bool,
+    /// The window, to lay the video player inside it, and the player once a video was played.
+    parent_window: Option<crate::media::ParentWindow>,
+    player: Option<crate::media::Player>,
+    player_failed: bool,
 }
 
 impl TelinhaApp {
@@ -164,6 +168,9 @@ impl TelinhaApp {
             dialog: None,
             toast: None,
             sharp_glass: false,
+            parent_window: None,
+            player: None,
+            player_failed: false,
         };
         app.use_chosen_devices();
         if app.prefs.app_icon != crate::app_icons::DEFAULT {
@@ -401,8 +408,45 @@ impl TelinhaApp {
         self.show_card(ui.ctx());
         self.tend_update(ui.ctx());
         self.show_toast(ui);
+        self.tend_player(ui.ctx());
         // Everything is painted: what is behind each glass is known now.
         crate::glass::finish(ui.ctx());
+    }
+
+    pub fn set_parent_window(&mut self, window: crate::media::ParentWindow) {
+        self.parent_window = Some(window);
+    }
+
+    /// Plays the video the conversation asks for, where it keeps its place, and hides the player
+    /// while anything is drawn over that place: a menu, a window, a tooltip.
+    fn tend_player(&mut self, context: &egui::Context) {
+        let wanted = self.chat.playing().map(|(key, video)| (key.to_owned(), video.clone()));
+        let Some((key, video)) = wanted else {
+            if let Some(player) = &mut self.player {
+                player.stop();
+            }
+            return;
+        };
+        if self.player.is_none() && !self.player_failed {
+            let Some(parent) = self.parent_window else { return };
+            match crate::media::Player::open(&parent, &self.prefs.folder().join("webview")) {
+                Ok(player) => self.player = Some(player),
+                Err(error) => {
+                    self.player_failed = true;
+                    self.notice(format!("Não consegui abrir o player de vídeo: {error}."));
+                    return;
+                }
+            }
+        }
+        let Some(player) = &mut self.player else { return };
+        player.play(&key, &video);
+        let rect = self.chat.player_rect().filter(|rect| {
+            [rect.left_top(), rect.right_top(), rect.left_bottom(), rect.right_bottom(), rect.center()]
+                .into_iter()
+                .map(|corner| corner + (rect.center() - corner) * 0.02)
+                .all(|point| context.layer_id_at(point).is_none_or(|layer| layer.order == egui::Order::Background))
+        });
+        player.place(rect, context.pixels_per_point());
     }
 
     /// The corners of the panels: rounded in the glass theme, where they float.

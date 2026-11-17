@@ -82,6 +82,11 @@ impl Prefs {
         }
     }
 
+    /// The data folder these choices live in.
+    pub fn folder(&self) -> &Path {
+        self.file.parent().unwrap_or(Path::new("."))
+    }
+
     /// The size of everything in the window, where 1 is the normal size.
     pub fn zoom_factor(&self) -> f32 {
         self.appearance.zoom / 100.0

@@ -3,11 +3,11 @@
 
 [data-theme="glass"] {
   /* os cinco botões do painel "Vidro" do esboço (tweaks.js) mexem só nestes */
-  --frost: .15;        /* jateamento: granulado + névoa branca, 0..1 */
-  --glass-dark: .40;   /* escurecimento do vidro, 0..1 */
-  --blur: 28px;        /* nível de desfoque */
-  --light: 1;          /* luz de fundo, 0..1.6 (acima de 1 clareia) */
-  --light-size: 1;     /* tamanho das luzes, multiplica o raio */
+  --frost: 0;          /* jateamento: granulado + névoa branca, 0..1 */
+  --glass-dark: .49;  /* escurecimento do vidro, 0..1 */
+  --blur: 12px;        /* nível de desfoque */
+  --light: 1.03;       /* luz de fundo, 0..1.6 (acima de 1 clareia) */
+  --light-size: 1.2;    /* tamanho das luzes, multiplica o raio */
 
   --rail: transparent;
   --sidebar: rgba(16, 18, 34, min(1, calc(var(--glass-dark) + .1)));

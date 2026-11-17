@@ -2,11 +2,11 @@
 // Os valores ficam no endereço junto com o resto do estado.
 (() => {
   const KNOBS = [
-    { key: "frost", label: "Jateamento", min: 0, max: 1, step: 0.01, def: 0.15, show: (v) => Math.round(v * 100) + "%" },
-    { key: "glass-dark", label: "Escurecimento", min: 0, max: 1, step: 0.01, def: 0.40, show: (v) => Math.round(v * 100) + "%" },
-    { key: "blur", label: "Desfoque", min: 0, max: 80, step: 1, def: 28, unit: "px", show: (v) => v + " px" },
-    { key: "light", label: "Luz de fundo", min: 0, max: 1.6, step: 0.01, def: 1, show: (v) => Math.round(v * 100) + "%" },
-    { key: "light-size", label: "Tamanho das luzes", min: 0.3, max: 2.5, step: 0.05, def: 1, show: (v) => v.toFixed(2) + "×" },
+    { key: "frost", label: "Jateamento", min: 0, max: 1, step: 0.01, def: 0, show: (v) => Math.round(v * 100) + "%" },
+    { key: "glass-dark", label: "Escurecimento", min: 0, max: 1, step: 0.01, def: 0.49, show: (v) => Math.round(v * 100) + "%" },
+    { key: "blur", label: "Desfoque", min: 0, max: 80, step: 1, def: 12, unit: "px", show: (v) => v + " px" },
+    { key: "light", label: "Luz de fundo", min: 0, max: 1.6, step: 0.01, def: 1.03, show: (v) => Math.round(v * 100) + "%" },
+    { key: "light-size", label: "Tamanho das luzes", min: 0.3, max: 2.5, step: 0.05, def: 1.2, show: (v) => v.toFixed(2) + "×" },
   ];
   const values = Object.assign(Object.fromEntries(KNOBS.map((k) => [k.key, k.def])), state.glass || {});
 

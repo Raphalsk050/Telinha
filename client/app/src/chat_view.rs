@@ -88,6 +88,8 @@ pub struct ChatView {
     at_end: bool,
     /// Where the tests keep the conversation scrolled.
     scroll_test: Option<f32>,
+    /// Where the message box was on the last frame.
+    box_rect: Option<Rect>,
     /// How tall the text of the draft was last time, which the box follows up to its limit.
     draft_height: f32,
 }
@@ -239,6 +241,10 @@ impl ChatView {
     /// Shows a made-up link preview above the box. For the tests.
     pub fn draft_for_test(&mut self, text: &str) {
         self.draft = text.to_owned();
+    }
+
+    pub fn composer_height_for_test(&self) -> f32 {
+        self.composer_height
     }
 
     /// Scrolls the conversation this far from its top on the next frame. For the tests.
@@ -402,6 +408,11 @@ impl ChatView {
         let list = ui.allocate_ui(Vec2::new(ui.available_width(), list_height), |ui| {
             let to_bottom = std::mem::take(&mut self.to_bottom);
             let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]).stick_to_bottom(true);
+            // The wheel over a long draft scrolls the draft, not the conversation behind the box.
+            let over_draft = self.draft_height > COMPOSER_MAX && ui.ctx().pointer_hover_pos().zip(self.box_rect).is_some_and(|(pointer, rect)| rect.contains(pointer));
+            if over_draft {
+                area = area.scroll_source(egui::scroll_area::ScrollSource { mouse_wheel: false, ..Default::default() });
+            }
             if let Some(offset) = self.scroll_test {
                 area = area.vertical_scroll_offset(offset);
             }
@@ -560,7 +571,7 @@ impl ChatView {
         let menu = ui.interact(rect, ui.scope_id().with(("menu", &message.id)), Sense::hover());
         // The text cannot be selected here as it could there, so the menu also copies it.
         if !message.text.is_empty() || message.mine {
-            crate::app::context_menu(&menu, palette).show(|ui| {
+            crate::app::context_menu(&menu, palette, |ui| {
                 if !message.text.is_empty() && crate::app::menu_item(ui, palette, "Copiar texto", false) {
                     ui.ctx().copy_text(message.text.clone());
                 }
@@ -726,8 +737,11 @@ impl ChatView {
                         .min_scrolled_height(self.draft_height.min(COMPOSER_MAX))
                         .auto_shrink([true, true])
                         .show(ui, |ui| ui.add(edit));
-                    if (scrolled.content_size.y - self.draft_height).abs() > 0.5 {
-                        self.draft_height = scrolled.content_size.y;
+                    // The height of the text itself: what the scroll area holds never shrinks
+                    // below the height it was given, so the box would stay tall after a delete.
+                    let needed = scrolled.inner.rect.height();
+                    if (needed - self.draft_height).abs() > 0.5 {
+                        self.draft_height = needed;
                         ui.ctx().request_repaint();
                     }
                     let response = scrolled.inner;
@@ -757,6 +771,7 @@ impl ChatView {
                     });
                 });
             });
+            self.box_rect = Some(boxed.response.rect);
             if let Some(reserved) = glass {
                 let rect = boxed.response.rect;
                 let shadow = egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(64) };
@@ -886,7 +901,7 @@ fn picture(ui: &mut Ui, palette: &Palette, blob: Option<Blob>, bounds: Vec2, fil
     egui::Image::from_bytes(blob.uri.clone(), egui::load::Bytes::Shared(Arc::clone(&blob.bytes))).corner_radius(round).paint_at(ui, rect);
 
     let mut action = None;
-    crate::app::context_menu(&response, palette).show(|ui| {
+    crate::app::context_menu(&response, palette, |ui| {
         if crate::app::menu_item(ui, palette, "Copiar imagem", false) {
             action = Some(ChatAction::Notice(match attach::copy_image(&blob.bytes) {
                 Ok(()) => "Imagem copiada.".to_owned(),

@@ -127,11 +127,17 @@ impl TelinhaApp {
             Some(panel) => egui::pos2(panel.left() + 8.0, panel.top() - 8.0),
             None => egui::pos2(88.0, context.content_rect().bottom() - 60.0),
         };
-        let frame = Frame::new()
-            .fill(palette.sidebar)
-            .corner_radius(CornerRadius::same(8))
-            .inner_margin(Margin::same(10))
-            .shadow(egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(128) });
+        // On glass the panel is a pane of glass drawn under what it holds.
+        let frame = if palette.glass {
+            Frame::new().inner_margin(Margin::same(12))
+        } else {
+            Frame::new()
+                .fill(palette.sidebar)
+                .corner_radius(CornerRadius::same(8))
+                .inner_margin(Margin::same(10))
+                .shadow(egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(128) })
+        };
+        let margin = frame.inner_margin;
         let hint = if self.room.voice.is_some() {
             "Clique para tocar para todo mundo na chamada. Botão direito renomeia ou remove."
         } else {
@@ -144,13 +150,15 @@ impl TelinhaApp {
             .pivot(Align2::LEFT_BOTTOM)
             .fixed_pos(anchor)
             .show(context, |ui| {
-                frame.show(ui, |ui| {
+                frame.show(ui, |ui| crate::glass::panel_contents(ui, margin, 14.0, |ui| {
                     ui.set_width(400.0);
                     ui.spacing_mut().item_spacing = Vec2::ZERO;
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 10.0;
                         let search_width = 400.0 - 10.0 - 20.0 - 6.0 - 80.0;
-                        let field = Frame::new().fill(palette.rail).corner_radius(CornerRadius::same(4)).inner_margin(Margin::symmetric(10, 7)).show(ui, |ui| {
+                        // On glass the field is lighter glass, rounder, as the message box.
+                        let (field_fill, field_round) = if palette.glass { (Color32::from_white_alpha(15), 10) } else { (palette.rail, 4) };
+                        let field = Frame::new().fill(field_fill).corner_radius(CornerRadius::same(field_round)).inner_margin(Margin::symmetric(10, 7)).show(ui, |ui| {
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.soundboard.search)
                                     .frame(Frame::new())
@@ -160,8 +168,14 @@ impl TelinhaApp {
                                     .desired_width(search_width - 20.0),
                             )
                         });
-                        if field.inner.has_focus() {
+                        if field.inner.has_focus() && palette.glass {
+                            let rect = field.response.rect;
+                            ui.painter().rect_stroke(rect, CornerRadius::same(10), Stroke::new(1.0, Color32::from_rgba_unmultiplied(109, 114, 255, 179)), egui::StrokeKind::Inside);
+                            ui.painter().rect_stroke(rect, CornerRadius::same(10), Stroke::new(3.0, Color32::from_rgba_unmultiplied(109, 114, 255, 51)), egui::StrokeKind::Outside);
+                        } else if field.inner.has_focus() {
                             ui.painter().rect_stroke(field.response.rect, CornerRadius::same(4), Stroke::new(2.0, palette.accent), egui::StrokeKind::Outside);
+                        } else if palette.glass {
+                            ui.painter().rect_stroke(field.response.rect, CornerRadius::same(10), Stroke::new(1.0, crate::glass::EDGE), egui::StrokeKind::Inside);
                         }
                         if focus {
                             field.inner.request_focus();
@@ -196,13 +210,23 @@ impl TelinhaApp {
                             } else {
                                 palette.raised
                             };
-                            ui.painter().rect_filled(rect, CornerRadius::same(6), fill);
+                            let lit = playing.as_deref() == Some(sound.id.as_str());
+                            if palette.glass && lit {
+                                crate::glass::accent_fill(ui.painter(), egui::epaint::RectShape::filled(rect, CornerRadius::same(10), Color32::WHITE).into());
+                            } else if palette.glass {
+                                // A key of glass: white over the panel, with the light edge.
+                                let tint = Color32::from_white_alpha(if response.hovered() { 31 } else { 15 });
+                                ui.painter().rect_filled(rect, CornerRadius::same(10), tint);
+                                ui.painter().rect_stroke(rect, CornerRadius::same(10), Stroke::new(1.0, crate::glass::EDGE), egui::StrokeKind::Inside);
+                            } else {
+                                ui.painter().rect_filled(rect, CornerRadius::same(6), fill);
+                            }
                             let name = if sound.name.is_empty() { "Som" } else { sound.name.as_str() };
                             sound_label(ui, rect, Some(icons::SPEAKER), name, palette.strong);
                             if response.clicked() {
                                 fire = Some(sound.id.clone());
                             }
-                            crate::app::context_menu(&response, &palette).show(|ui| {
+                            crate::app::context_menu(&response, &palette, |ui| {
                                 menu_header(ui, &palette, name);
                                 if menu_item(ui, &palette, "Tocar", false) {
                                     fire = Some(sound.id.clone());
@@ -220,7 +244,7 @@ impl TelinhaApp {
                         let response = ui.interact(rect, ui.scope_id().with("sound-add"), Sense::click());
                         let ink = if response.hovered() { palette.strong } else { palette.muted };
                         if response.hovered() {
-                            ui.painter().rect_filled(rect, CornerRadius::same(6), palette.hover);
+                            ui.painter().rect_filled(rect, CornerRadius::same(if palette.glass { 10 } else { 6 }), palette.hover);
                         }
                         dashed_rect(ui, rect.shrink(0.5), palette.line_soft);
                         sound_label(ui, rect, None, "Adicionar som", ink);
@@ -233,7 +257,7 @@ impl TelinhaApp {
                         ui.add_space(2.0);
                         ui.add(egui::Label::new(RichText::new(hint).color(palette.muted).size(12.0)).wrap());
                     });
-                });
+                }));
             });
 
         let capital = |text: String| {

@@ -222,6 +222,13 @@ fn the_glass_theme_draws() {
     }
     scene.app.navigate(Nav::Server { server_id: server_id.clone(), channel_id: Some(room) });
     shoot(&mut scene, "glass-room");
+    shoot_clicking(&mut scene.app, "glass-menu", &[(egui::pos2(1190.0, 126.0), egui::PointerButton::Secondary)]);
+    for name in ["Risada", "Buzina", "Tambores", "Aplausos"] {
+        scene.hub.add_sound(name, "audio/mpeg", b"not really a sound").unwrap();
+    }
+    scene.app.open_soundboard();
+    shoot(&mut scene, "glass-soundboard");
+    scene.app.close_soundboard();
     {
         let _guard = scene.runtime.enter();
         scene.hub.leave_voice();
@@ -332,7 +339,12 @@ fn the_window_draws() {
     scene.app.draft_for_test(&pasted.join("
 "));
     shoot(&mut scene, "long-draft");
+    let long = scene.app.composer_height_for_test();
     scene.app.draft_for_test("");
+    shoot(&mut scene, "draft-cleared");
+    let cleared = scene.app.composer_height_for_test();
+    println!("message box: {long} with the long draft, {cleared} after clearing it");
+    assert!(cleared < long - 100.0, "the message box did not shrink back ({long} to {cleared})");
     assert_eq!(scene.app.unread(&telinha_core::hub::Conversation::channel(&scene.server_id, &scene.text_channel)), 0);
     scene.app.ring_for_test("Keep", true);
     shoot(&mut scene, "incoming-call");

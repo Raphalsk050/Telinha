@@ -683,7 +683,7 @@ impl TelinhaApp {
         let streaming = self.room.streams.incoming.iter().any(|entry| entry.sharer_id == person.id);
         let header = if person.me { format!("{} (você)", person.name) } else { person.name.clone() };
         let (mut pick, mut volume_changed, mut stream_changed, mut settled, mut toggle_mute) = (None, false, false, false, false);
-        crate::app::context_menu(response, &palette).show(|ui| {
+        crate::app::context_menu(response, &palette, |ui| {
             crate::app::menu_header(ui, &palette, &header);
             if let Some((id, _)) = &contact {
                 if crate::app::menu_item(ui, &palette, "Mensagem", false) {
@@ -938,7 +938,10 @@ impl TelinhaApp {
         let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), CALL_PANEL_HEIGHT), Sense::hover());
         self.room.panel_rect = Some(rect);
         ui.painter().rect_filled(rect, CornerRadius::ZERO, self.foot_fill());
-        ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, palette.line_soft));
+        // On glass the user panel under it draws the line between them.
+        if !palette.glass {
+            ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, palette.line_soft));
+        }
         if palette.glass {
             // `.voice-panel { border-top: 1px solid var(--line) }` on glass.
             ui.painter().hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, palette.line));

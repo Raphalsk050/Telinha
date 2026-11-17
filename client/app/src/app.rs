@@ -217,6 +217,9 @@ impl TelinhaApp {
                 HubEvent::Signaling(status) => self.status = status,
                 HubEvent::ChatMessage { conversation, message } => {
                     self.count_unread(&conversation);
+                    if !message.mine {
+                        self.message_tone();
+                    }
                     self.chat.received(&conversation, message);
                 }
                 HubEvent::Notify { title, body, member_id, open } => self.show_notice(&title, &body, member_id.as_deref(), open),
@@ -525,10 +528,13 @@ impl TelinhaApp {
                     FontId::new(15.0, if lit { theme::semibold() } else { egui::FontFamily::Proportional }),
                     color,
                 );
+                // The gear shows at the right end while the pointer is on the row: the time of
+                // the call and the count step aside for it.
+                let aside = if ui.rect_contains_pointer(rect) { 8.0 + 28.0 } else { 8.0 };
                 if let Some(timer) = self.room_timer(&server.id, &channel.id) {
-                    ui.painter().text(rect.right_center() - Vec2::new(8.0, 0.0), Align2::RIGHT_CENTER, timer, FontId::proportional(12.0), palette.green);
+                    ui.painter().text(rect.right_center() - Vec2::new(aside, 0.0), Align2::RIGHT_CENTER, timer, FontId::proportional(12.0), palette.green);
                 } else if unread > 0 {
-                    paint_badge(ui, rect.right_center() - Vec2::new(8.0, 0.0), unread, &palette);
+                    paint_badge(ui, rect.right_center() - Vec2::new(aside, 0.0), unread, &palette);
                 }
                 // The gear that edits the channel shows over the row while the pointer is on it.
                 let mut gear_clicked = false;
@@ -657,7 +663,7 @@ impl TelinhaApp {
         let text_left = rect.left_center() + Vec2::new(52.0, 0.0);
         paint_name(ui, text_left - Vec2::new(0.0, 8.0), rect.width() - 52.0 - 104.0, &name, FontId::new(14.0, theme::semibold()), palette.strong, self.styles.of(Some(&own)));
         let (mut change, mut remove) = (false, false);
-        context_menu(&user_button, &self.palette).show(|ui| {
+        context_menu(&user_button, &self.palette, |ui| {
             menu_header(ui, &self.palette, &name);
             change = menu_item(ui, &self.palette, "Mudar avatar", false);
             remove = has_avatar && menu_item(ui, &self.palette, "Remover avatar", true);
@@ -1222,13 +1228,17 @@ impl TelinhaApp {
 
     fn server_menu(&mut self, header: &egui::Response, server: &Server) {
         let palette = self.palette;
-        let frame = Frame::new()
-            .fill(palette.float)
-            .corner_radius(CornerRadius::same(6))
-            .inner_margin(Margin::same(6))
-            .shadow(egui::Shadow { offset: [0, 8], blur: 16, spread: 0, color: Color32::from_black_alpha(102) });
+        let frame = if palette.glass {
+            Frame::new().inner_margin(Margin::same(6))
+        } else {
+            Frame::new()
+                .fill(palette.float)
+                .corner_radius(CornerRadius::same(6))
+                .inner_margin(Margin::same(6))
+                .shadow(egui::Shadow { offset: [0, 8], blur: 16, spread: 0, color: Color32::from_black_alpha(102) })
+        };
         let anchor = header.rect.shrink2(Vec2::new(10.0, 0.0));
-        egui::Popup::menu(header).anchor(anchor).gap(4.0).frame(frame).width(anchor.width() - 12.0).style(|style: &mut egui::Style| style.spacing.item_spacing = Vec2::ZERO).show(|ui| {
+        egui::Popup::menu(header).anchor(anchor).gap(4.0).frame(frame).width(anchor.width() - 12.0).style(|style: &mut egui::Style| style.spacing.item_spacing = Vec2::ZERO).show(|ui| crate::glass::menu_contents(ui, Margin::same(6), |ui| {
             if server_menu_item(ui, &palette, "Convidar pessoas", false) {
                 self.open_invite();
             }
@@ -1253,7 +1263,7 @@ impl TelinhaApp {
                     confirm: "OK".to_owned(),
                 });
             }
-        });
+        }));
     }
 
     fn show_dialog(&mut self, context: &egui::Context) {
@@ -1473,6 +1483,10 @@ impl TelinhaApp {
         self.sharp_glass = sharp;
     }
 
+    pub fn composer_height_for_test(&self) -> f32 {
+        self.chat.composer_height_for_test()
+    }
+
     pub fn scroll_chat_for_test(&mut self, offset: f32) {
         self.chat.scroll_for_test(offset);
     }
@@ -1580,6 +1594,10 @@ fn section_heading(ui: &mut Ui, palette: &Palette, text: &str, with_add: bool) -
 
 /// The frame of a right-click menu, as `.context-menu` drew it.
 pub(crate) fn menu_frame(palette: &Palette) -> Frame {
+    // On glass the pane is drawn by `glass::menu_contents`, under what the menu holds.
+    if palette.glass {
+        return Frame::new().inner_margin(Margin::symmetric(8, 6));
+    }
     Frame::new()
         .fill(palette.float)
         .corner_radius(CornerRadius::same(6))
@@ -1588,8 +1606,14 @@ pub(crate) fn menu_frame(palette: &Palette) -> Frame {
 }
 
 /// A right-click menu on a widget, at least 230 pixels wide with its padding.
-pub(crate) fn context_menu<'a>(response: &egui::Response, palette: &Palette) -> egui::Popup<'a> {
-    egui::Popup::context_menu(response).frame(menu_frame(palette)).width(214.0).style(|style: &mut egui::Style| style.spacing.item_spacing = Vec2::ZERO)
+pub(crate) fn context_menu<R>(response: &egui::Response, palette: &Palette, contents: impl FnOnce(&mut Ui) -> R) -> Option<egui::InnerResponse<R>> {
+    let frame = menu_frame(palette);
+    let margin = frame.inner_margin;
+    egui::Popup::context_menu(response)
+        .frame(frame)
+        .width(214.0)
+        .style(|style: &mut egui::Style| style.spacing.item_spacing = Vec2::ZERO)
+        .show(|ui| crate::glass::menu_contents(ui, margin, contents))
 }
 
 /// The name on top of a context menu, as `.menu-header` drew it.

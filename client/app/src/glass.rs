@@ -207,6 +207,29 @@ pub(crate) fn glass_card(painter: &egui::Painter, rect: egui::Rect, hovered: boo
 /// A modal window. On glass it is a glass panel and what is behind it goes dark and soft, as
 /// `.overlay::before { background: rgba(5, 6, 14, .35); backdrop-filter: blur(6px) }`;
 /// otherwise it is `frame` over a dark backdrop, as always.
+/// The inside of a menu. On glass the menu is a pane of the glass under its contents, with the
+/// blur of what is behind it; `margin` is the padding of its frame, which has no fill there.
+pub fn menu_contents<R>(ui: &mut egui::Ui, margin: egui::Margin, contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    panel_contents(ui, margin, 10.0, contents)
+}
+
+/// As `menu_contents`, for a floating panel with corners of `radius`.
+pub fn panel_contents<R>(ui: &mut egui::Ui, margin: egui::Margin, radius: f32, contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let Some(look) = look(ui.ctx()) else {
+        return contents(ui);
+    };
+    let reserved = reserve(ui.painter());
+    let inner = contents(ui);
+    let content = ui.min_rect();
+    let rect = Rect::from_min_max(
+        Pos2::new(content.left() - f32::from(margin.left), content.top() - f32::from(margin.top)),
+        Pos2::new(content.right() + f32::from(margin.right), content.bottom() + f32::from(margin.bottom)),
+    );
+    let shadow = egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(102) };
+    fill(ui.painter(), reserved, rect, &Pane { shadow: Some(shadow), frost: true, ..Pane::new(look.main(), radius) });
+    inner
+}
+
 pub fn modal<R>(context: &Context, id: Id, frame: egui::Frame, contents: impl FnOnce(&mut egui::Ui) -> R) -> egui::ModalResponse<R> {
     let Some(look) = look(context) else {
         return egui::Modal::new(id).frame(frame).backdrop_color(Color32::from_black_alpha(178)).show(context, contents);

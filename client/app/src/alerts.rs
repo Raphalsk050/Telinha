@@ -40,6 +40,10 @@ pub struct Alerts {
     was_live: bool,
     viewers: HashSet<String>,
     viewer_left: HashMap<String, f64>,
+    /// The microphone and the deafening of the room the tunes were last played for.
+    switches: Option<(bool, bool)>,
+    /// When the last message sounded, so a burst of messages sounds once.
+    message_sounded: f64,
 }
 
 /// The red count at the right end of a row.
@@ -145,6 +149,16 @@ impl TelinhaApp {
         }
     }
 
+    /// Someone else's message arrived, in any conversation.
+    pub(crate) fn message_tone(&mut self) {
+        let now = self.context.input(|input| input.time);
+        if now - self.alerts.message_sounded < 0.8 {
+            return;
+        }
+        self.alerts.message_sounded = now;
+        self.tone(Tune::message());
+    }
+
     pub(crate) fn incoming_call(&mut self, contact_id: String, name: String, live: bool) {
         if self.room.voice.as_ref().is_some_and(|voice| voice.space_id == contact_id) {
             return;
@@ -169,6 +183,22 @@ impl TelinhaApp {
             None => Vec::new(),
         };
         let people: HashSet<String> = others.iter().map(|person| person.id.clone()).collect();
+        // The person's own microphone and hearing: each switch has its tune, heard even when
+        // the switch just made the person deaf.
+        let switches = self.room.voice.as_ref().map(|voice| (voice.mic && !voice.deaf, voice.deaf));
+        if let (Some((mic, deaf)), Some((was_mic, was_deaf)), true) = (switches, self.alerts.switches, room == self.alerts.room) {
+            let tune = if deaf != was_deaf {
+                Some(if deaf { Tune::deaf_on() } else { Tune::deaf_off() })
+            } else if mic != was_mic {
+                Some(if mic { Tune::mic_on() } else { Tune::mic_off() })
+            } else {
+                None
+            };
+            if let Some(tune) = tune.filter(|_| self.room.audible()) {
+                tones::play(tune);
+            }
+        }
+        self.alerts.switches = switches;
         let sharing: HashSet<String> = others.iter().filter(|person| person.live).map(|person| person.id.clone()).collect();
         if room != self.alerts.room {
             // Leaving has to sound even though the person is, by then, out of the room.

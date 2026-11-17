@@ -533,6 +533,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn showing_the_echo_canceller_what_plays_does_not_change_it() {
+        let processing = Processing::new();
+        // A noisy, loud sound of half a second, as a soundboard sound often is.
+        let mut seed = 12345u32;
+        let mut changed = 0usize;
+        let mut total = 0usize;
+        for _ in 0..50 {
+            let original: Vec<i16> = (0..FRAME)
+                .map(|_| {
+                    seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+                    ((seed >> 16) as i16 / 3).saturating_add(0)
+                })
+                .collect();
+            let mut frame = original.clone();
+            processing.playback(&mut frame);
+            changed += frame.iter().zip(&original).filter(|(a, b)| a != b).count();
+            total += frame.len();
+        }
+        println!("changed {changed} of {total} samples");
+        assert_eq!(changed, 0, "the echo canceller changed what goes to the speakers");
+    }
+
+    #[test]
     fn voices_are_added_up_with_each_ones_volume_and_never_overflow() {
         let mixer = Mixer::default();
         mixer.push("a", &[1000, 1000, 30000]);

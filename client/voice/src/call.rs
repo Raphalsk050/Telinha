@@ -760,7 +760,7 @@ impl Actor {
         let (events, negotiating, id) = (self.events.clone(), connection.clone(), sharer.clone());
         let answer = tokio::spawn(async move {
             let answered = async {
-                let offer = SessionDescription::parse(&sdp, SdpType::Offer).ok()?;
+                let offer = SessionDescription::parse(&richer_opus(&sdp), SdpType::Offer).ok()?;
                 negotiating.set_remote_description(offer).await.ok()?;
                 let answer = negotiating.create_answer(AnswerOptions::default()).await.ok()?;
                 let text = answer.to_string();
@@ -989,7 +989,7 @@ impl Actor {
             options.offer_to_receive_audio = None;
             options.offer_to_receive_video = None;
             let offer = connection.create_offer(options).await.ok()?;
-            let sdp = offer.to_string();
+            let sdp = richer_opus(&offer.to_string());
             connection.set_local_description(offer).await.ok()?;
             Some(sdp)
         }
@@ -1016,7 +1016,7 @@ impl Actor {
         }
         let video = self.video_track.clone();
         let answered = async {
-            let offer = SessionDescription::parse(sdp, SdpType::Offer).ok()?;
+            let offer = SessionDescription::parse(&richer_opus(sdp), SdpType::Offer).ok()?;
             connection.set_remote_description(offer).await.ok()?;
             // Takes the audio line the offer opened and sends the microphone on it.
             connection.add_track(MediaStreamTrack::Audio(track.clone()), &["telinha"]).ok()?;
@@ -1034,7 +1034,7 @@ impl Actor {
         self.flush_candidates(id, &connection).await;
         let answer = async {
             let answer = connection.create_answer(AnswerOptions::default()).await.ok()?;
-            let sdp = answer.to_string();
+            let sdp = richer_opus(&answer.to_string());
             connection.set_local_description(answer).await.ok()?;
             Some(sdp)
         }
@@ -1092,7 +1092,7 @@ impl Actor {
                     return;
                 };
                 let Some(sdp) = payload.pointer("/description/sdp").and_then(Value::as_str) else { return };
-                let applied = match SessionDescription::parse(sdp, SdpType::Answer) {
+                let applied = match SessionDescription::parse(&richer_opus(sdp), SdpType::Answer) {
                     Ok(answer) => connection.set_remote_description(answer).await.is_ok(),
                     Err(_) => false,
                 };
@@ -1214,5 +1214,54 @@ async fn add_candidate(connection: &PeerConnection, candidate: &Value) {
     // A candidate that is old or malformed is skipped; the connection goes on with the others.
     if let Ok(candidate) = IceCandidate::parse(mid, index, sdp) {
         let _ = connection.add_ice_candidate(candidate).await;
+    }
+}
+
+/// The voice at 96 kbit/s instead of the 32 WebRTC picks for one channel. At 32 the encoder
+/// treats everything as speech, and the sounds of the soundboard come out watery, as if noise
+/// suppression had gone over them. Written in every description sent and read, so each side
+/// sends the richer voice even to an app that does not ask for it.
+pub(crate) fn richer_opus(sdp: &str) -> String {
+    const RATE: &str = "maxaveragebitrate=96000";
+    let opus: Vec<String> = sdp
+        .lines()
+        .filter_map(|line| line.strip_prefix("a=rtpmap:"))
+        .filter_map(|rest| rest.split_once(' '))
+        .filter(|(_, codec)| codec.to_ascii_lowercase().starts_with("opus/"))
+        .map(|(kind, _)| kind.to_owned())
+        .collect();
+    let ending = if sdp.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut out: Vec<String> = Vec::new();
+    for line in sdp.lines() {
+        let fmtp = opus.iter().find_map(|kind| line.strip_prefix(&format!("a=fmtp:{kind} ")).map(|params| (kind, params)));
+        match fmtp {
+            Some((kind, params)) => {
+                let kept: Vec<&str> = params.split(';').map(str::trim).filter(|param| !param.is_empty() && !param.starts_with("maxaveragebitrate=")).collect();
+                out.push(format!("a=fmtp:{kind} {};{RATE}", kept.join(";")));
+            }
+            None => out.push(line.to_owned()),
+        }
+    }
+    let mut text = out.join(ending);
+    if sdp.ends_with('\n') {
+        text.push_str(ending);
+    }
+    text
+}
+
+#[cfg(test)]
+mod opus_tests {
+    use super::richer_opus;
+
+    #[test]
+    fn the_opus_line_asks_for_the_richer_voice_and_nothing_else_changes() {
+        let sdp = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111 63\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\na=rtpmap:63 red/48000/2\r\na=fmtp:63 111/111\r\n";
+        let rich = richer_opus(sdp);
+        assert!(rich.contains("a=fmtp:111 minptime=10;useinbandfec=1;maxaveragebitrate=96000\r\n"), "{rich}");
+        assert!(rich.contains("a=fmtp:63 111/111\r\n"));
+        assert_eq!(rich.matches("\r\n").count(), sdp.matches("\r\n").count());
+        // Twice is the same as once, and a rate already there is replaced.
+        assert_eq!(richer_opus(&rich), rich);
+        assert!(richer_opus(&sdp.replace("useinbandfec=1", "maxaveragebitrate=20000")).contains("a=fmtp:111 minptime=10;maxaveragebitrate=96000"));
     }
 }

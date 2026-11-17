@@ -30,9 +30,45 @@ impl Tune {
         Self {
             notes: pitches.iter().enumerate().map(|(index, pitch)| (*pitch, index as f32 * 0.12)).collect(),
             shape: Shape::Sine,
-            peak: 0.16,
+            // Loud enough to hear over a game or a call.
+            peak: 0.45,
             length: 0.28,
         }
+    }
+
+    /// Two quick short notes, for the switches of the person's own sound.
+    fn blip(pitches: &[f32], shape: Shape) -> Self {
+        Self {
+            notes: pitches.iter().enumerate().map(|(index, pitch)| (*pitch, index as f32 * 0.08)).collect(),
+            shape,
+            peak: 0.4,
+            length: 0.16,
+        }
+    }
+
+    /// The microphone went silent: a step down.
+    pub fn mic_off() -> Self {
+        Self::blip(&[783.99, 523.25], Shape::Sine)
+    }
+
+    /// The microphone came back: a step up.
+    pub fn mic_on() -> Self {
+        Self::blip(&[523.25, 783.99], Shape::Sine)
+    }
+
+    /// The person stopped hearing the call: lower, rounder and three steps down.
+    pub fn deaf_on() -> Self {
+        Self::blip(&[440.0, 349.23, 261.63], Shape::Triangle)
+    }
+
+    /// The person hears the call again: the same three steps up.
+    pub fn deaf_off() -> Self {
+        Self::blip(&[261.63, 349.23, 440.0], Shape::Triangle)
+    }
+
+    /// A message arrived from someone.
+    pub fn message() -> Self {
+        Self { notes: vec![(1046.5, 0.0), (1567.98, 0.07)], shape: Shape::Sine, peak: 0.3, length: 0.22 }
     }
 
     pub fn join() -> Self {
@@ -162,9 +198,16 @@ mod tests {
         let samples = tune.render(48_000);
         assert_eq!(samples.len(), 19_200);
         let loudest = samples.iter().fold(0.0f32, |loudest, sample| loudest.max(sample.abs()));
-        assert!(loudest > 0.1 && loudest <= 0.33, "loudest was {loudest}");
+        assert!(loudest > 0.3 && loudest <= 0.6, "loudest was {loudest}");
         // It starts and ends in silence, so nothing clicks.
         assert!(samples[0].abs() < 0.001 && samples[samples.len() - 1].abs() < 0.001);
+
+        for tune in [Tune::mic_off(), Tune::mic_on(), Tune::deaf_on(), Tune::deaf_off(), Tune::message()] {
+            let samples = tune.render(48_000);
+            assert!(samples.iter().all(|sample| sample.abs() <= 0.6));
+            assert!(samples[0].abs() < 0.001 && samples[samples.len() - 1].abs() < 0.001);
+        }
+        assert_ne!(Tune::mic_off().notes, Tune::deaf_on().notes);
 
         let ring = Tune::ring();
         assert!((ring.seconds() - 0.98).abs() < 0.001);

@@ -101,6 +101,21 @@ body[data-theme="glass"]::before {
   background: rgba(255, 255, 255, .08); border: 1px solid var(--glass-edge);
   box-shadow: inset 0 1px 0 var(--glass-shine);
 }
+/* a caixa de mensagem flutua por cima da conversa: as mensagens passam por trás do vidro */
+[data-theme="glass"] .chat { position: relative; }
+[data-theme="glass"] .messages {
+  padding-bottom: calc(var(--dock-h, 80px) + 8px);
+  /* some só embaixo do aviso, onde o texto de trás atrapalharia a leitura */
+  -webkit-mask-image: linear-gradient(to top, transparent 0, #000 26px);
+  mask-image: linear-gradient(to top, transparent 0, #000 26px);
+}
+[data-theme="glass"] .dock { position: absolute; left: 0; right: 0; bottom: 0; z-index: 1; pointer-events: none; }
+[data-theme="glass"] .dock > * { pointer-events: auto; }
+[data-theme="glass"] .dock .composer {
+  background: rgba(255, 255, 255, .06);
+  backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: inset 0 1px 0 var(--glass-shine), 0 8px 24px rgba(0, 0, 0, .25);
+}
 [data-theme="glass"] .composer:focus-within { border-color: rgba(109, 114, 255, .7); box-shadow: 0 0 0 3px rgba(109, 114, 255, .2); }
 [data-theme="glass"] .attach .icon::after { background: rgba(40, 42, 64, 1); }
 

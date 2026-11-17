@@ -153,12 +153,12 @@ function chat(channel, intro, voice = false) {
 }
 
 function composer(where) {
-  return `<div class="composer">
+  return `<div class="dock"><div class="composer">
     <button class="ghost attach" title="Anexar">${icon("plus", "small")}</button>
     <textarea rows="1" placeholder="Conversar em ${where}"></textarea>
     <button class="ghost">${icon("send")}</button>
   </div>
-  <div class="footnote">Sem conexão com o servidor de contatos. As mensagens não vão chegar agora.</div>`;
+  <div class="footnote">Sem conexão com o servidor de contatos. As mensagens não vão chegar agora.</div></div>`;
 }
 
 function stage() {
@@ -281,7 +281,14 @@ function render() {
   document.getElementById("dev-theme").value = state.theme;
   document.getElementById("dev-members").checked = state.members;
   const list = document.querySelector(".messages");
-  if (list) list.scrollTop = list.scrollHeight;
+  // A caixa de mensagem pode flutuar por cima da conversa (tema Vidro): a conversa reserva
+  // embaixo a altura dela, que muda quando o texto cresce.
+  for (const dock of document.querySelectorAll(".dock")) {
+    new ResizeObserver(() => {
+      dock.parentElement.style.setProperty("--dock-h", dock.offsetHeight + "px");
+    }).observe(dock);
+  }
+  if (list) requestAnimationFrame(() => (list.scrollTop = list.scrollHeight));
 }
 
 document.addEventListener("click", (event) => {

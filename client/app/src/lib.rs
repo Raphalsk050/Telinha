@@ -21,6 +21,7 @@ pub mod media;
 pub mod name_style;
 pub mod attach;
 pub mod alerts;
+pub mod heads_up;
 pub mod appearance;
 pub mod home_view;
 pub mod notify;

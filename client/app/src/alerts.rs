@@ -3,12 +3,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use egui::{Color32, CornerRadius, FontId, Pos2, Rect, RichText, Ui, Vec2};
+use egui::{Color32, CornerRadius, FontId, Pos2, Rect, Ui, Vec2};
 use telinha_core::hub::{Conversation, DM_ROOM, OutgoingPhase};
 use telinha_voice::tones::{self, Tune};
 
 use crate::app::{Nav, TelinhaApp, first_text_channel};
-use crate::dialogs::{Tone, button};
 use crate::notify::Notices;
 use crate::theme::{self, Palette};
 
@@ -92,11 +91,28 @@ impl TelinhaApp {
         if self.alerts.unfocused {
             self.context.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
         }
+        // In front, the card at the top right of the window tells it instead.
+        if !self.alerts.unfocused {
+            return;
+        }
         let picture = member_id.and_then(|member| self.hub.picture(member, false));
         if let Some(notices) = &mut self.alerts.notices {
             // A notice Windows refuses is not worth telling the person about.
             let _ = notices.show(title, body, picture.as_ref(), open);
         }
+    }
+
+    pub(crate) fn window_in_front(&self) -> bool {
+        !self.alerts.unfocused
+    }
+
+    /// The call ringing: who, whether they share their screen, and since when.
+    pub(crate) fn ringing(&self) -> Option<(String, String, bool, f64)> {
+        self.alerts.incoming.as_ref().map(|incoming| (incoming.contact_id.clone(), incoming.name.clone(), incoming.live, incoming.started))
+    }
+
+    pub(crate) fn decline_call(&mut self) {
+        self.alerts.incoming = None;
     }
 
     pub(crate) fn open_conversation(&mut self, conversation: &Conversation) {
@@ -253,6 +269,12 @@ impl TelinhaApp {
             if sharing.iter().any(|id| !self.alerts.sharing.contains(id)) {
                 self.tone(Tune::live());
             }
+            if let Some((space_id, room_id)) = &room {
+                let started: Vec<_> = others.iter().filter(|person| person.live && !self.alerts.sharing.contains(&person.id)).cloned().collect();
+                for sharer in &started {
+                    self.heads_up_live(space_id, room_id, sharer);
+                }
+            }
         }
         self.alerts.room = room;
         self.alerts.people = people;
@@ -289,7 +311,7 @@ impl TelinhaApp {
         }
     }
 
-    fn answer_call(&mut self) {
+    pub(crate) fn answer_call(&mut self) {
         let Some(incoming) = self.alerts.incoming.take() else { return };
         self.navigate(Nav::Direct(incoming.contact_id.clone()));
         self.join_room(&incoming.contact_id, DM_ROOM);
@@ -305,40 +327,6 @@ impl TelinhaApp {
                     self.notice(error);
                 }
             }
-        }
-    }
-
-    /// A call coming in, as `#call-dialog` asked: a dialog in the middle of the window.
-    pub(crate) fn show_incoming(&mut self, context: &egui::Context) {
-        let Some(incoming) = &self.alerts.incoming else { return };
-        let palette = self.palette;
-        let (title, text, accept) = if incoming.live {
-            (format!("{} está transmitindo a tela para você", incoming.name), "Entre na chamada para assistir e conversar.", "Entrar e assistir")
-        } else {
-            (format!("{} está chamando você", incoming.name), "Entre para conversar por voz, ver a câmera ou a tela.", "Entrar")
-        };
-        let mut answer = None;
-        crate::glass::modal(context, egui::Id::unique("incoming-call"), crate::dialogs::dialog_frame(&palette), |ui| {
-                ui.set_width(420.0);
-                ui.spacing_mut().item_spacing = Vec2::ZERO;
-                ui.add(egui::Label::new(RichText::new(title).color(palette.strong).size(18.0).family(theme::bold())).wrap());
-                ui.add_space(15.0);
-                ui.add(egui::Label::new(RichText::new(text).color(palette.muted).size(15.0)).wrap());
-                ui.add_space(15.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    if button(ui, &palette, accept, Tone::Primary).clicked() {
-                        answer = Some(true);
-                    }
-                    if button(ui, &palette, "Agora não", Tone::Plain).clicked() {
-                        answer = Some(false);
-                    }
-                });
-            });
-        match answer {
-            Some(true) => self.answer_call(),
-            Some(false) => self.alerts.incoming = None,
-            None => {}
         }
     }
 }

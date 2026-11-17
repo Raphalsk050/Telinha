@@ -48,4 +48,14 @@ const DATA = {
     { name: "nanda", status: "Na sala Geral" },
     { name: "pedro", status: "Offline", offline: true },
   ],
+  // Avisos que chegam com o app aberto (botão "+ aviso" na barra do esboço).
+  notices: {
+    dm: { from: "nanda", style: "neon", icon: "chat", where: "Mensagem direta",
+      text: "chegou o bolo, vem buscar antes que o Keep coma tudo", timed: true, open: { view: "home" } },
+    mention: { from: "Keep", style: "gradient", icon: "hash", where: "geral · Servidor de rapha",
+      text: '<span class="mention-chip">@Raphalsk</span> entra na sala, só falta você pra começar', timed: true, open: { view: "chat", channel: "geral" } },
+    call: { from: "Keep", style: "gradient", icon: "phone", where: "Chamada de voz", text: "está te ligando" },
+    live: { from: "Keep", style: "gradient", icon: "screen", where: "Geral · Servidor de rapha",
+      text: "começou a transmitir a tela", timed: true, open: { view: "call" } },
+  },
 };

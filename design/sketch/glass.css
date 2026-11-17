@@ -146,3 +146,17 @@ body[data-theme="glass"]::before {
 }
 [data-theme="glass"] .overlay { isolation: auto; z-index: 10; }
 [data-theme="glass"] .settings-nav { background: rgba(0, 0, 0, .18); }
+
+/* avisos: o mesmo vidro dos painéis, numa camada ::before (nunca no próprio cartão) */
+[data-theme="glass"] .notices { top: calc(10px + var(--top-h) + 12px); right: 26px; }
+[data-theme="glass"] .notice {
+  background: transparent; border-color: var(--glass-edge);
+  box-shadow: inset 0 1px 0 var(--glass-shine), 0 16px 44px rgba(0, 0, 0, .45);
+}
+[data-theme="glass"] .notice::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none; border-radius: inherit;
+  backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
+  background: rgba(16, 18, 34, min(1, calc(var(--glass-dark) + .14)));
+}
+[data-theme="glass"] .notice-actions .accept { background: linear-gradient(135deg, #23a55a, #1abc9c); }
+[data-theme="glass"] .notice-actions .watch-now { background: linear-gradient(135deg, #6d72ff, #a855f7); }

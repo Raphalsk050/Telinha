@@ -219,6 +219,13 @@ fn the_glass_theme_draws() {
     scene.app.navigate(Nav::Server { server_id, channel_id: Some(channel) });
     scene.app.set_appearance(Appearance { theme: ThemeChoice::Glass, ..Appearance::default() });
     shoot(&mut scene, "glass-server");
+    scene.app.heads_up_for_test(&["dm"]);
+    shoot(&mut scene, "glass-heads-up");
+    scene.app.ring_for_test("Keep", false);
+    scene.app.heads_up_for_test(&["mention", "live"]);
+    shoot(&mut scene, "glass-heads-up-stack");
+    scene.app.ring_for_test("", false);
+    scene.app.heads_up_for_test(&[]);
     scene.app.open_thread_for_test("m1");
     shoot(&mut scene, "glass-thread");
     scene.app.close_thread_for_test();
@@ -432,6 +439,14 @@ fn the_window_draws() {
     scene.app.ring_for_test("Keep", true);
     shoot(&mut scene, "incoming-call");
     scene.app.ring_for_test("", false);
+    // The cards at the top right: a direct message alone, then a call over a mention and a share.
+    scene.app.heads_up_for_test(&["dm"]);
+    shoot(&mut scene, "heads-up");
+    scene.app.ring_for_test("Keep", false);
+    scene.app.heads_up_for_test(&["mention", "live"]);
+    shoot(&mut scene, "heads-up-stack");
+    scene.app.ring_for_test("", false);
+    scene.app.heads_up_for_test(&[]);
     scene.app.open_picture("bytes://test/alta.png", png(700, 1900, 60));
     shoot(&mut scene, "lightbox-tall");
     scene.app.open_picture("bytes://test/larga.png", png(2000, 620, 140));

@@ -69,6 +69,8 @@ pub struct TelinhaApp {
     /// The theme changed, and the next draw has to give the new colors to egui itself.
     restyle: bool,
     pub(crate) alerts: Alerts,
+    /// The cards of messages, calls and shares at the top right of the window.
+    pub(crate) heads_up: crate::heads_up::HeadsUp,
     /// The connection with codes that is open on the first screen, when there is one.
     pub(crate) manual: Option<ManualSession>,
     pub(crate) update: crate::update_view::UpdateView,
@@ -79,7 +81,7 @@ pub struct TelinhaApp {
     /// The profile card that is open, and when it opened in the clock of the window.
     pub(crate) card: Option<CardRequest>,
     pub(crate) card_opened: f64,
-    chat: ChatView,
+    pub(crate) chat: ChatView,
     /// The thread open beside the conversation, as Slack shows them.
     thread: Option<Box<ChatView>>,
     /// The balloon of the pinned messages, and where its button was.
@@ -168,6 +170,7 @@ impl TelinhaApp {
             // The window that draws is not always the one this was made with, as in the tests.
             restyle: true,
             alerts: Alerts::default(),
+            heads_up: crate::heads_up::HeadsUp::default(),
             manual: None,
             update: crate::update_view::UpdateView::default(),
             styles,
@@ -250,6 +253,7 @@ impl TelinhaApp {
                 HubEvent::Signaling(status) => self.status = status,
                 HubEvent::ChatMessage { conversation, message } => {
                     self.count_unread(&conversation);
+                    self.heads_up_message(&conversation, &message);
                     if !message.mine && message.is_nudge() {
                         self.nudged();
                     } else if !message.mine {
@@ -456,9 +460,9 @@ impl TelinhaApp {
         self.show_dialog(ui.ctx());
         self.show_picker(ui.ctx());
         self.show_stream_settings(ui.ctx());
-        self.show_incoming(ui.ctx());
         self.show_card(ui.ctx());
         self.tend_update(ui.ctx());
+        self.show_heads_up(ui.ctx());
         self.show_toast(ui);
         self.tend_player(ui.ctx());
         // Everything is painted: what is behind each glass is known now.

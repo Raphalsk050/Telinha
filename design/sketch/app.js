@@ -259,6 +259,49 @@ function profilePage() {
   </div>`;
 }
 
+// ---- avisos: chegam no canto de cima, o mais novo em cima, no máximo três ----
+let freshNotice = null; // só o que acabou de chegar desliza para dentro
+function notices() {
+  const list = state.notices || [];
+  if (!list.length) return "";
+  return `<div class="notices">${list.map(notice).join("")}</div>`;
+}
+function notice(kind) {
+  const n = DATA.notices[kind];
+  const who = { name: n.from, style: n.style };
+  let tail = "";
+  if (kind === "call") {
+    tail = `<div class="notice-actions">
+      <button class="decline" data-dismiss="${kind}">${icon("hangup", "small")}Recusar</button>
+      <button class="accept" data-open="${kind}">${icon("phone", "small")}Atender</button></div>`;
+  } else if (kind === "live") {
+    tail = `<div class="notice-actions"><button class="watch-now" data-open="${kind}">${icon("screen", "small")}Assistir</button></div>`;
+  } else {
+    tail = `<div class="notice-reply"><input placeholder="Responder a ${n.from}"><button class="ghost" title="Enviar">${icon("send", "small")}</button></div>`;
+  }
+  const face = kind === "call" ? `<span class="ringing">${avatar(who, 40)}</span>` : avatar(who, 40);
+  return `<div class="notice kind-${kind} ${freshNotice === kind ? "enter" : ""}" data-kind="${kind}" ${n.open ? `data-open="${kind}"` : ""}>
+    ${kind === "mention" ? '<span class="stripe"></span>' : ""}
+    <div class="notice-top">
+      <span class="where">${icon(n.icon, "small")}<span>${n.where}</span></span>
+      <time>agora</time>
+      <button class="ghost notice-close" data-dismiss="${kind}" title="Fechar">${icon("close", "small")}</button>
+    </div>
+    <div class="notice-main">${face}
+      <div class="notice-text">${nameOf(who)}${kind === "live" ? ' <span class="live">AO VIVO</span>' : ""}<p>${n.text}</p></div>
+    </div>
+    ${tail}
+    ${n.timed ? '<span class="notice-timer"></span>' : ""}
+  </div>`;
+}
+const NOTICE_ORDER = ["dm", "mention", "call", "live"];
+function pushNotice(kind) {
+  freshNotice = kind;
+  set({ notices: [kind, ...(state.notices || []).filter((k) => k !== kind)].slice(0, 3) });
+  freshNotice = null;
+}
+const dropNotice = (kind) => set({ notices: (state.notices || []).filter((k) => k !== kind) });
+
 // ---- montagem ----
 function render() {
   document.body.dataset.theme = state.theme;
@@ -277,7 +320,7 @@ function render() {
       ${chat(state.channel, `Este é o começo do canal #${state.channel} em Servidor de rapha. Cada computador guarda o próprio histórico, e quem está offline não recebe.`)}${members()}</div>`;
   }
   // Configurações abre por cima do chat, como no app.
-  document.getElementById("app").innerHTML = `${rail()}${side}<main class="main">${main}</main>${view === "settings" ? settings() : ""}`;
+  document.getElementById("app").innerHTML = `${rail()}${side}<main class="main">${main}</main>${view === "settings" ? settings() : ""}${notices()}`;
   document.getElementById("dev-view").value = view;
   document.getElementById("dev-theme").value = state.theme;
   document.getElementById("dev-members").checked = state.members;
@@ -293,6 +336,16 @@ function render() {
 }
 
 document.addEventListener("click", (event) => {
+  // avisos: o X ou "Recusar" fecha; clicar no cartão (fora do campo de resposta) abre a conversa
+  const drop = event.target.closest("[data-dismiss]");
+  if (drop) return dropNotice(drop.dataset.dismiss);
+  if (event.target.closest(".notice-reply")) return;
+  const open = event.target.closest("[data-open]");
+  if (open) {
+    const kind = open.dataset.open;
+    state.notices = (state.notices || []).filter((k) => k !== kind);
+    return set(DATA.notices[kind].open || { view: "call" });
+  }
   const el = event.target.closest("[data-go],[data-channel],[data-voice],[data-toggle],[data-settings],[data-page],[data-close]");
   if (!el) return;
   if (el.dataset.close !== undefined && event.target.closest("[data-close]") === el && (el.tagName === "BUTTON" || event.target === el)) {
@@ -308,6 +361,15 @@ document.addEventListener("click", (event) => {
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && state.view === "settings") set({ view: state.lastView || "chat" }); });
 document.getElementById("dev-view").onchange = (e) => set({ view: e.target.value });
 document.getElementById("dev-theme").onchange = (e) => set({ theme: e.target.value });
+// o tempo do aviso acabou (para enquanto o mouse está em cima)
+document.addEventListener("animationend", (e) => {
+  if (e.animationName === "notice-timer") dropNotice(e.target.closest(".notice").dataset.kind);
+});
+document.getElementById("dev-notify").onclick = () => {
+  const shown = state.notices || [];
+  const next = NOTICE_ORDER.find((k) => !shown.includes(k)) || NOTICE_ORDER[0];
+  pushNotice(next);
+};
 document.getElementById("dev-members").onchange = (e) => set({ members: e.target.checked });
 
 render();

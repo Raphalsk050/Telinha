@@ -580,7 +580,8 @@ impl ChatView {
         // On glass the message box floats over the conversation, which passes behind it.
         let floating = palette.glass;
         let list_top = ui.cursor().min.y;
-        let given = ui.max_rect();
+        // The room left beside the members, not the whole panel under the header.
+        let given = ui.available_rect_before_wrap();
         let list_height = if floating { ui.available_height() } else { (ui.available_height() - composer_height).max(0.0) };
         let list = ui.allocate_ui(Vec2::new(ui.available_width(), list_height), |ui| {
             let to_bottom = std::mem::take(&mut self.to_bottom);

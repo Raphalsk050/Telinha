@@ -89,8 +89,12 @@ const DEFAULT_COLORS: [&str; 5] = ["#5865f2", "#eb459e", "#19b8b0", "#f0b232", "
 /// How long after the last change the style is saved and told to everyone.
 const STYLE_DELAY: f64 = 0.4;
 /// The width of what a page holds, and the room on each side of it.
-const WIDTH: f32 = 680.0;
+/// The width of the content of a page, and the room at its right where the scroll bar runs.
+const WIDTH: f32 = 656.0;
+const GUTTER: f32 = 24.0;
 const PAGE_PAD: f32 = 32.0;
+/// The width of the cell of a theme dot: seven in a row fill the page.
+const THEME_CELL: f32 = 93.0;
 const SIDEBAR: f32 = 232.0;
 
 /// The pages of the settings, each with a line in the sidebar.
@@ -155,18 +159,9 @@ fn small_button(ui: &mut Ui, palette: &Palette, label: &str) -> bool {
 
 /// A box to tick with its sentence. True when it was clicked.
 fn check(ui: &mut Ui, palette: &Palette, on: bool, label: &str) -> bool {
-    let galley = ui.painter().layout_no_wrap(label.to_owned(), FontId::proportional(15.0), palette.text);
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(28.0 + galley.size().x, 26.0), Sense::click());
-    let square = Rect::from_center_size(egui::pos2(rect.left() + 9.0, rect.center().y), Vec2::splat(18.0));
-    if on {
-        ui.painter().rect_filled(square, CornerRadius::same(4), palette.accent);
-        let tick = [square.left_center() + Vec2::new(4.0, 0.5), square.center() + Vec2::new(-1.5, 4.0), square.right_top() + Vec2::new(-4.0, 5.0)];
-        ui.painter().add(egui::Shape::line(tick.to_vec(), Stroke::new(2.0, Color32::WHITE)));
-    } else {
-        ui.painter().rect_stroke(square, CornerRadius::same(4), Stroke::new(1.5, palette.muted), egui::StrokeKind::Inside);
-    }
-    ui.painter().galley(egui::pos2(rect.left() + 28.0, rect.center().y - galley.size().y / 2.0), galley, palette.text);
-    response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+    // A switch at the right edge, as every on and off choice of Discord.
+    ui.add_space(6.0);
+    toggle_row(ui, palette, label, "", on)
 }
 
 /// A row as Discord draws its choices: the name in bold, a line under it that explains, and a
@@ -304,8 +299,8 @@ fn device_field(ui: &mut Ui, palette: &Palette, label: &str, width: f32, names: 
 /// A round button that picks a theme, with its name under it. `paint` fills the circle.
 fn theme_dot(ui: &mut Ui, palette: &Palette, label: &str, chosen: bool, paint: impl FnOnce(&egui::Painter, egui::Pos2, f32)) -> bool {
     let galley = ui.painter().layout_no_wrap(label.to_owned(), FontId::proportional(13.0), if chosen { palette.strong } else { palette.soft });
-    let width = galley.size().x.max(52.0);
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 80.0), Sense::click());
+    // Every dot takes the same cell, so the rows line up as columns.
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(THEME_CELL, 84.0), Sense::click());
     let center = egui::pos2(rect.center().x, rect.top() + 28.0);
     if chosen {
         ui.painter().circle_stroke(center, 29.0, Stroke::new(2.0, palette.accent));
@@ -320,24 +315,18 @@ fn theme_dot(ui: &mut Ui, palette: &Palette, label: &str, chosen: bool, paint: i
 
 /// A slider with its name on the left and its value on the right, above it.
 pub(crate) fn slider_field(ui: &mut Ui, palette: &Palette, label: &str, shown: String, value: &mut f32, range: std::ops::RangeInclusive<f32>, step: f64) -> egui::Response {
-    ui.add_space(6.0);
+    ui.add_space(10.0);
     let mut name = None;
     ui.horizontal(|ui| {
-        name = Some(ui.label(RichText::new(label).color(palette.text).size(14.0)));
+        name = Some(ui.label(RichText::new(label).color(palette.strong).size(15.0).family(theme::semibold())));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.label(RichText::new(shown).color(palette.muted).size(13.0));
         });
     });
+    ui.add_space(4.0);
     ui.scope(|ui| {
         ui.spacing_mut().slider_width = ui.available_width();
-        ui.spacing_mut().slider_rail_height = 6.0;
-        ui.style_mut().visuals.handle_shape = egui::style::HandleShape::Circle;
-        let visuals = ui.visuals_mut();
-        visuals.selection.bg_fill = palette.accent;
-        visuals.widgets.inactive.bg_fill = Color32::from_gray(if palette.dark { 232 } else { 190 });
-        for state in [&mut visuals.widgets.inactive, &mut visuals.widgets.hovered, &mut visuals.widgets.active] {
-            state.fg_stroke = Stroke::new(2.0, palette.accent);
-        }
+        slider_look(ui, palette);
         let slider = ui.add(egui::Slider::new(value, range).step_by(step).show_value(false).trailing_fill(true));
         match name {
             Some(name) => slider.labelled_by(name.id),
@@ -589,7 +578,7 @@ impl Settings {
             ui.spacing_mut().item_spacing = Vec2::ZERO;
             ui.horizontal_top(|ui| {
                 self.sidebar(ui, palette, &view, height);
-                let (area, _) = ui.allocate_exact_size(Vec2::new(PAGE_PAD * 2.0 + WIDTH, height), Sense::hover());
+                let (area, _) = ui.allocate_exact_size(Vec2::new(PAGE_PAD * 2.0 + WIDTH + GUTTER, height), Sense::hover());
                 let inner = area.shrink2(Vec2::new(PAGE_PAD, 0.0));
                 ui.scope_builder(egui::UiBuilder::new().max_rect(inner).layout(Layout::top_down(Align::Min)), |ui| {
                     ui.spacing_mut().item_spacing.y = 8.0;
@@ -682,13 +671,13 @@ impl Settings {
                             Page::Appearance => {
                                 section(ui, palette, "TEMA", true);
                                 ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 16.0;
+                                    ui.spacing_mut().item_spacing.x = 0.0;
                                     for (choice, label, theme) in [
                                         (ThemeChoice::Light, "Claro", Some(ThemeName::Light)),
                                         (ThemeChoice::Ash, "Cinza", Some(ThemeName::Gray)),
                                         (ThemeChoice::Dark, "Escuro", Some(ThemeName::Dark)),
                                         (ThemeChoice::Onyx, "Ônix", Some(ThemeName::Onyx)),
-                                        (ThemeChoice::System, "Igual ao computador", None),
+                                        (ThemeChoice::System, "Automático", None),
                                         (ThemeChoice::Glass, "Vidro", None),
                                     ] {
                                         let clicked = theme_dot(ui, palette, label, look.theme == choice, |painter, center, radius| match theme {
@@ -735,24 +724,25 @@ impl Settings {
                                 }
                                 if look.theme == ThemeChoice::Glass {
                                     // The five knobs of the controls window of the sketch.
-                                    section(ui, palette, "VIDRO", false);
-                                    for (index, (_, label, low, high, step)) in GlassLook::KNOBS.iter().enumerate() {
-                                        let value = look.glass.knob(index);
-                                        let shown = match index {
-                                            2 => format!("{value:.0} px"),
-                                            _ => format!("{value:.2}"),
-                                        };
-                                        slider_field(ui, palette, label, shown, value, *low..=*high, *step);
-                                    }
-                                    ui.add_space(8.0);
-                                    if small_button(ui, palette, "Voltar o vidro ao padrão") {
+                                    if section_with(ui, palette, "VIDRO", false, Some("Restaurar padrão")).1 {
                                         look.glass = GlassLook::default();
                                     }
+                                    card(ui, palette, |ui| {
+                                        ui.spacing_mut().item_spacing.y = 2.0;
+                                        for (index, (_, label, low, high, step)) in GlassLook::KNOBS.iter().enumerate() {
+                                            let value = look.glass.knob(index);
+                                            let shown = match index {
+                                                2 => format!("{value:.0} px"),
+                                                _ => format!("{value:.2}"),
+                                            };
+                                            slider_row(ui, palette, label, shown, value, *low..=*high, *step);
+                                        }
+                                    });
                                 }
 
                                 section(ui, palette, "TEMAS COLORIDOS", false);
                                 ui.horizontal_wrapped(|ui| {
-                                    ui.spacing_mut().item_spacing = Vec2::new(16.0, 8.0);
+                                    ui.spacing_mut().item_spacing = Vec2::new(0.0, 6.0);
                                     let own = Gradient { light: look.custom.light, colors: look.custom.colors.clone(), angle: look.custom.angle, intensity: look.custom.intensity, motion: false };
                                     if theme_dot(ui, palette, "Personalizado", look.theme == ThemeChoice::Custom, |painter, center, radius| own.paint_dot(painter, center, radius)) {
                                         look.theme = ThemeChoice::Custom;
@@ -958,12 +948,94 @@ impl Settings {
     }
 }
 
-/// The title of a part of the settings. The first one has less room above it.
+/// The title of a part of the settings, as Discord sets them apart: in sentence case and larger,
+/// and every part after the first opens with a thin line and room on both sides of it.
 fn section(ui: &mut Ui, palette: &Palette, title: &str, first: bool) -> egui::Response {
-    ui.add_space(if first { 4.0 } else { 14.0 });
-    let response = ui.label(RichText::new(title).color(palette.soft).size(12.0).family(theme::bold()));
-    ui.add_space(2.0);
-    response
+    section_with(ui, palette, title, first, None).0
+}
+
+/// A [`section`] with a small button at the right of its title. True when it was clicked.
+fn section_with(ui: &mut Ui, palette: &Palette, title: &str, first: bool, button: Option<&str>) -> (egui::Response, bool) {
+    if first {
+        ui.add_space(8.0);
+    } else {
+        ui.add_space(28.0);
+        let (line, _) = ui.allocate_exact_size(Vec2::new(ui.available_width().min(WIDTH), 1.0), Sense::hover());
+        ui.painter().rect_filled(line, CornerRadius::ZERO, palette.line_soft);
+        ui.add_space(28.0);
+    }
+    let title = sentence_case(title);
+    let mut clicked = false;
+    let response = ui
+        .horizontal(|ui| {
+            ui.set_width(ui.available_width().min(WIDTH));
+            let label = ui.label(RichText::new(&title).color(palette.strong).size(17.0).family(theme::semibold()));
+            if let Some(button) = button {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| clicked = small_button(ui, palette, button));
+            }
+            label
+        })
+        .inner;
+    ui.add_space(14.0);
+    (response, clicked)
+}
+
+/// "TEMAS COLORIDOS" as "Temas coloridos".
+fn sentence_case(title: &str) -> String {
+    let lower = title.to_lowercase();
+    let mut chars = lower.chars();
+    chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
+}
+
+/// A setting with a slider in one line: the name in a column of its own, the slider and the value
+/// at the right, so a group of them lines up as a table. For a group of knobs in a card.
+fn slider_row(ui: &mut Ui, palette: &Palette, label: &str, shown: String, value: &mut f32, range: std::ops::RangeInclusive<f32>, step: f64) -> egui::Response {
+    let width = ui.available_width();
+    ui.allocate_ui_with_layout(Vec2::new(width, 36.0), Layout::left_to_right(Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let (name_rect, name) = ui.allocate_exact_size(Vec2::new(170.0, 36.0), Sense::hover());
+        name.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, label));
+        ui.painter().text(name_rect.left_center(), egui::Align2::LEFT_CENTER, label, FontId::proportional(14.0), palette.text);
+        let slider_width = width - 170.0 - 64.0;
+        let response = ui
+            .allocate_ui_with_layout(Vec2::new(slider_width, 36.0), Layout::left_to_right(Align::Center), |ui| {
+                slider_look(ui, palette);
+                ui.spacing_mut().slider_width = slider_width;
+                ui.add(egui::Slider::new(value, range).step_by(step).show_value(false).trailing_fill(true)).labelled_by(name.id)
+            })
+            .inner;
+        let (value_rect, _) = ui.allocate_exact_size(Vec2::new(64.0, 36.0), Sense::hover());
+        ui.painter().text(value_rect.right_center(), egui::Align2::RIGHT_CENTER, shown, FontId::proportional(13.0), palette.muted);
+        response
+    })
+    .inner
+}
+
+/// The colors of every slider of the settings: the accent up to the knob, a quiet rail after it.
+fn slider_look(ui: &mut Ui, palette: &Palette) {
+    ui.spacing_mut().slider_rail_height = 6.0;
+    ui.style_mut().visuals.handle_shape = egui::style::HandleShape::Circle;
+    let visuals = ui.visuals_mut();
+    visuals.selection.bg_fill = palette.accent;
+    visuals.widgets.inactive.bg_fill = if palette.dark { Color32::from_white_alpha(46) } else { Color32::from_gray(190) };
+    for state in [&mut visuals.widgets.inactive, &mut visuals.widgets.hovered, &mut visuals.widgets.active] {
+        state.fg_stroke = Stroke::new(2.0, palette.accent);
+    }
+}
+
+/// A card that holds a group of settings, with room inside, as Discord groups its rows.
+fn card<R>(ui: &mut Ui, palette: &Palette, contents: impl FnOnce(&mut Ui) -> R) -> R {
+    let fill = if palette.glass { Color32::from_white_alpha(10) } else { palette.sidebar };
+    Frame::new()
+        .fill(fill)
+        .stroke(Stroke::new(1.0, palette.line_soft))
+        .corner_radius(CornerRadius::same(if palette.glass { 12 } else { 8 }))
+        .inner_margin(Margin { left: 18, right: 18, top: 10, bottom: 10 })
+        .show(ui, |ui| {
+            ui.set_width(WIDTH - 36.0);
+            contents(ui)
+        })
+        .inner
 }
 
 #[cfg(test)]

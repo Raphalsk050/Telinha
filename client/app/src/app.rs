@@ -486,7 +486,7 @@ impl TelinhaApp {
         }
         ui.painter().hline(header.x_range(), header.bottom(), egui::Stroke::new(1.0, palette.line));
 
-        let bottom = if self.call_panel_shown() { 52.0 + crate::room_view::CALL_PANEL_HEIGHT } else { 52.0 };
+        let bottom = if self.call_panel_shown() { 52.0 + crate::room_view::CALL_PANEL_HEIGHT } else { 52.0 } + FOOT_MARGIN;
         let list_height = (ui.available_height() - bottom).max(0.0);
         ui.allocate_ui(Vec2::new(ui.available_width(), list_height), |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -499,8 +499,28 @@ impl TelinhaApp {
                 });
             });
         });
-        self.voice_panel(ui);
-        self.user_panel(ui);
+        // The call and the person share one card that floats over the foot of the sidebar, as
+        // in Discord, with room around it.
+        let area = Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), ui.available_height()));
+        let card = Rect::from_min_max(area.min + Vec2::new(FOOT_MARGIN, 0.0), area.max - Vec2::splat(FOOT_MARGIN));
+        let palette = self.side;
+        if palette.glass {
+            ui.painter().add(egui::Shadow { offset: [0, 4], blur: 16, spread: 0, color: Color32::from_black_alpha(60) }.as_shape(card, CornerRadius::same(10)));
+            ui.painter().rect_filled(card, CornerRadius::same(10), Color32::from_white_alpha(13));
+            ui.painter().rect_stroke(card, CornerRadius::same(10), egui::Stroke::new(1.0, palette.line_soft), egui::StrokeKind::Inside);
+        } else {
+            ui.painter().rect_filled(card, CornerRadius::same(8), self.foot_fill());
+        }
+        ui.allocate_space(area.size());
+        let mut inside = ui.new_child(egui::UiBuilder::new().max_rect(card).layout(Layout::top_down(Align::Min)));
+        inside.spacing_mut().item_spacing = Vec2::ZERO;
+        let with_call = self.call_panel_shown();
+        self.voice_panel(&mut inside);
+        if with_call {
+            let y = inside.cursor().min.y;
+            inside.painter().hline((card.left() + 10.0)..=(card.right() - 10.0), y, egui::Stroke::new(1.0, palette.line_soft));
+        }
+        self.user_panel(&mut inside);
     }
 
     fn channel_list(&mut self, ui: &mut Ui, server: &Server) {
@@ -639,20 +659,17 @@ impl TelinhaApp {
 
     fn user_panel(&mut self, ui: &mut Ui) {
         let palette = self.side;
+        // The card under it is drawn by the sidebar.
         let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ui.available_height()), Sense::hover());
         let foot = self.foot_fill();
-        let round = self.corner();
-        ui.painter().rect_filled(rect, CornerRadius { nw: 0, ne: 0, sw: round, se: round }, foot);
-        if palette.glass {
-            ui.painter().hline(rect.x_range(), rect.top() + 0.5, egui::Stroke::new(1.0, palette.line));
-        }
         let name = self.hub.profile_name();
         // The avatar and the name are one button, as `.user-button`: a click opens the settings,
         // a right click the menu of the avatar.
-        let area = Rect::from_min_max(egui::pos2(rect.left() + 8.0, rect.center().y - 20.0), egui::pos2(rect.right() - 8.0 - 3.0 * 34.0, rect.center().y + 20.0));
+        let area = Rect::from_min_max(egui::pos2(rect.left() + 6.0, rect.center().y - 20.0), egui::pos2(rect.right() - 8.0 - 3.0 * 34.0, rect.center().y + 20.0));
         let user_button = ui.interact(area, ui.scope_id().with("user-button"), Sense::click());
-        if user_button.hovered() {
-            ui.painter().rect_filled(area, CornerRadius::same(4), palette.hover);
+        let lit = crate::motion::hover(ui.ctx(), user_button.id, user_button.hovered());
+        if lit > 0.0 {
+            ui.painter().rect_filled(area, CornerRadius::same(8), palette.hover.gamma_multiply(lit));
         }
         let avatar = Rect::from_center_size(rect.left_center() + Vec2::new(28.0, 0.0), Vec2::splat(32.0));
         let own = self.hub.member_id();
@@ -1550,6 +1567,9 @@ enum RailFace {
     Text(String),
     Add,
 }
+
+/// The room around the card of the call and the person at the foot of the sidebar.
+const FOOT_MARGIN: f32 = 8.0;
 
 fn rail_button(ui: &mut Ui, palette: &Palette, selected: bool, waiting: bool, face: RailFace, tip: &str) -> egui::Response {
     let (slot, response) = ui.allocate_exact_size(Vec2::new(RAIL_WIDTH, 48.0), Sense::click());

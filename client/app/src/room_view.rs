@@ -937,15 +937,7 @@ impl TelinhaApp {
 
         let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), CALL_PANEL_HEIGHT), Sense::hover());
         self.room.panel_rect = Some(rect);
-        ui.painter().rect_filled(rect, CornerRadius::ZERO, self.foot_fill());
-        // On glass the user panel under it draws the line between them.
-        if !palette.glass {
-            ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, palette.line_soft));
-        }
-        if palette.glass {
-            // `.voice-panel { border-top: 1px solid var(--line) }` on glass.
-            ui.painter().hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, palette.line));
-        }
+        // The card under it, and the line between it and the person, are drawn by the sidebar.
         let inner = Rect::from_min_max(rect.min + Vec2::splat(8.0), rect.max - Vec2::new(8.0, 9.0));
         let mut action = None;
 

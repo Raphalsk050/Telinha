@@ -44,6 +44,8 @@ pub struct Alerts {
     switches: Option<(bool, bool)>,
     /// When the last message sounded, so a burst of messages sounds once.
     message_sounded: f64,
+    /// A shake of the window for a call for attention: when it began and where the window was.
+    shake: Option<(f64, egui::Pos2)>,
 }
 
 /// The red count at the right end of a row.
@@ -150,6 +152,42 @@ impl TelinhaApp {
     }
 
     /// Someone else's message arrived, in any conversation.
+    /// Someone called for attention: the rattle, the button of the taskbar blinks and the window
+    /// shakes, as the nudge of MSN. A window filling the screen does not move, only rings.
+    pub(crate) fn nudged(&mut self) {
+        self.tone(Tune::nudge());
+        self.context.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Critical));
+        if self.alerts.shake.is_some() {
+            return;
+        }
+        let (origin, still) = self.context.input(|input| {
+            let viewport = input.viewport();
+            (viewport.outer_rect.map(|rect| rect.min), viewport.maximized == Some(true) || viewport.fullscreen == Some(true) || viewport.minimized == Some(true))
+        });
+        if let (Some(origin), false) = (origin, still) {
+            let now = self.context.input(|input| input.time);
+            self.alerts.shake = Some((now, origin));
+            self.context.request_repaint();
+        }
+    }
+
+    /// One step of the shake, every frame while it lasts; at the end the window is back where it was.
+    pub(crate) fn shake_window(&mut self) {
+        const LENGTH: f64 = 0.7;
+        let Some((start, origin)) = self.alerts.shake else { return };
+        let elapsed = self.context.input(|input| input.time) - start;
+        if elapsed >= LENGTH {
+            self.alerts.shake = None;
+            self.context.send_viewport_cmd(egui::ViewportCommand::OuterPosition(origin));
+            return;
+        }
+        let fade = (1.0 - elapsed / LENGTH) as f32;
+        let turn = std::f64::consts::TAU * elapsed;
+        let offset = egui::vec2((turn * 15.0).sin() as f32 * 12.0 * fade, (turn * 11.0).cos() as f32 * 6.0 * fade);
+        self.context.send_viewport_cmd(egui::ViewportCommand::OuterPosition(origin + offset));
+        self.context.request_repaint();
+    }
+
     pub(crate) fn message_tone(&mut self) {
         let now = self.context.input(|input| input.time);
         if now - self.alerts.message_sounded < 0.8 {

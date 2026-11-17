@@ -220,7 +220,9 @@ impl TelinhaApp {
                 HubEvent::Signaling(status) => self.status = status,
                 HubEvent::ChatMessage { conversation, message } => {
                     self.count_unread(&conversation);
-                    if !message.mine {
+                    if !message.mine && message.is_nudge() {
+                        self.nudged();
+                    } else if !message.mine {
                         self.message_tone();
                     }
                     self.chat.received(&conversation, message);
@@ -331,6 +333,7 @@ impl TelinhaApp {
         self.drain_events();
         self.drain_tasks();
         self.tend_alerts(ui);
+        self.shake_window();
         let palette = self.palette;
         if std::mem::take(&mut self.restyle) {
             theme::apply(ui.ctx(), &palette);

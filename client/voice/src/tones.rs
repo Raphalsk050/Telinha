@@ -71,6 +71,12 @@ impl Tune {
         Self { notes: vec![(1046.5, 0.0), (1567.98, 0.07)], shape: Shape::Sine, peak: 0.3, length: 0.22 }
     }
 
+    /// Someone called for attention: a quick rattle that climbs, to be heard over anything.
+    pub fn nudge() -> Self {
+        let notes = [880.0, 1174.66, 880.0, 1174.66, 1567.98].iter().enumerate().map(|(index, pitch)| (*pitch, index as f32 * 0.065)).collect();
+        Self { notes, shape: Shape::Triangle, peak: 0.42, length: 0.16 }
+    }
+
     pub fn join() -> Self {
         Self::steps(&[587.33, 880.0])
     }

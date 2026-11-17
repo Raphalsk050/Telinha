@@ -90,6 +90,7 @@ fn scene() -> Scene {
     chat("m4", "Keep", KEEP, 12, json!({ "text": "olha essa",
         "image": { "mime": "image/png", "width": 640, "height": 360, "data": encode_base64(&png(640, 360, 200)) } }));
     chat("m5", "nanda", NANDA, 3, json!({ "text": "kkkkk\nboa" }));
+    chat("m6", "Keep", KEEP, 2, json!({ "text": "chamou a atenção!", "nudge": true }));
 
     runtime.block_on(async { tokio::time::sleep(Duration::from_millis(150)).await });
     drop(guard);

@@ -127,6 +127,11 @@ pub struct Message {
 }
 
 impl Message {
+    /// Whether this is a call for attention, which shakes the window of whoever gets it.
+    pub fn is_nudge(&self) -> bool {
+        self.extra.get("nudge").and_then(Value::as_bool) == Some(true)
+    }
+
     /// The ids of everything this message keeps on disk besides its own text.
     pub fn blob_ids(&self) -> Vec<&str> {
         let embed_image = self.embed.as_ref().and_then(|embed| embed.image.as_ref());

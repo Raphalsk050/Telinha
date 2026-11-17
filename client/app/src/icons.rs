@@ -57,3 +57,4 @@ impl Icon {
         Image::from_bytes(format!("bytes://icons/{}.svg", self.0), self.1).fit_to_exact_size(Vec2::splat(side)).tint(color)
     }
 }
+pub const BELL: Icon = Icon("bell", include_bytes!("../assets/icons/bell.svg"));

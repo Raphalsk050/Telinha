@@ -22,6 +22,8 @@ const GROUP_WINDOW_MS: i64 = 5 * 60 * 1000;
 const IMAGE_BOUNDS: Vec2 = Vec2::new(400.0, 300.0);
 const EMBED_BOUNDS: Vec2 = Vec2::new(400.0, 225.0);
 const CONTENT_LEFT: f32 = 72.0;
+/// The least time between two calls for attention, in seconds.
+const NUDGE_PAUSE: f64 = 10.0;
 const CHAT_FONT: f32 = 15.5;
 const COMPOSER_MAX: f32 = 200.0;
 
@@ -73,6 +75,8 @@ pub struct ChatView {
     attachment_preview: Option<Blob>,
     to_bottom: bool,
     paste_was_down: bool,
+    /// When the last call for attention went out, to space them.
+    last_nudge: Option<f64>,
     focus_input: bool,
     /// The large files on their way in or out, by the id of each.
     transfers: HashMap<String, Transfer>,
@@ -395,6 +399,51 @@ impl ChatView {
         }
     }
 
+    /// A call for attention, as a line of the conversation: the bell where the avatars are, who
+    /// called and when. The bell rings for a moment after it arrives.
+    fn nudge_line(ui: &mut Ui, palette: &Palette, chrome: &Chrome, message: &Message) {
+        ui.add_space(chrome.gap.max(8.0));
+        let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::hover());
+        let bell_center = egui::pos2(row.left() + 16.0 + 20.0, row.center().y);
+        let age = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_millis() as i64) - message.sent_at) as f32 / 1000.0;
+        let angle = if (0.0..1.6).contains(&age) {
+            ui.ctx().request_repaint();
+            (age * 28.0).sin() * 0.45 * (1.0 - age / 1.6)
+        } else {
+            0.0
+        };
+        let bell = Rect::from_center_size(bell_center, Vec2::splat(18.0));
+        icons::BELL.image(18.0, palette.accent_text).rotate(angle, Vec2::new(0.5, 0.15)).paint_at(ui, bell);
+        let who = if message.mine { "Você".to_owned() } else { message.author.clone() };
+        let font = FontId::proportional(chrome.font.max(14.0));
+        let mut job = egui::text::LayoutJob::default();
+        job.append(&who, 0.0, egui::TextFormat { font_id: FontId::new(font.size, theme::semibold()), color: palette.strong, ..Default::default() });
+        job.append(" chamou a atenção!", 0.0, egui::TextFormat { font_id: font.clone(), color: palette.text, ..Default::default() });
+        job.append(&format!("   {}", format_time(message.sent_at)), 0.0, egui::TextFormat { font_id: FontId::proportional(12.0), color: palette.muted, ..Default::default() });
+        let galley = ui.painter().layout_job(job);
+        ui.painter().galley(egui::pos2(row.left() + CONTENT_LEFT, row.center().y - galley.size().y / 2.0), galley, palette.text);
+    }
+
+    /// Sends a call for attention, at most one every ten seconds.
+    fn send_nudge(&mut self, hub: &Arc<Hub>, context: &egui::Context) {
+        let Some(conversation) = self.conversation.clone() else { return };
+        let now = context.input(|input| input.time);
+        if self.last_nudge.is_some_and(|last| now - last < NUDGE_PAUSE) {
+            self.hint = "Espere um pouco para chamar a atenção de novo.".to_owned();
+            return;
+        }
+        self.last_nudge = Some(now);
+        let outgoing = Outgoing { text: "chamou a atenção!".to_owned(), nudge: true, ..Outgoing::default() };
+        match hub.send_chat(&conversation, outgoing) {
+            Ok(Some(message)) => {
+                self.received(&conversation, message);
+                self.to_bottom = true;
+            }
+            Ok(None) => {}
+            Err(error) => self.hint = format!("Não consegui chamar a atenção: {error}."),
+        }
+    }
+
     pub fn show(&mut self, ui: &mut Ui, hub: &Arc<Hub>, pictures: &mut Pictures, styles: &Styles, palette: &Palette, chrome: &Chrome) -> Option<ChatAction> {
         let mut action = None;
         self.take_dropped(ui);
@@ -422,7 +471,11 @@ impl ChatView {
                 let messages = std::mem::take(&mut self.messages);
                 for (index, message) in messages.iter().enumerate() {
                     let previous = index.checked_sub(1).map(|index| &messages[index]);
-                    let first = previous.is_none_or(|previous| !same_block(previous, message));
+                    if message.is_nudge() {
+                        Self::nudge_line(ui, palette, chrome, message);
+                        continue;
+                    }
+                    let first = previous.is_none_or(|previous| previous.is_nudge() || !same_block(previous, message));
                     if let Some(found) = self.message(ui, hub, pictures, styles, palette, chrome, message, first) {
                         action = Some(found);
                     }
@@ -687,6 +740,7 @@ impl ChatView {
 
     fn composer(&mut self, ui: &mut Ui, hub: &Arc<Hub>, palette: &Palette, chrome: &Chrome) {
         let mut send = false;
+        let mut nudge = false;
         let drawn = Frame::new().inner_margin(Margin { left: 16, right: 16, top: 0, bottom: 0 }).show(ui, |ui| {
             self.pending_strip(ui, palette);
             self.link.show(ui, palette);
@@ -716,7 +770,9 @@ impl ChatView {
                             self.attach(attach::from_path(&path));
                         }
                     }
-                    let width = ui.available_width() - 40.0;
+                    // Only a conversation between two people can call for attention, as in MSN.
+                    let direct = self.conversation.as_ref().is_some_and(|conversation| conversation.channel_id.is_none());
+                    let width = ui.available_width() - if direct { 82.0 } else { 40.0 };
                     let edit = egui::TextEdit::multiline(&mut self.draft)
                         .hint_text(RichText::new(&chrome.placeholder).color(palette.muted))
                         .font(FontId::proportional(CHAT_FONT))
@@ -767,6 +823,9 @@ impl ChatView {
                         let ink = if empty { palette.muted } else { palette.accent_text };
                         if widgets::icon_button(ui, icons::SEND, if palette.glass { 32.0 } else { 28.0 }, ink, palette.selected, "Enviar").clicked() {
                             send = true;
+                        }
+                        if direct && widgets::icon_button(ui, icons::BELL, if palette.glass { 32.0 } else { 28.0 }, palette.soft, palette.selected, "Chamar a atenção").clicked() {
+                            nudge = true;
                         }
                     });
                 });
@@ -819,6 +878,10 @@ impl ChatView {
                 self.to_bottom = true;
             }
             ui.ctx().request_repaint();
+        }
+        if nudge {
+            let context = ui.ctx().clone();
+            self.send_nudge(hub, &context);
         }
         if send {
             self.send(hub, ui.ctx(), false);

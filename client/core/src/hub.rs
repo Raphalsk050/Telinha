@@ -228,6 +228,8 @@ fn store_outgoing(mut writer: crate::chats::FileWriter, source: &OutgoingFile, m
 #[derive(Debug, Default, Clone)]
 pub struct Outgoing {
     pub text: String,
+    /// A call for attention, as the nudge of MSN: the window of whoever gets it shakes.
+    pub nudge: bool,
     pub image: Option<OutgoingImage>,
     pub file: Option<OutgoingFile>,
     pub embed: Option<Value>,
@@ -1193,7 +1195,7 @@ impl Hub {
             image: image_ref,
             file,
             embed: embed_ref,
-            extra: Map::new(),
+            extra: if message.get("nudge").and_then(Value::as_bool) == Some(true) { Map::from_iter([("nudge".to_owned(), Value::Bool(true))]) } else { Map::new() },
         };
         if !inner.chats.append(&key, stored.clone()) {
             for blob_id in stored.blob_ids() {
@@ -1358,6 +1360,10 @@ impl Hub {
         });
         if is_server {
             payload["channelId"] = conversation.channel_id.clone().into();
+        }
+        if outgoing.nudge {
+            payload["nudge"] = true.into();
+            message.extra.insert("nudge".into(), true.into());
         }
         if let Some(image) = &image {
             payload["image"] = json!({

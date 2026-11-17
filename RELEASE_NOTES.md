@@ -5,9 +5,8 @@ None.
 
 ## Improvements
 
-None.
+1. All calls and file links of the app share one WebRTC engine instead of starting a new one each time.
 
 ## Fixes
 
-1. A call could stay on "conectando…" forever when the other person had Telinha minimized: the minimized app stopped taking in who joined or left and kept calling an old copy of the person. It now keeps up while minimized.
-2. Restarting the app left an old copy of the person in the member list and in the call for others. The new copy now replaces the old one at once.
+1. After someone left a voice room and came back, the people who stayed connected but no longer heard them. When the last call of the app ended, the part that delivers incoming voice stopped for good until the app was restarted.

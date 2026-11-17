@@ -154,6 +154,11 @@ bool SyntheticAudioDevice::RecordingIsInitialized() const {
 }
 
 int32_t SyntheticAudioDevice::StartPlayout() {
+  // Telinha: WebRTC terminates this device when the last call ends and later starts playout
+  // again for the next call without initializing it, and AdmProxy::Init is a no-op. Without the
+  // pump below no remote audio was ever delivered again in the process, so whoever left a room
+  // and came back was not heard. Init does nothing when the pump is already running.
+  Init();
   webrtc::MutexLock lock(&mutex_);
   playing_ = true;
   return 0;

@@ -518,3 +518,90 @@ async fn screen_watched_inside_the_window() {
     let last = numbers.last().expect("the watching reported its numbers");
     assert!(last.size.is_some() && last.rtt.is_some() && last.bitrate.is_some_and(|kbps| kbps > 0.0), "{last:?}");
 }
+
+/// Forwards the messages between the two calls until each heard the other, or time runs out.
+/// Returns whether `a` heard `b` and `b` heard `a`.
+#[allow(clippy::too_many_arguments)]
+async fn until_heard(
+    (a, a_id): (&Call, &str),
+    (b, b_id): (&Call, &str),
+    for_a: &mut mpsc::UnboundedReceiver<Value>,
+    for_b: &mut mpsc::UnboundedReceiver<Value>,
+    a_events: &mut mpsc::UnboundedReceiver<CallEvent>,
+    b_events: &mut mpsc::UnboundedReceiver<CallEvent>,
+    seconds: u64,
+) -> (bool, bool) {
+    let (mut a_heard, mut b_heard) = (false, false);
+    let deadline = tokio::time::sleep(Duration::from_secs(seconds));
+    tokio::pin!(deadline);
+    while !(a_heard && b_heard) {
+        tokio::select! {
+            Some(payload) = for_a.recv() => a.handle_rtc(b_id, payload),
+            Some(payload) = for_b.recv() => b.handle_rtc(a_id, payload),
+            Some(event) = a_events.recv() => if let CallEvent::Speaking { id, speaking: true } = event { a_heard |= id == b_id },
+            Some(event) = b_events.recv() => if let CallEvent::Speaking { id, speaking: true } = event { b_heard |= id == a_id },
+            _ = &mut deadline => break,
+        }
+    }
+    (a_heard, b_heard)
+}
+
+/// Someone leaves the room and comes back with the same app: both must hear each other again.
+async fn rejoin_and_hear(stay: &'static str, rejoin: &'static str) {
+    rejoin_as(stay, rejoin, rejoin).await;
+}
+
+/// As `rejoin_and_hear`, with the app that comes back under the id `back`.
+async fn rejoin_as(stay: &'static str, rejoin: &'static str, back: &'static str) {
+    let (to_rejoiner, mut for_rejoiner) = mpsc::unbounded_channel::<Value>();
+    let (to_stayer, mut for_stayer) = mpsc::unbounded_channel::<Value>();
+    let (stayer, mut stayer_events) = Call::start(stay, default_ice_servers(), Sound::Tone, true, false, move |_, payload| {
+        let _ = to_rejoiner.send(payload);
+    });
+    let start_rejoiner = |id: &'static str| {
+        let to = to_stayer.clone();
+        Call::start(id, default_ice_servers(), Sound::Tone, true, false, move |_, payload| {
+            let _ = to.send(payload);
+        })
+    };
+    let (rejoiner, mut rejoiner_events) = start_rejoiner(rejoin);
+    stayer.set_participants(vec![participant(rejoin)]);
+    rejoiner.set_participants(vec![participant(stay)]);
+    let first = until_heard((&stayer, stay), (&rejoiner, rejoin), &mut for_stayer, &mut for_rejoiner, &mut stayer_events, &mut rejoiner_events, 30).await;
+    assert_eq!(first, (true, true), "both hear each other the first time");
+    // A while in the call, as people are, before leaving.
+    let _ = until_heard((&stayer, stay), (&rejoiner, rejoin), &mut for_stayer, &mut for_rejoiner, &mut stayer_events, &mut rejoiner_events, 6).await;
+
+    rejoiner.stop();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    stayer.set_participants(Vec::new());
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    while for_stayer.try_recv().is_ok() {}
+    while for_rejoiner.try_recv().is_ok() {}
+
+    let (rejoiner, mut rejoiner_events) = start_rejoiner(back);
+    rejoiner.set_participants(vec![participant(stay)]);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    stayer.set_participants(vec![participant(back)]);
+    let again = until_heard((&stayer, stay), (&rejoiner, back), &mut for_stayer, &mut for_rejoiner, &mut stayer_events, &mut rejoiner_events, 30).await;
+    println!("{back} came back to {stay}: {stay} hears {back} {}, {back} hears {stay} {}", again.0, again.1);
+    assert_eq!(again, (true, true), "both hear each other after {back} came back");
+    stayer.stop();
+    rejoiner.stop();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn who_answers_leaves_and_comes_back_and_is_heard() {
+    rejoin_and_hear("ana", "bia").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn who_offers_leaves_and_comes_back_and_is_heard() {
+    rejoin_and_hear("bia", "ana").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_second_call_in_the_same_app_is_heard_by_someone_new() {
+    rejoin_as("ana", "bia", "bib").await;
+}

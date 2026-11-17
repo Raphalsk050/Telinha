@@ -30,7 +30,7 @@ pub struct WebRtcLink {
 
 impl WebRtcLink {
     pub fn new(ice_servers: Vec<IceServer>) -> Self {
-        Self { factory: PeerConnectionFactory::default(), ice_servers }
+        Self { factory: crate::factory(), ice_servers }
     }
 
     fn connection(&self) -> Result<PeerConnection, String> {

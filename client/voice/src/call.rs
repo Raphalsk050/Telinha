@@ -518,7 +518,7 @@ struct Actor {
 
 impl Actor {
     async fn run(mut self, mut inbox: mpsc::UnboundedReceiver<Command>) {
-        let factory = PeerConnectionFactory::default();
+        let factory = crate::factory();
         let source = NativeAudioSource::new(AudioSourceOptions::default(), RATE, 1, 100);
         let track = factory.create_audio_track("telinha-mic", source.clone());
         self.video_track = Some(factory.create_video_track("telinha-camera", self.camera.clone()));

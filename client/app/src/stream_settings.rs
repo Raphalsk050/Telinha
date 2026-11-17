@@ -577,7 +577,7 @@ impl TelinhaApp {
         let watching = self.room.streams.outgoing.as_ref().map_or(0, |outgoing| outgoing.viewers.iter().filter(|(_, state)| state == "Connected").count());
         let network = self.room.share_network_kbps;
         let mut close = false;
-        let response = egui::Modal::new(egui::Id::unique("stream-settings")).frame(dialog_frame(&palette)).backdrop_color(Color32::from_black_alpha(178)).show(context, |ui| {
+        let response = crate::glass::modal(context, egui::Id::unique("stream-settings"), dialog_frame(&palette), |ui| {
             ui.set_width(SETTINGS_WIDTH);
             let top = ui.cursor().min.y;
             ui.spacing_mut().item_spacing = Vec2::ZERO;

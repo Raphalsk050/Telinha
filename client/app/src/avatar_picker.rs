@@ -1,7 +1,7 @@
 //! "Selecione uma imagem", as `#avatar-picker`: send a new picture, take one of the last avatars
 //! again, or remove the avatar.
 
-use egui::{Color32, CornerRadius, FontId, Rect, RichText, Sense, Stroke, Ui, Vec2};
+use egui::{CornerRadius, FontId, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use telinha_core::avatars::Picture;
 
 use crate::dialogs::{Tone, button, dialog_frame, header, section_title};
@@ -42,10 +42,7 @@ impl AvatarPicker {
             }
         }
         let dragging = context.input(|input| !input.raw.hovered_files.is_empty());
-        let response = egui::Modal::new(egui::Id::unique("avatar-picker"))
-            .frame(dialog_frame(palette))
-            .backdrop_color(Color32::from_black_alpha(178))
-            .show(context, |ui| {
+        let response = crate::glass::modal(context, egui::Id::unique("avatar-picker"), dialog_frame(palette), |ui| {
                 ui.set_width(INNER);
                 ui.spacing_mut().item_spacing = Vec2::ZERO;
                 if header(ui, palette, "Selecione uma imagem") {

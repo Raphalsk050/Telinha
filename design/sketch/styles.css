@@ -87,6 +87,10 @@ small { font-size: 12px; color: var(--muted); }
   padding: 16px 8px 4px; font-size: 12px; font-weight: 600; letter-spacing: .02em; color: var(--muted);
 }
 .sidebar-scroll .group:first-child { padding-top: 8px; }
+/* as alturas dos títulos de grupo do app Rust, para os prints baterem pixel a pixel */
+.sidebar-scroll .group { padding: 22px 8px 5px; }
+.sidebar-scroll .group:first-child { padding-top: 14px; }
+.members .group:first-child { padding-top: 24px; }
 .channel {
   width: 100%; height: 34px; display: flex; align-items: center; gap: 6px;
   padding: 0 8px; margin: 2px 0; border-radius: var(--radius); color: var(--muted); text-align: left;
@@ -310,3 +314,41 @@ body[data-theme="glass"] #tweaks { display: block; }
 .knob span { display: flex; justify-content: space-between; color: var(--soft); }
 .knob output { color: var(--muted); font-variant-numeric: tabular-nums; }
 .knob input { width: 100%; margin: 6px 0 0; accent-color: var(--accent); }
+
+/* ?clean esconde as ferramentas do esboço, para comparar com os prints do app Rust */
+html.clean #dev, html.clean #tweaks { display: none !important; }
+
+/* posições do app Rust, para os prints baterem pixel a pixel */
+.topbar { padding-right: 11px; }
+.user { gap: 8px; }
+/* o palco do app Rust: ladrilhos 16:9 do tamanho que cabem, 10 de folga, sem altura fixa */
+.stage { height: auto; padding: 16px 16px 16px; }
+.tiles { flex: none; gap: 10px; }
+.tile { flex: 0 0 calc(50% - 5px); max-height: none; }
+.call-controls { padding-top: 10px; }
+/* o painel de voz e o do usuário com as alturas do app Rust (105 e 52) */
+.voice-panel { height: 105px; box-sizing: border-box; padding: 8px 8px 9px; display: flex; flex-direction: column; justify-content: space-between; }
+.voice-buttons { margin-top: 0; }
+.user-panel { height: 52px; }
+/* a abertura da conversa do app Rust: círculo de 68 com o ícone, título, texto de 14 */
+.intro-icon { width: 68px; height: 68px; border-radius: 50%; background: var(--raised); display: grid; place-items: center; color: var(--strong); margin-top: 24px; }
+.messages h1 { margin: 8px 0 2px; }
+.intro { font-size: 14px; margin-bottom: 8px; }
+/* o início do app Rust: título de 22, ícones de 44, texto de 15 em linhas de 21, nota 20 abaixo */
+.home-page { padding-top: 32px; }
+.home-page h2 { font-size: 22px; }
+.card .icon.huge { width: 44px; height: 44px; }
+.card p { font-size: 15px; line-height: 21px; }
+.home-page .footnote { padding: 20px 0 0; font-size: 13px; }
+.card strong { margin-top: 0; }
+/* a coluna das configurações do app Rust: cartão de 52, grupos com linha, linhas de 36 */
+.settings-me { height: 52px; box-sizing: border-box; padding: 0 6px; border-bottom: 0; }
+.settings-me .contact-text .name, .settings-me strong { font-size: 15px; }
+.settings-me small { font-size: 12.5px; }
+.settings-nav .group, .settings-nav .settings-me + .group { border-top: 1px solid var(--line-soft); margin: 8px 6px 0; padding: 12px 0 5px; font-size: 11.5px; line-height: 14px; font-weight: 700; color: var(--soft); }
+.settings-link { margin-bottom: 2px; font-size: 14.5px; color: var(--text); }
+.settings-link .icon { width: 18px; height: 18px; color: var(--soft); }
+.settings-link.selected { background: var(--hover); font-weight: 600; }
+.settings-link.selected .icon { color: var(--strong); }
+.settings-nav { padding-top: 15px; }
+.settings-nav .settings-link + .group { margin-top: 17px; }

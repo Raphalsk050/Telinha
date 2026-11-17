@@ -1,7 +1,7 @@
 # Telinha release notes
 ## Features
 
-None.
+1. A Glass theme (Settings > Appearance > Vidro): translucent panels that blur what is behind them over a soft lit background, with sliders for frost, darkness, blur and the background lights. The message box floats over the conversation.
 
 ## Improvements
 

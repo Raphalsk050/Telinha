@@ -119,12 +119,12 @@ function userPanel() {
   </div>`;
 }
 
-function topbar(title, sub, kind = "hash") {
+function topbar(title, sub, kind = "hash", actions = true) {
   return `<header class="topbar">
     ${icon(kind, "muted")}<strong>${title}</strong>${sub ? `<span class="sub">${sub}</span>` : ""}
     <span class="spacer"></span>
-    <button class="ghost" title="Convidar">${icon("invite")}</button>
-    <button class="ghost ${state.members ? "on" : ""}" data-toggle="members" title="Membros">${icon("members")}</button>
+    ${actions ? `<button class="ghost" title="Convidar">${icon("invite")}</button>
+    <button class="ghost ${state.members ? "on" : ""}" data-toggle="members" title="Membros">${icon("members")}</button>` : ""}
   </header>`;
 }
 
@@ -144,7 +144,8 @@ function message(m) {
 function chat(channel, intro, voice = false) {
   return `<section class="chat">
     <div class="messages">
-      <h1>${voice ? "Chat do " + channel : "Bem-vindo a #" + channel}</h1>
+      <div class="intro-icon">${icon(voice ? "speaker" : "hash", "huge")}</div>
+      <h1>${voice ? "Chat de " + channel : "Bem-vindo a #" + channel}</h1>
       <p class="intro">${intro}</p>
       ${voice ? "" : DATA.messages.map(message).join("")}
     </div>
@@ -223,7 +224,7 @@ function settings() {
   return `<div class="overlay" data-close>
     <div class="settings" role="dialog">
       <nav class="settings-nav">
-        <div class="settings-me">${avatar(DATA.me, 40)}<span class="contact-text"><strong>${DATA.me.name}</strong><small>Editar perfil</small></span></div>
+        <div class="settings-me">${avatar(DATA.me, 36)}<span class="contact-text"><strong>${DATA.me.name}</strong><small>Editar perfil</small></span></div>
         ${nav}
         <span class="spacer"></span>
         <small class="muted">Telinha ${DATA.me.version}</small>
@@ -265,7 +266,7 @@ function render() {
   let side, main;
   if (view === "home") {
     side = homeSidebar();
-    main = `${topbar("Início", "", "home")}<div class="content">${home()}</div>`;
+    main = `${topbar("Início", "", "home", false)}<div class="content">${home()}</div>`;
   } else if (view === "call") {
     side = serverSidebar();
     main = `${topbar("Geral", "3 na sala", "speaker")}<div class="content">

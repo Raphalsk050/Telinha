@@ -118,7 +118,7 @@ impl CropEditor {
         let texture = self.texture(context);
         let mut answer = CropAnswer::Open;
         let frame = Frame::new().fill(palette.main).corner_radius(CornerRadius::same(8)).stroke(Stroke::new(1.0, palette.line)).inner_margin(Margin::same(20));
-        let response = egui::Modal::new(egui::Id::unique("crop-editor")).frame(frame).backdrop_color(Color32::from_black_alpha(178)).show(context, |ui| {
+        let response = crate::glass::modal(context, egui::Id::unique("crop-editor"), frame, |ui| {
             ui.set_width(shape.view.x.max(360.0));
             ui.spacing_mut().item_spacing.y = 10.0;
             ui.label(RichText::new(shape.title).color(palette.strong).size(20.0).family(theme::bold()));

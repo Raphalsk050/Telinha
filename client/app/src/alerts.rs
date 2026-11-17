@@ -250,10 +250,7 @@ impl TelinhaApp {
             (format!("{} está chamando você", incoming.name), "Entre para conversar por voz, ver a câmera ou a tela.", "Entrar")
         };
         let mut answer = None;
-        egui::Modal::new(egui::Id::unique("incoming-call"))
-            .frame(crate::dialogs::dialog_frame(&palette))
-            .backdrop_color(Color32::from_black_alpha(178))
-            .show(context, |ui| {
+        crate::glass::modal(context, egui::Id::unique("incoming-call"), crate::dialogs::dialog_frame(&palette), |ui| {
                 ui.set_width(420.0);
                 ui.spacing_mut().item_spacing = Vec2::ZERO;
                 ui.add(egui::Label::new(RichText::new(title).color(palette.strong).size(18.0).family(theme::bold())).wrap());

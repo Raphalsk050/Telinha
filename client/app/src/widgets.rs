@@ -19,6 +19,10 @@ pub fn paint_avatar(ui: &Ui, rect: Rect, name: &str, picture: Option<egui::Image
 /// An avatar whose initial has a size of its own, as the large ones of the call stage have.
 pub fn paint_avatar_with(ui: &Ui, rect: Rect, name: &str, picture: Option<egui::Image<'_>>, letter: f32) {
     let radius = rect.width() / 2.0;
+    // On glass every avatar has a faint light ring, as `box-shadow: 0 0 0 2px` in the sketch.
+    if crate::glass::look(ui.ctx()).is_some() {
+        ui.painter().circle_stroke(rect.center(), radius + 1.0, egui::Stroke::new(2.0, Color32::from_white_alpha(31)));
+    }
     match picture {
         Some(picture) => {
             picture.corner_radius(CornerRadius::same(radius.round() as u8)).paint_at(ui, rect);
@@ -42,6 +46,8 @@ pub fn status_dot(ui: &Ui, avatar: Rect, online: bool, palette: &Palette, backdr
     // corner of the avatar. The large avatar of a profile card gets a larger one.
     let (size, ring) = if avatar.width() > 56.0 { (22.0, 4.0) } else { (14.0, 3.0) };
     let center = avatar.right_bottom() + Vec2::splat(2.0 - size / 2.0);
+    // On glass the ring is the dark of the glass, as `--dot-ring`, whatever is behind.
+    let backdrop = if palette.glass { Color32::from_rgba_unmultiplied(26, 28, 46, 242) } else { backdrop };
     ui.painter().circle_filled(center, size / 2.0, backdrop);
     let fill = if online { palette.green } else { Color32::from_rgb(0x80, 0x84, 0x8e) };
     ui.painter().circle_filled(center, size / 2.0 - ring, fill);
@@ -71,6 +77,22 @@ pub fn row(ui: &mut Ui, height: f32, selected: bool, palette: &Palette) -> (Rect
     };
     if let Some(fill) = fill {
         ui.painter().rect_filled(rect, CornerRadius::same(4), fill);
+    }
+    (rect, response.on_hover_cursor(egui::CursorIcon::PointingHand))
+}
+
+/// A row of a channel. In the glass theme it is rounder and the chosen one has a light edge on
+/// top, as `.channel.selected` of the sketch.
+pub fn channel_row(ui: &mut Ui, height: f32, selected: bool, palette: &Palette) -> (Rect, Response) {
+    if !palette.glass {
+        return row(ui, height, selected, palette);
+    }
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::click());
+    if selected {
+        ui.painter().rect_filled(rect, CornerRadius::same(8), Color32::from_white_alpha(33));
+        ui.painter().hline((rect.left() + 8.0)..=(rect.right() - 8.0), rect.top() + 0.5, egui::Stroke::new(1.0, crate::glass::SHINE));
+    } else if response.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(8), palette.hover);
     }
     (rect, response.on_hover_cursor(egui::CursorIcon::PointingHand))
 }

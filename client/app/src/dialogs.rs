@@ -129,10 +129,7 @@ impl Dialog {
 
     pub fn show(&mut self, context: &egui::Context, palette: &Palette, contacts: &[InviteContact]) -> Answer {
         let mut answer = Answer::Open;
-        let response = egui::Modal::new(egui::Id::unique("dialog"))
-            .frame(dialog_frame(palette))
-            .backdrop_color(Color32::from_black_alpha(178))
-            .show(context, |ui| {
+        let response = crate::glass::modal(context, egui::Id::unique("dialog"), dialog_frame(palette), |ui| {
                 ui.set_width(INNER);
                 ui.spacing_mut().item_spacing = Vec2::ZERO;
                 match self {
@@ -457,7 +454,16 @@ pub fn button(ui: &mut Ui, palette: &Palette, label: &str, tone: Tone) -> egui::
         (Tone::Ghost, true) => palette.hover,
     };
     let fade = if enabled { 1.0 } else { 0.5 };
-    ui.painter().rect_filled(rect, CornerRadius::same(4), fill.gamma_multiply(fade));
+    if palette.glass && tone == Tone::Primary {
+        // `.primary` on glass: the accent gradient, rounder, a little brighter under the mouse.
+        let shape = egui::Shape::rect_filled(rect, CornerRadius::same(8), Color32::WHITE.gamma_multiply(fade));
+        crate::glass::accent_fill(ui.painter(), shape);
+        if hovered {
+            ui.painter().rect_filled(rect, CornerRadius::same(8), Color32::from_white_alpha(18));
+        }
+    } else {
+        ui.painter().rect_filled(rect, CornerRadius::same(4), fill.gamma_multiply(fade));
+    }
     ui.painter().galley_with_override_text_color(rect.center() - galley.size() / 2.0, galley, ink.gamma_multiply(fade));
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }

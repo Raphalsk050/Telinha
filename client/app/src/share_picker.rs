@@ -280,7 +280,7 @@ impl TelinhaApp {
         let mut close = false;
         let mut confirm = false;
         let mut refresh = false;
-        let response = egui::Modal::new(egui::Id::unique("share-picker")).frame(dialog_frame(&palette)).backdrop_color(Color32::from_black_alpha(178)).show(context, |ui| {
+        let response = crate::glass::modal(context, egui::Id::unique("share-picker"), dialog_frame(&palette), |ui| {
             ui.set_width(WIDTH);
             let top = ui.cursor().min.y;
             ui.spacing_mut().item_spacing = Vec2::ZERO;

@@ -28,6 +28,8 @@ use crate::widgets;
 const RAIL_WIDTH: f32 = 72.0;
 const SIDEBAR_WIDTH: f32 = 240.0;
 const MEMBERS_WIDTH: f32 = 240.0;
+/// The room around and between the floating panels of the glass theme.
+const GAP: f32 = 10.0;
 
 /// Where the person is in the app.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +86,8 @@ pub struct TelinhaApp {
     lightbox: Option<Lightbox>,
     /// A short notice at the bottom of the window, and when it goes away.
     toast: Option<(String, f64)>,
+    /// The glass drawn without its blur, for the test that checks the blur.
+    sharp_glass: bool,
 }
 
 impl TelinhaApp {
@@ -159,6 +163,7 @@ impl TelinhaApp {
             chat: ChatView::default(),
             dialog: None,
             toast: None,
+            sharp_glass: false,
         };
         app.use_chosen_devices();
         app.remember_own_style();
@@ -337,7 +342,13 @@ impl TelinhaApp {
             self.apply_appearance();
         }
         let regions = self.regions;
-        if let Some(backdrop) = &self.backdrop {
+        let glass = self.prefs.appearance.glass_look();
+        crate::glass::set_look(ui.ctx(), glass);
+        crate::glass::set_sharp(ui.ctx(), self.sharp_glass);
+        let gap = if glass.is_some() { GAP } else { 0.0 };
+        if let Some(look) = &glass {
+            crate::glass::wallpaper(ui.painter(), ui.ctx().content_rect(), look);
+        } else if let Some(backdrop) = &self.backdrop {
             let time = ui.input(|input| input.time);
             backdrop.paint(ui.painter(), ui.ctx().content_rect(), time);
             if backdrop.motion {
@@ -345,19 +356,23 @@ impl TelinhaApp {
             }
         }
 
+        // In the glass theme the panels float, 10 points apart and from the edges, as
+        // `#app { padding: 10px 10px 10px 0; gap: 10px }`.
         Panel::left("rail")
-            .exact_size(RAIL_WIDTH)
+            .exact_size(RAIL_WIDTH + gap)
             .resizable(false)
             .show_separator_line(false)
             .frame(Frame::new().fill(regions.rail))
             .show(ui, |ui| self.rail(ui));
         Panel::left("sidebar")
-            .exact_size(SIDEBAR_WIDTH)
+            .exact_size(SIDEBAR_WIDTH + gap)
             .resizable(false)
             .show_separator_line(false)
-            .frame(Frame::new().fill(regions.side))
-            .show(ui, |ui| self.sidebar(ui));
-        egui::CentralPanel::default().frame(Frame::new().fill(regions.main)).show(ui, |ui| self.main(ui));
+            .frame(Frame::new().fill(if glass.is_some() { Color32::TRANSPARENT } else { regions.side }))
+            .show(ui, |ui| self.in_pane(ui, regions.side, Self::sidebar));
+        egui::CentralPanel::default()
+            .frame(Frame::new().fill(if glass.is_some() { Color32::TRANSPARENT } else { regions.main }))
+            .show(ui, |ui| self.in_pane(ui, regions.main, Self::main));
         if let Some(lightbox) = &mut self.lightbox {
             if !lightbox.show(ui.ctx(), &palette) {
                 self.lightbox = None;
@@ -377,12 +392,35 @@ impl TelinhaApp {
         self.show_card(ui.ctx());
         self.tend_update(ui.ctx());
         self.show_toast(ui);
+        // Everything is painted: what is behind each glass is known now.
+        crate::glass::finish(ui.ctx());
+    }
+
+    /// The corners of the panels: rounded in the glass theme, where they float.
+    pub(crate) fn corner(&self) -> u8 {
+        if self.palette.glass { 16 } else { 0 }
+    }
+
+    /// Draws `body` in the whole panel, or, in the glass theme, in a floating glass inside it
+    /// with the gap on the top, the right and the bottom.
+    fn in_pane(&mut self, ui: &mut Ui, tint: Color32, body: fn(&mut Self, &mut Ui)) {
+        if !self.palette.glass {
+            body(self, ui);
+            return;
+        }
+        let full = ui.max_rect();
+        let rect = Rect::from_min_max(egui::pos2(full.left(), full.top() + GAP), egui::pos2(full.right() - GAP, full.bottom() - GAP));
+        crate::glass::pane(ui.painter(), rect, &crate::glass::Pane::panel(tint));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+            ui.set_clip_rect(rect.intersect(ui.clip_rect()));
+            body(self, ui);
+        });
     }
 
     fn rail(&mut self, ui: &mut Ui) {
         let palette = self.side;
-        ui.add_space(12.0);
-        ui.with_layout(Layout::top_down(Align::Center), |ui| {
+        ui.add_space(12.0 + if palette.glass { GAP } else { 0.0 });
+        ui.allocate_ui_with_layout(Vec2::new(RAIL_WIDTH, ui.available_height()), Layout::top_down(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.y = self.prefs.appearance.density.rail_gap();
             let home = self.nav == Nav::Home || matches!(self.nav, Nav::Direct(_));
             let waiting = self.unread_in_contacts() > 0;
@@ -424,7 +462,8 @@ impl TelinhaApp {
         match self.current_server().cloned() {
             Some(server) => {
                 if header_response.hovered() {
-                    ui.painter().rect_filled(header, CornerRadius::ZERO, palette.hover);
+                    let round = self.corner();
+                    ui.painter().rect_filled(header, CornerRadius { nw: round, ne: round, sw: 0, se: 0 }, palette.hover);
                 }
                 self.server_menu(&header_response, &server);
                 widgets::paint_text_clipped(ui, header.left_center() + Vec2::new(16.0, 0.0), header.width() - 56.0, &server.name, FontId::new(15.0, theme::semibold()), palette.strong);
@@ -469,7 +508,7 @@ impl TelinhaApp {
             }
             for channel in server.channels.iter().filter(|channel| channel.kind == kind) {
                 let selected = matches!(&self.nav, Nav::Server { channel_id: Some(id), .. } if id == &channel.id);
-                let (rect, response) = widgets::row(ui, 22.0 + 2.0 * self.prefs.appearance.density.row_pad(), selected, &palette);
+                let (rect, response) = widgets::channel_row(ui, 22.0 + 2.0 * self.prefs.appearance.density.row_pad(), selected, &palette);
                 let icon = if kind == ChannelKind::Text { icons::HASH } else { icons::SPEAKER };
                 let icon_rect = Rect::from_center_size(rect.left_center() + Vec2::new(18.0, 0.0), Vec2::splat(20.0));
                 icon.image(20.0, palette.muted).paint_at(ui, icon_rect);
@@ -596,7 +635,11 @@ impl TelinhaApp {
         let palette = self.side;
         let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ui.available_height()), Sense::hover());
         let foot = self.foot_fill();
-        ui.painter().rect_filled(rect, CornerRadius::ZERO, foot);
+        let round = self.corner();
+        ui.painter().rect_filled(rect, CornerRadius { nw: 0, ne: 0, sw: round, se: round }, foot);
+        if palette.glass {
+            ui.painter().hline(rect.x_range(), rect.top() + 0.5, egui::Stroke::new(1.0, palette.line));
+        }
         let name = self.hub.profile_name();
         // The avatar and the name are one button, as `.user-button`: a click opens the settings,
         // a right click the menu of the avatar.
@@ -781,8 +824,19 @@ impl TelinhaApp {
                 .exact_size(MEMBERS_WIDTH)
                 .resizable(false)
                 .show_separator_line(false)
-                .frame(Frame::new().fill(self.regions.side).inner_margin(Margin::same(8)))
-                .show(ui, |ui| self.members(ui));
+                .frame(if palette.glass {
+                    // A darker strip inside the main glass, as `.members` of the sketch.
+                    Frame::new().fill(Color32::from_black_alpha(36)).corner_radius(CornerRadius { nw: 0, ne: 0, sw: 0, se: self.corner() }).inner_margin(Margin::same(8))
+                } else {
+                    Frame::new().fill(self.regions.side).inner_margin(Margin::same(8))
+                })
+                .show(ui, |ui| {
+                    if palette.glass {
+                        let strip = ui.max_rect().expand(8.0);
+                        ui.painter().vline(strip.left() + 0.5, strip.y_range(), egui::Stroke::new(1.0, palette.line));
+                    }
+                    self.members(ui);
+                });
         }
 
         let room = match &self.nav {
@@ -1415,6 +1469,14 @@ impl TelinhaApp {
         self.chat.draft_for_test(text);
     }
 
+    pub fn sharp_glass_for_test(&mut self, sharp: bool) {
+        self.sharp_glass = sharp;
+    }
+
+    pub fn scroll_chat_for_test(&mut self, offset: f32) {
+        self.chat.scroll_for_test(offset);
+    }
+
     pub fn link_for_test(&mut self, url: &str, site: &str, title: &str, description: &str) {
         self.chat.link_for_test(url, site, title, description);
     }
@@ -1464,7 +1526,18 @@ fn rail_button(ui: &mut Ui, palette: &Palette, selected: bool, waiting: bool, fa
         (true, false) => palette.accent,
         (false, _) => palette.main,
     };
-    ui.painter().rect_filled(rect, CornerRadius::same(if lit { 16 } else { 24 }), fill);
+    let round = CornerRadius::same(if lit { 16 } else { 24 });
+    if !palette.glass {
+        ui.painter().rect_filled(rect, round, fill);
+    } else if lit && !add {
+        // Lit glass buttons take the gradient of the accent.
+        crate::glass::accent_fill(ui.painter(), egui::Shape::rect_filled(rect, round, Color32::WHITE));
+    } else if lit {
+        ui.painter().rect_filled(rect, round, fill);
+    } else {
+        let pane = crate::glass::Pane { shine: false, ..crate::glass::Pane::new(Color32::from_white_alpha(20), 24.0) };
+        crate::glass::pane(ui.painter(), rect, &pane);
+    }
     // The mark at the edge: tall for where the person is, short for messages waiting to be read.
     if selected || response.hovered() || waiting {
         let height = if selected { 40.0 } else if response.hovered() { 20.0 } else { 8.0 };

@@ -6,7 +6,7 @@ use image::GenericImageView;
 use telinha_core::avatars::MAX_AVATAR_BYTES;
 use telinha_core::profile::{NameStyle, Style};
 
-use crate::appearance::{Appearance, COLOR_THEMES, CustomTheme, Density, Gradient, MAX_CUSTOM_COLORS, MessageStyle, ThemeChoice};
+use crate::appearance::{Appearance, COLOR_THEMES, CustomTheme, Density, GlassLook, Gradient, MAX_CUSTOM_COLORS, MessageStyle, ThemeChoice};
 use crate::dialogs::{Tone, button, text_field};
 use crate::name_style::{CARD_WIDTH, CardFace, card_ui, parse_color, write_color};
 use crate::theme::{self, Palette, ThemeName};
@@ -491,8 +491,13 @@ impl Settings {
         let mut look = view.appearance.clone();
         let screen = context.content_rect();
         let height = (screen.height() - 48.0).clamp(400.0, 860.0);
-        let frame = Frame::new().fill(palette.main).corner_radius(CornerRadius::same(8)).stroke(Stroke::new(1.0, palette.line));
-        let response = egui::Modal::new(egui::Id::unique("settings")).frame(frame).backdrop_color(Color32::from_black_alpha(178)).show(context, |ui| {
+        // On glass the window is a glass panel, and what is behind it goes dark and soft, as
+        // `.overlay::before { background: rgba(5, 6, 14, .35); backdrop-filter: blur(6px) }`.
+        let glass = crate::glass::look(context).filter(|_| palette.glass);
+        let frame = if glass.is_some() { Frame::new() } else { Frame::new().fill(palette.main).corner_radius(CornerRadius::same(8)).stroke(Stroke::new(1.0, palette.line)) };
+        let backdrop = if glass.is_some() { Color32::TRANSPARENT } else { Color32::from_black_alpha(178) };
+        let response = egui::Modal::new(egui::Id::unique("settings")).frame(frame).backdrop_color(backdrop).show(context, |ui| {
+            let kept = glass.map(|_| (crate::glass::reserve(ui.painter()), crate::glass::reserve(ui.painter())));
             ui.spacing_mut().item_spacing = Vec2::ZERO;
             ui.horizontal_top(|ui| {
                 self.sidebar(ui, palette, &view, height);
@@ -587,8 +592,32 @@ impl Settings {
                                         (ThemeChoice::Dark, "Escuro", Some(ThemeName::Dark)),
                                         (ThemeChoice::Onyx, "Ônix", Some(ThemeName::Onyx)),
                                         (ThemeChoice::System, "Igual ao computador", None),
+                                        (ThemeChoice::Glass, "Vidro", None),
                                     ] {
                                         let clicked = theme_dot(ui, palette, label, look.theme == choice, |painter, center, radius| match theme {
+                                            // The wallpaper of the glass theme, small: its lights on the night.
+                                            None if choice == ThemeChoice::Glass => {
+                                                painter.circle_filled(center, radius, Color32::from_rgb(0x1b, 0x14, 0x46));
+                                                for (offset, color) in [(Vec2::new(-9.0, -9.0), 0x7c3aed), (Vec2::new(10.0, -10.0), 0x06b6d4), (Vec2::new(9.0, 11.0), 0xdb2777), (Vec2::new(-10.0, 10.0), 0x2563eb)] {
+                                                    let color = Color32::from_rgb((color >> 16) as u8, (color >> 8) as u8, color as u8);
+                                                    let mut mesh = egui::Mesh::default();
+                                                    let spot = center + offset;
+                                                    mesh.colored_vertex(spot, color.gamma_multiply(0.9));
+                                                    for step in 0..=36u32 {
+                                                        let point = spot + Vec2::angled(std::f32::consts::TAU * step as f32 / 36.0) * 16.0;
+                                                        // Kept inside the circle.
+                                                        let away = point - center;
+                                                        let point = center + away * (radius / away.length().max(radius));
+                                                        mesh.colored_vertex(point, Color32::TRANSPARENT);
+                                                    }
+                                                    for step in 1..=36u32 {
+                                                        mesh.add_triangle(0, step, step + 1);
+                                                    }
+                                                    painter.add(egui::Shape::mesh(mesh));
+                                                }
+                                                painter.circle_filled(center, radius * 0.55, Color32::from_rgba_unmultiplied(16, 18, 34, 168));
+                                                painter.circle_stroke(center, radius * 0.55, Stroke::new(1.0, crate::glass::EDGE));
+                                            }
                                             Some(theme) => {
                                                 painter.circle_filled(center, radius, Palette::of(theme).main);
                                             }
@@ -606,6 +635,22 @@ impl Settings {
                                 });
                                 if matches!(look.theme, ThemeChoice::Light | ThemeChoice::System) && check(ui, palette, look.dark_sidebar, "Manter a barra lateral escura no tema claro") {
                                     look.dark_sidebar = !look.dark_sidebar;
+                                }
+                                if look.theme == ThemeChoice::Glass {
+                                    // The five knobs of the controls window of the sketch.
+                                    section(ui, palette, "VIDRO", false);
+                                    for (index, (_, label, low, high, step)) in GlassLook::KNOBS.iter().enumerate() {
+                                        let value = look.glass.knob(index);
+                                        let shown = match index {
+                                            2 => format!("{value:.0} px"),
+                                            _ => format!("{value:.2}"),
+                                        };
+                                        slider_field(ui, palette, label, shown, value, *low..=*high, *step);
+                                    }
+                                    ui.add_space(8.0);
+                                    if small_button(ui, palette, "Voltar o vidro ao padrão") {
+                                        look.glass = GlassLook::default();
+                                    }
                                 }
 
                                 section(ui, palette, "TEMAS COLORIDOS", false);
@@ -679,6 +724,11 @@ impl Settings {
                     });
                 });
             });
+            if let (Some(look), Some((veil, pane))) = (glass, kept) {
+                let veil_pane = crate::glass::Pane { blur: Some(6.0), edge: false, shine: false, ..crate::glass::Pane::new(Color32::from_rgba_unmultiplied(5, 6, 14, 89), 0.0) };
+                crate::glass::fill(ui.painter(), veil, screen, &veil_pane);
+                crate::glass::fill(ui.painter(), pane, ui.min_rect(), &crate::glass::Pane::panel(look.main()));
+            }
         });
         if response.should_close() {
             open = false;
@@ -702,8 +752,9 @@ impl Settings {
     /// Who the person is at the top, then the pages in their groups, then the version.
     fn sidebar(&mut self, ui: &mut Ui, palette: &Palette, view: &SettingsView<'_>, height: f32) {
         let (area, _) = ui.allocate_exact_size(Vec2::new(SIDEBAR, height), Sense::hover());
-        let corners = CornerRadius { nw: 8, sw: 8, ne: 0, se: 0 };
-        ui.painter().rect_filled(area, corners, palette.sidebar);
+        // On glass the list of pages is a darker strip of the window, as `.settings-nav`.
+        let (round, fill) = if palette.glass { (16, Color32::from_black_alpha(46)) } else { (8, palette.sidebar) };
+        ui.painter().rect_filled(area, CornerRadius { nw: round, sw: round, ne: 0, se: 0 }, fill);
         let inner = area.shrink2(Vec2::new(12.0, 16.0));
         ui.scope_builder(egui::UiBuilder::new().max_rect(inner).layout(Layout::top_down(Align::Min)), |ui| {
             ui.spacing_mut().item_spacing = Vec2::new(0.0, 2.0);

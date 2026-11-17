@@ -1,3 +1,4 @@
+if (new URLSearchParams(location.search).has("clean")) document.documentElement.classList.add("clean");
 // Painel "Vidro" do esboço: controles que mexem nas variáveis de glass.css ao vivo.
 // Os valores ficam no endereço junto com o resto do estado.
 (() => {

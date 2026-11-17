@@ -65,6 +65,8 @@ pub struct Palette {
     pub danger: Color32,
     pub danger_hover: Color32,
     pub dark: bool,
+    /// The glass theme: translucent surfaces, gradient buttons, thin scroll bars.
+    pub glass: bool,
 }
 
 const fn rgb(hex: u32) -> Color32 {
@@ -97,7 +99,35 @@ impl Palette {
         danger: rgb(0xda373c),
         danger_hover: rgb(0xa12828),
         dark: true,
+        glass: false,
     };
+
+    /// The glass theme, with the colors of `[data-theme="glass"]` in the sketch. What lies on
+    /// a surface is translucent white; what stands alone (fields, windows not made of glass,
+    /// menus) stays opaque in the dark blue of the glass.
+    pub fn glass() -> Self {
+        let white = Color32::from_white_alpha;
+        Self {
+            rail: rgb(0x0e0f1d),
+            sidebar: rgb(0x15172b),
+            main: rgb(0x191b30),
+            panel: white(13),
+            raised: white(20),
+            hover: white(18),
+            selected: white(36),
+            line: white(20),
+            line_soft: white(36),
+            text: rgb(0xe8eaf4),
+            strong: rgb(0xffffff),
+            muted: rgb(0xa9aecb),
+            soft: rgb(0xc8cce0),
+            float: Color32::from_rgba_unmultiplied(16, 18, 30, 240),
+            accent: rgb(0x6d72ff),
+            accent_hover: rgb(0x5a5ff0),
+            glass: true,
+            ..Self::GRAY
+        }
+    }
 
     pub fn of(theme: ThemeName) -> Self {
         match theme {
@@ -256,5 +286,35 @@ pub fn apply(context: &egui::Context, palette: &Palette) {
         widget.corner_radius = egui::CornerRadius::same(4);
         widget.fg_stroke = egui::Stroke::new(1.0, palette.text);
     }
+    if palette.glass {
+        // The thumb of the thin scroll bars of the sketch: white at 16%, 32% under the mouse.
+        visuals.widgets.inactive.bg_fill = Color32::from_white_alpha(41);
+        visuals.widgets.hovered.bg_fill = Color32::from_white_alpha(82);
+        visuals.widgets.active.bg_fill = Color32::from_white_alpha(82);
+    }
     context.set_visuals(visuals);
+    context.all_styles_mut(|style| {
+        style.spacing.scroll = if palette.glass {
+            // A 4 point thumb 3 points from the edge, 6 under the mouse, over the content.
+            egui::style::ScrollStyle {
+                floating: true,
+                bar_width: 6.0,
+                floating_width: 4.0,
+                floating_allocated_width: 0.0,
+                handle_min_length: 40.0,
+                bar_inner_margin: 3.0,
+                bar_outer_margin: 3.0,
+                foreground_color: false,
+                dormant_background_opacity: 0.0,
+                active_background_opacity: 0.0,
+                interact_background_opacity: 0.0,
+                dormant_handle_opacity: 1.0,
+                active_handle_opacity: 1.0,
+                interact_handle_opacity: 1.0,
+                ..egui::style::ScrollStyle::floating()
+            }
+        } else {
+            egui::style::ScrollStyle::default()
+        };
+    });
 }

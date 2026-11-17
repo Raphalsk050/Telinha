@@ -53,6 +53,8 @@ pub enum ThemeChoice {
     Custom,
     /// One of the color themes, by its place in the list.
     Color(usize),
+    /// Translucent panels that blur a dark wallpaper with colored lights.
+    Glass,
 }
 
 impl ThemeChoice {
@@ -65,6 +67,7 @@ impl ThemeChoice {
             Self::System => "system".to_owned(),
             Self::Custom => "custom".to_owned(),
             Self::Color(index) => format!("color:{}", COLOR_THEMES[index].id),
+            Self::Glass => "glass".to_owned(),
         }
     }
 
@@ -77,6 +80,7 @@ impl ThemeChoice {
             "onyx" => Some(Self::Onyx),
             "system" => Some(Self::System),
             "custom" => Some(Self::Custom),
+            "glass" => Some(Self::Glass),
             other => COLOR_THEMES.iter().position(|theme| other.strip_prefix("color:") == Some(theme.id)).map(Self::Color),
         }
     }
@@ -133,6 +137,58 @@ impl Default for CustomTheme {
     }
 }
 
+/// The five knobs of the glass theme, with the limits and the defaults of the sketch.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GlassLook {
+    /// The white haze and the grain on the glass, 0 to 1.
+    pub frost: f32,
+    /// How dark the glass is, 0 to 1.
+    pub dark: f32,
+    /// The blur, in points, 0 to 80.
+    pub blur: f32,
+    /// How much the lights of the wallpaper show, 0 to 1.6; above 1 they brighten.
+    pub light: f32,
+    /// How large the lights are, 0.3 to 2.5.
+    pub light_size: f32,
+}
+
+impl Default for GlassLook {
+    fn default() -> Self {
+        Self { frost: 0.0, dark: 0.66, blur: 16.0, light: 0.02, light_size: 1.05 }
+    }
+}
+
+impl GlassLook {
+    /// Each knob: its key in the file, its name, its limits and its step.
+    pub const KNOBS: [(&'static str, &'static str, f32, f32, f64); 5] = [
+        ("frost", "Jateamento", 0.0, 1.0, 0.01),
+        ("dark", "Escurecimento", 0.0, 1.0, 0.01),
+        ("blur", "Desfoque", 0.0, 80.0, 1.0),
+        ("light", "Luz de fundo", 0.0, 1.6, 0.01),
+        ("lightSize", "Tamanho das luzes", 0.3, 2.5, 0.05),
+    ];
+
+    pub fn knob(&mut self, index: usize) -> &mut f32 {
+        match index {
+            0 => &mut self.frost,
+            1 => &mut self.dark,
+            2 => &mut self.blur,
+            3 => &mut self.light,
+            _ => &mut self.light_size,
+        }
+    }
+
+    /// The tint of the main panel: `rgba(16, 18, 34, dark)`.
+    pub fn main(&self) -> Color32 {
+        Color32::from_rgba_unmultiplied(16, 18, 34, (self.dark.clamp(0.0, 1.0) * 255.0).round() as u8)
+    }
+
+    /// The tint of the sidebar, a little darker: `rgba(16, 18, 34, min(1, dark + .1))`.
+    pub fn side(&self) -> Color32 {
+        Color32::from_rgba_unmultiplied(16, 18, 34, ((self.dark + 0.1).clamp(0.0, 1.0) * 255.0).round() as u8)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Appearance {
     pub theme: ThemeChoice,
@@ -149,6 +205,7 @@ pub struct Appearance {
     /// The size of everything, in percent, from 50 to 200.
     pub zoom: f32,
     pub custom: CustomTheme,
+    pub glass: GlassLook,
 }
 
 impl Default for Appearance {
@@ -163,6 +220,7 @@ impl Default for Appearance {
             message_gap: 16.0,
             zoom: 100.0,
             custom: CustomTheme::default(),
+            glass: GlassLook::default(),
         }
     }
 }
@@ -313,6 +371,13 @@ impl Appearance {
                 intensity: number("intensity", 0.0, 100.0).unwrap_or(50.0),
             };
         }
+        if let Some(glass) = source.get("glass").filter(|glass| glass.is_object()) {
+            for (index, (key, _, low, high, _)) in GlassLook::KNOBS.iter().enumerate() {
+                if let Some(value) = glass.get(*key).and_then(Value::as_f64).filter(|value| value.is_finite()) {
+                    *look.glass.knob(index) = (value as f32).clamp(*low, *high);
+                }
+            }
+        }
         look
     }
 
@@ -331,6 +396,13 @@ impl Appearance {
                 "colors": self.custom.colors.iter().map(|color| write_color(*color)).collect::<Vec<_>>(),
                 "angle": self.custom.angle,
                 "intensity": self.custom.intensity,
+            },
+            "glass": {
+                "frost": self.glass.frost,
+                "dark": self.glass.dark,
+                "blur": self.glass.blur,
+                "light": self.glass.light,
+                "lightSize": self.glass.light_size,
             },
         })
     }
@@ -351,6 +423,7 @@ impl Appearance {
     /// the color theme.
     pub fn base(&self, system_light: bool) -> ThemeName {
         match (self.gradient(), self.theme) {
+            (None, ThemeChoice::Glass) => ThemeName::Dark,
             (Some(gradient), _) => if gradient.light { ThemeName::Light } else { ThemeName::Dark },
             (None, ThemeChoice::Light) => ThemeName::Light,
             (None, ThemeChoice::Dark) => ThemeName::Dark,
@@ -362,6 +435,10 @@ impl Appearance {
 
     /// The colors of the window and the fill of each of its regions.
     pub fn palette(&self, system_light: bool) -> (Palette, Regions) {
+        if self.theme == ThemeChoice::Glass {
+            let glass = &self.glass;
+            return (Palette::glass(), Regions { main: glass.main(), side: glass.side(), rail: Color32::TRANSPARENT, foot: Color32::from_black_alpha(46) });
+        }
         let mut palette = Palette::of(self.base(system_light));
         let Some(gradient) = self.gradient() else {
             return (palette, Regions { main: palette.main, side: palette.sidebar, rail: palette.rail, foot: palette.panel });
@@ -397,6 +474,11 @@ impl Appearance {
     }
 
     /// The colors of the rail and of the sidebar, which may stay dark in the light theme.
+    /// The knobs of the glass theme, when it is the one on.
+    pub fn glass_look(&self) -> Option<GlassLook> {
+        (self.theme == ThemeChoice::Glass).then_some(self.glass)
+    }
+
     pub fn side_palette(&self, system_light: bool) -> Option<Palette> {
         let light = self.gradient().is_none() && self.base(system_light) == ThemeName::Light;
         (light && self.dark_sidebar).then_some(Palette::GRAY)
@@ -425,7 +507,11 @@ mod tests {
         assert_eq!(Appearance::from_json(None), Appearance::default());
         assert_eq!(Appearance::from_json(Some(&json!({ "theme": "plaid", "density": 3 }))), Appearance::default());
         assert_eq!(Appearance::from_json(Some(&json!({ "theme": "gray" }))).theme, ThemeChoice::Ash);
-        for choice in [ThemeChoice::Light, ThemeChoice::System, ThemeChoice::Custom, ThemeChoice::Color(13)] {
+        let glass = Appearance::from_json(Some(&json!({ "theme": "glass", "glass": { "frost": 0.4, "dark": 3, "blur": 12, "lightSize": "big" } })));
+        assert_eq!(glass.theme, ThemeChoice::Glass);
+        assert_eq!(glass.glass, GlassLook { frost: 0.4, dark: 1.0, blur: 12.0, ..GlassLook::default() });
+        assert_eq!(Appearance::from_json(Some(&glass.to_json())), glass);
+        for choice in [ThemeChoice::Light, ThemeChoice::System, ThemeChoice::Custom, ThemeChoice::Color(13), ThemeChoice::Glass] {
             assert_eq!(ThemeChoice::from_key(&choice.key()), Some(choice));
         }
     }

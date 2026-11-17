@@ -161,6 +161,10 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |creation| {
             #[allow(unused_mut)]
+            // The glass theme blurs on the GPU the window draws with.
+            if let Some(render) = &creation.wgpu_render_state {
+                telinha::glass::install(&creation.egui_ctx, render.clone());
+            }
             let mut app = TelinhaApp::new(&creation.egui_ctx, hub, events, handle);
             app.enable_notices();
             if let Some(updater) = updater {

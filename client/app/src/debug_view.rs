@@ -299,7 +299,7 @@ impl TelinhaApp {
             .corner_radius(CornerRadius::same(8))
             .inner_margin(Margin::same(20))
             .shadow(egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(128) });
-        let response = egui::Modal::new(egui::Id::unique("debug")).frame(frame).backdrop_color(Color32::from_black_alpha(178)).show(context, |ui| {
+        let response = crate::glass::modal(context, egui::Id::unique("debug"), frame, |ui| {
             let inner = width - 40.0;
             ui.set_width(inner);
             ui.spacing_mut().item_spacing = Vec2::ZERO;

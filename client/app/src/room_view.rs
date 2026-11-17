@@ -841,7 +841,8 @@ impl TelinhaApp {
             let mut right = rect.right() - 6.0;
             if person.deaf || !person.mic {
                 let icon = if person.deaf { icons::DEAF } else { icons::MIC_OFF };
-                icon.image(16.0, palette.muted).paint_at(ui, Rect::from_min_size(egui::pos2(right - 16.0, rect.center().y - 8.0), Vec2::splat(16.0)));
+                // Red, as `.muted-icon { color: var(--danger) }`.
+                icon.image(16.0, palette.danger).paint_at(ui, Rect::from_min_size(egui::pos2(right - 16.0, rect.center().y - 8.0), Vec2::splat(16.0)));
                 right -= 16.0 + 8.0;
             }
             if person.live {
@@ -938,6 +939,10 @@ impl TelinhaApp {
         self.room.panel_rect = Some(rect);
         ui.painter().rect_filled(rect, CornerRadius::ZERO, self.foot_fill());
         ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, palette.line_soft));
+        if palette.glass {
+            // `.voice-panel { border-top: 1px solid var(--line) }` on glass.
+            ui.painter().hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, palette.line));
+        }
         let inner = Rect::from_min_max(rect.min + Vec2::splat(8.0), rect.max - Vec2::new(8.0, 9.0));
         let mut action = None;
 
@@ -1084,12 +1089,18 @@ impl TelinhaApp {
             }
         };
         let mut enter = false;
-        Frame::new()
-            .outer_margin(Margin { left: 16, right: 16, top: 16, bottom: 0 })
-            .inner_margin(Margin::symmetric(20, 16))
-            .corner_radius(CornerRadius::same(8))
-            .fill(palette.sidebar)
-            .stroke(Stroke::new(1.0, palette.line_soft))
+        let glass = palette.glass.then(|| crate::glass::reserve(ui.painter()));
+        let card = if palette.glass {
+            Frame::new().outer_margin(Margin { left: 16, right: 16, top: 16, bottom: 0 }).inner_margin(Margin::symmetric(20, 16)).corner_radius(CornerRadius::same(14))
+        } else {
+            Frame::new()
+                .outer_margin(Margin { left: 16, right: 16, top: 16, bottom: 0 })
+                .inner_margin(Margin::symmetric(20, 16))
+                .corner_radius(CornerRadius::same(8))
+                .fill(palette.sidebar)
+                .stroke(Stroke::new(1.0, palette.line_soft))
+        };
+        let shown = card
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
@@ -1130,6 +1141,12 @@ impl TelinhaApp {
                     });
                 });
             });
+        if let Some(reserved) = glass {
+            // A `.card` of the glass theme.
+            let rect = shown.response.rect;
+            let pane = crate::glass::Pane { blur: Some(12.0), shine: false, ..crate::glass::Pane::new(Color32::from_white_alpha(15), 14.0) };
+            crate::glass::fill(ui.painter(), reserved, rect, &pane);
+        }
         if enter {
             self.join_room(space_id, room_id);
         }
@@ -1160,7 +1177,9 @@ impl TelinhaApp {
         let feedback_height = feedback.as_ref().map_or(0.0, |galley| TILE_GAP + galley.size().y);
         let height = 16.0 + box_height + feedback_height + TILE_GAP + 48.0 + 6.0 + 10.0;
         let (rect, _) = ui.allocate_exact_size(Vec2::new(full, height + 1.0), Sense::hover());
-        ui.painter().rect_filled(Rect::from_min_max(rect.min, rect.max - Vec2::new(0.0, 1.0)), CornerRadius::ZERO, STAGE);
+        // On glass the stage darkens the panel instead of covering it: `.stage { background: rgba(0, 0, 0, .35) }`.
+        let stage = if palette.glass { Color32::from_black_alpha(89) } else { STAGE };
+        ui.painter().rect_filled(Rect::from_min_max(rect.min, rect.max - Vec2::new(0.0, 1.0)), CornerRadius::ZERO, stage);
         ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, palette.line));
 
         let tiles_box = Rect::from_min_size(rect.min + Vec2::splat(16.0), Vec2::new(inner_width, box_height));
@@ -1216,7 +1235,14 @@ impl TelinhaApp {
                 Look::Live => (if hovered { palette.selected } else { palette.green }, Color32::WHITE),
                 Look::Danger | Look::Primary => (if hovered { palette.danger_hover } else { palette.danger }, Color32::WHITE),
             };
-            ui.painter().circle_filled(rect.center(), 24.0, fill);
+            if palette.glass && matches!(look, Look::Plain | Look::Off | Look::Danger) {
+                // `.round` on glass, the hang up and the muted mic too: white at 12% over a blur,
+                // with the light edge, and the icon keeps its color.
+                let tint = Color32::from_white_alpha(if hovered { 46 } else { 31 });
+                crate::glass::pane(ui.painter(), rect, &crate::glass::Pane { blur: Some(12.0), shine: false, ..crate::glass::Pane::new(tint, 24.0) });
+            } else {
+                ui.painter().circle_filled(rect.center(), 24.0, fill);
+            }
             icon.image(22.0, ink).paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(22.0)));
             if response.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 clicked = Some(which);
@@ -1288,7 +1314,13 @@ impl TelinhaApp {
             self.room.focus = if self.room.focus.as_deref() == Some(id.as_str()) { None } else { Some(id) };
         }
         let hovered = ui.rect_contains_pointer(rect);
-        ui.painter().rect_filled(rect, CornerRadius::same(8), palette.sidebar);
+        if palette.glass {
+            // `.tile` on glass: white at 7% with a light edge, rounder.
+            ui.painter().rect_filled(rect, CornerRadius::same(14), Color32::from_white_alpha(18));
+            ui.painter().rect_stroke(rect, CornerRadius::same(14), Stroke::new(1.0, palette.line_soft), egui::StrokeKind::Inside);
+        } else {
+            ui.painter().rect_filled(rect, CornerRadius::same(8), palette.sidebar);
+        }
         match tile {
             Tile::Person(person) => self.person_tile(ui, palette, person, rect, small),
             Tile::Stream { sharer_id, name, open, embedded } => {
@@ -1707,7 +1739,15 @@ fn tile_actions(ui: &Ui, palette: &Palette, rect: Rect, pieces: &[Piece], scale:
                     Look::Danger => if hovered { palette.danger_hover } else { palette.danger },
                     _ => if hovered { ACTION_HOVER } else { ACTION },
                 };
-                ui.painter().rect_filled(button, CornerRadius::same(4), fill);
+                if palette.glass && *look == Look::Primary {
+                    // `.primary` on glass: the accent gradient, rounder.
+                    crate::glass::accent_fill(ui.painter(), egui::epaint::RectShape::filled(button, CornerRadius::same(8), Color32::WHITE).into());
+                    if hovered {
+                        ui.painter().rect_filled(button, CornerRadius::same(8), Color32::from_white_alpha(18));
+                    }
+                } else {
+                    ui.painter().rect_filled(button, CornerRadius::same(4), fill);
+                }
                 ui.painter().galley(button.center() - galley.size() / 2.0, galley, Color32::WHITE);
                 if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                     clicked = Some(index);

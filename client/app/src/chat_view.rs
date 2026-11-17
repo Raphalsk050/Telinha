@@ -82,6 +82,12 @@ pub struct ChatView {
     waiting_send: Option<f64>,
     /// How tall the box at the bottom was drawn last time; it grows with the draft.
     composer_height: f32,
+    /// Whether the message box had the keyboard on the last frame, for its ring on glass.
+    focused: bool,
+    /// Whether the last message was in sight on the last frame.
+    at_end: bool,
+    /// Where the tests keep the conversation scrolled.
+    scroll_test: Option<f32>,
     /// How tall the text of the draft was last time, which the box follows up to its limit.
     draft_height: f32,
 }
@@ -235,6 +241,12 @@ impl ChatView {
         self.draft = text.to_owned();
     }
 
+    /// Scrolls the conversation this far from its top on the next frame. For the tests.
+    pub fn scroll_for_test(&mut self, offset: f32) {
+        self.scroll_test = Some(offset);
+        self.to_bottom = false;
+    }
+
     pub fn link_for_test(&mut self, url: &str, site: &str, title: &str, description: &str) {
         self.link.show_for_test(url, site, title, description);
     }
@@ -383,11 +395,17 @@ impl ChatView {
         self.link.tend(ui.ctx(), &self.draft);
         let pending = if self.attachment.is_some() { 64.0 } else { 0.0 };
         let composer_height = self.composer_height.max(44.0 + 28.0 + pending + self.link.height());
-        let list_height = (ui.available_height() - composer_height).max(0.0);
-        ui.allocate_ui(Vec2::new(ui.available_width(), list_height), |ui| {
+        // On glass the message box floats over the conversation, which passes behind it.
+        let floating = palette.glass;
+        let list_top = ui.cursor().min.y;
+        let list_height = if floating { ui.available_height() } else { (ui.available_height() - composer_height).max(0.0) };
+        let list = ui.allocate_ui(Vec2::new(ui.available_width(), list_height), |ui| {
             let to_bottom = std::mem::take(&mut self.to_bottom);
-            let area = egui::ScrollArea::vertical().auto_shrink([false, false]).stick_to_bottom(true);
-            area.show(ui, |ui| {
+            let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]).stick_to_bottom(true);
+            if let Some(offset) = self.scroll_test {
+                area = area.vertical_scroll_offset(offset);
+            }
+            let shown = area.show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 self.intro(ui, palette, chrome);
                 let messages = std::mem::take(&mut self.messages);
@@ -399,15 +417,25 @@ impl ChatView {
                     }
                 }
                 self.messages = messages;
-                ui.add_space(20.0);
+                // As `.messages { padding-bottom: calc(var(--dock-h) + 8px) }` on glass.
+                ui.add_space(if floating { self.composer_height + 8.0 } else { 20.0 });
                 if to_bottom {
                     ui.scroll_to_cursor(Some(Align::BOTTOM));
                 }
             });
+            // Whether the end of the conversation is in sight, to keep it there when the box
+            // floating over it changes height.
+            let end = (shown.content_size.y - shown.inner_rect.height()).max(0.0);
+            self.at_end = to_bottom || shown.state.clamped_offset().y >= end - 4.0;
         });
         // The box gets room to reach its full height even when the list above was laid out
         // for a smaller one; the list makes way on the next frame, from the height measured.
-        let room = Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), composer_height.max(ui.available_height()) + COMPOSER_MAX));
+        let room = if floating {
+            let (bottom, column) = (list_top + list_height, list.response.rect);
+            Rect::from_min_size(egui::pos2(column.left(), bottom - self.composer_height), Vec2::new(column.width(), self.composer_height + COMPOSER_MAX))
+        } else {
+            Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), composer_height.max(ui.available_height()) + COMPOSER_MAX))
+        };
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(room).layout(*ui.layout()));
         self.composer(&mut child, hub, palette, chrome);
         action
@@ -449,6 +477,7 @@ impl ChatView {
             ui.add_space(chrome.gap);
         }
         let member = if message.mine { Some(hub.member_id()) } else { message.member_id.clone() };
+        let hover_fill = ui.painter().add(egui::Shape::Noop);
         let row = ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             if chrome.compact {
@@ -511,6 +540,11 @@ impl ChatView {
         // The tools of a message show on its right while the cursor is over it.
         let rect = Rect::from_min_max(egui::pos2(ui.max_rect().left(), row.response.rect.top()), egui::pos2(ui.max_rect().right(), row.response.rect.bottom()));
         let hovered = ui.rect_contains_pointer(rect);
+        if hovered && palette.glass {
+            // `.message:hover`: a faint light under the message, 8 points around it.
+            let lit = Rect::from_min_max(egui::pos2(rect.left() + 8.0, rect.top() - 8.0), egui::pos2(rect.right() - 8.0, rect.bottom() + 8.0));
+            ui.painter().set(hover_fill, egui::Shape::rect_filled(lit, CornerRadius::same(12), Color32::from_white_alpha(10)));
+        }
         if hovered && message.mine {
             let tool = Rect::from_min_size(egui::pos2(rect.right() - 44.0, rect.top() - 2.0), Vec2::splat(28.0));
             let response = ui.interact(tool, ui.scope_id().with(("delete", &message.id)), Sense::click());
@@ -547,7 +581,12 @@ impl ChatView {
     fn embed(&mut self, ui: &mut Ui, hub: &Arc<Hub>, palette: &Palette, message: &Message, embed: &Embed) -> Option<ChatAction> {
         let mut action = None;
         ui.add_space(4.0);
-        let frame = Frame::new().fill(palette.panel).corner_radius(CornerRadius::same(6)).inner_margin(Margin { left: 16, right: 14, top: 10, bottom: 12 });
+        let glass = palette.glass.then(|| crate::glass::reserve(ui.painter()));
+        let frame = if palette.glass {
+            Frame::new().corner_radius(CornerRadius::same(12)).inner_margin(Margin { left: 17, right: 15, top: 11, bottom: 13 })
+        } else {
+            Frame::new().fill(palette.panel).corner_radius(CornerRadius::same(6)).inner_margin(Margin { left: 16, right: 14, top: 10, bottom: 12 })
+        };
         let inner = frame.show(ui, |ui| {
             ui.set_max_width(432.0);
             ui.spacing_mut().item_spacing.y = 4.0;
@@ -570,8 +609,19 @@ impl ChatView {
                 }
             }
         });
-        let bar = Rect::from_min_max(inner.response.rect.left_top(), inner.response.rect.left_bottom() + Vec2::new(4.0, 0.0));
-        ui.painter().rect_filled(bar, CornerRadius { nw: 6, sw: 6, ne: 0, se: 0 }, palette.accent);
+        let rect = inner.response.rect;
+        if let Some(reserved) = glass {
+            // `.embed`: white at 6%, a light border, 3 points of accent on the left that follow
+            // the round corners, and a blur of 12.
+            let pane = crate::glass::Pane { blur: Some(12.0), shine: false, edge: false, ..crate::glass::Pane::new(Color32::from_white_alpha(15), 12.0) };
+            crate::glass::fill(ui.painter(), reserved, rect, &pane);
+            ui.painter().rect_stroke(rect, CornerRadius::same(12), Stroke::new(1.0, palette.line_soft), egui::StrokeKind::Inside);
+            let strip = Rect::from_min_max(rect.left_top(), egui::pos2(rect.left() + 3.0, rect.bottom()));
+            ui.painter().with_clip_rect(strip.intersect(ui.clip_rect())).rect_filled(rect, CornerRadius::same(12), palette.accent);
+        } else {
+            let bar = Rect::from_min_max(rect.left_top(), rect.left_bottom() + Vec2::new(4.0, 0.0));
+            ui.painter().rect_filled(bar, CornerRadius { nw: 6, sw: 6, ne: 0, se: 0 }, palette.accent);
+        }
         action
     }
 
@@ -629,13 +679,27 @@ impl ChatView {
         let drawn = Frame::new().inner_margin(Margin { left: 16, right: 16, top: 0, bottom: 0 }).show(ui, |ui| {
             self.pending_strip(ui, palette);
             self.link.show(ui, palette);
-            Frame::new().fill(palette.raised).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(12, 7)).show(ui, |ui| {
-                ui.horizontal(|ui| {
+            let glass = palette.glass.then(|| crate::glass::reserve(ui.painter()));
+            let frame = if palette.glass {
+                Frame::new().corner_radius(CornerRadius::same(14)).inner_margin(Margin::symmetric(8, 4))
+            } else {
+                Frame::new().fill(palette.raised).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(12, 7))
+            };
+            let boxed = frame.show(ui, |ui| {
+                // As `.composer textarea { padding: 9px 4px }` and its line: a row 41 points
+                // high on glass, the box 49 with its border.
+                let row = if palette.glass { 41.0 } else { 0.0 };
+                ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), row), Layout::left_to_right(Align::Center), |ui| {
+                    if palette.glass {
+                        ui.set_min_height(row);
+                    }
                     ui.spacing_mut().item_spacing.x = 10.0;
-                    let attach = widgets::icon_button(ui, icons::ATTACH, 28.0, palette.soft, palette.selected, "Anexar um arquivo");
+                    let attach = widgets::icon_button(ui, icons::ATTACH, if palette.glass { 32.0 } else { 28.0 }, palette.soft, palette.selected, "Anexar um arquivo");
                     let plus = Rect::from_center_size(attach.rect.center(), Vec2::splat(12.0));
-                    ui.painter().line_segment([plus.center_top(), plus.center_bottom()], Stroke::new(2.0, palette.raised));
-                    ui.painter().line_segment([plus.left_center(), plus.right_center()], Stroke::new(2.0, palette.raised));
+                    // The plus is cut out of the circle: the color of the box under it.
+                    let cut = if palette.glass { Color32::from_rgb(40, 42, 64) } else { palette.raised };
+                    ui.painter().line_segment([plus.center_top(), plus.center_bottom()], Stroke::new(2.0, cut));
+                    ui.painter().line_segment([plus.left_center(), plus.right_center()], Stroke::new(2.0, cut));
                     if attach.clicked() {
                         if let Some(path) = attach::pick_file() {
                             self.attach(attach::from_path(&path));
@@ -670,6 +734,7 @@ impl ChatView {
                     if std::mem::take(&mut self.focus_input) {
                         response.request_focus();
                     }
+                    self.focused = response.has_focus();
                     if response.has_focus() {
                         if ui.input(|input| input.key_pressed(egui::Key::Enter) && !input.modifiers.shift) {
                             send = true;
@@ -686,23 +751,58 @@ impl ChatView {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let empty = self.draft.trim().is_empty() && self.attachment.is_none();
                         let ink = if empty { palette.muted } else { palette.accent_text };
-                        if widgets::icon_button(ui, icons::SEND, 28.0, ink, palette.selected, "Enviar").clicked() {
+                        if widgets::icon_button(ui, icons::SEND, if palette.glass { 32.0 } else { 28.0 }, ink, palette.selected, "Enviar").clicked() {
                             send = true;
                         }
                     });
                 });
             });
-            ui.add_space(4.0);
+            if let Some(reserved) = glass {
+                let rect = boxed.response.rect;
+                let shadow = egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(64) };
+                let pane = crate::glass::Pane { shadow: Some(shadow), ..crate::glass::Pane::new(Color32::from_white_alpha(15), 14.0) };
+                crate::glass::fill(ui.painter(), reserved, rect, &pane);
+                if self.focused {
+                    // As `.composer:focus-within`: an accent border and a soft ring around it.
+                    ui.painter().rect_stroke(rect, CornerRadius::same(14), Stroke::new(1.0, Color32::from_rgba_unmultiplied(109, 114, 255, 179)), egui::StrokeKind::Inside);
+                    ui.painter().rect_stroke(rect, CornerRadius::same(14), Stroke::new(3.0, Color32::from_rgba_unmultiplied(109, 114, 255, 51)), egui::StrokeKind::Outside);
+                }
+            }
+            ui.add_space(if palette.glass { 0.0 } else { 4.0 });
             let long = too_long(self.draft.trim()).then(|| {
                 let count = self.draft.trim().encode_utf16().count();
                 format!("{count}/{MAX_TEXT_LENGTH} caracteres: o texto vai como o arquivo mensagem.txt.")
             });
             let hint = if !self.hint.is_empty() { &self.hint } else { long.as_ref().unwrap_or(&chrome.hint) };
-            ui.label(RichText::new(hint).color(palette.muted).size(12.0));
+            if palette.glass {
+                // The note under the box is glass too, across the whole conversation, so the
+                // text passing behind does not get in the way: `.footnote { padding: 6px 16px 8px }`.
+                // The band starts right under the box, with no gap for the text behind to show.
+                let reserved = crate::glass::reserve(ui.painter());
+                let top = boxed.response.rect.bottom();
+                let gap = ui.spacing().item_spacing.y;
+                ui.add_space(6.0 - gap);
+                let note = ui.label(RichText::new(hint).color(palette.muted).size(12.0));
+                // A line of 17 points under a 12 point font, as the browser draws it.
+                ui.add_space(note.rect.top() + note.rect.height().max(17.0) + 8.0 - ui.cursor().min.y);
+                let whole = ui.ctx().content_rect();
+                let left = ui.max_rect().left() - 16.0;
+                let right = ui.max_rect().right() + 16.0;
+                let round = |touches: bool| if touches { 16 } else { 0 };
+                let corners = CornerRadius { nw: 0, ne: 0, sw: 16, se: round((whole.right() - right) < 12.0) };
+                let band = Rect::from_min_max(egui::pos2(left, top), egui::pos2(right, ui.cursor().min.y));
+                let pane = crate::glass::Pane { corners, edge: false, shine: false, ..crate::glass::Pane::new(Color32::TRANSPARENT, 0.0) };
+                crate::glass::fill(ui.painter(), reserved, band, &pane);
+            } else {
+                ui.label(RichText::new(hint).color(palette.muted).size(12.0));
+            }
         });
         let height = drawn.response.rect.height();
         if (height - self.composer_height).abs() > 0.5 {
             self.composer_height = height;
+            if palette.glass && self.at_end && self.scroll_test.is_none() {
+                self.to_bottom = true;
+            }
             ui.ctx().request_repaint();
         }
         if send {
@@ -777,8 +877,13 @@ fn picture(ui: &mut Ui, palette: &Palette, blob: Option<Blob>, bounds: Vec2, fil
     let scale = (bounds.x / blob.size.x).min(bounds.y / blob.size.y).min(1.0);
     let shown = (blob.size * scale).max(Vec2::splat(60.0));
     let (rect, response) = ui.allocate_exact_size(shown, Sense::click());
-    ui.painter().rect_filled(rect, CornerRadius::same(8), palette.rail);
-    egui::Image::from_bytes(blob.uri.clone(), egui::load::Bytes::Shared(Arc::clone(&blob.bytes))).corner_radius(CornerRadius::same(8)).paint_at(ui, rect);
+    // On glass the pictures are rounder and float a little: `.image { border-radius: 14px }`.
+    let round = CornerRadius::same(if palette.glass { 14 } else { 8 });
+    if palette.glass {
+        ui.painter().add(egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(77) }.as_shape(rect, round));
+    }
+    ui.painter().rect_filled(rect, round, palette.rail);
+    egui::Image::from_bytes(blob.uri.clone(), egui::load::Bytes::Shared(Arc::clone(&blob.bytes))).corner_radius(round).paint_at(ui, rect);
 
     let mut action = None;
     crate::app::context_menu(&response, palette).show(|ui| {

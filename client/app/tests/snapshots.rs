@@ -101,32 +101,42 @@ fn scene() -> Scene {
     Scene { _folder: folder, runtime, hub, app, server_id: server.id, text_channel, voice_channel }
 }
 
-fn shoot(scene: &mut Scene, name: &str) {
+fn shoot(scene: &mut Scene, name: &str) -> image::RgbaImage {
     let folder = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("target").join("snapshots");
     std::fs::create_dir_all(&folder).unwrap();
-    shoot_app(&mut scene.app, name);
+    shoot_app(&mut scene.app, name)
 }
 
-fn shoot_app(app: &mut TelinhaApp, name: &str) {
-    shoot_clicking(app, name, &[]);
+fn shoot_app(app: &mut TelinhaApp, name: &str) -> image::RgbaImage {
+    shoot_clicking(app, name, &[])
 }
 
 /// Takes the picture after clicking at each place, with the pointer left on the last one.
-fn shoot_clicking(app: &mut TelinhaApp, name: &str, clicks: &[(egui::Pos2, egui::PointerButton)]) {
+fn shoot_clicking(app: &mut TelinhaApp, name: &str, clicks: &[(egui::Pos2, egui::PointerButton)]) -> image::RgbaImage {
     let folder = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("target").join("snapshots");
     // Every picture is drawn in a window of its own, which starts without the app's colors.
     app.restyle();
+    // The glass of the glass theme blurs on the same GPU that draws the picture.
+    let render = egui_kittest::wgpu::create_render_state(egui_kittest::wgpu::default_wgpu_setup(), eframe::egui_wgpu::RendererOptions::PREDICTABLE);
+    let blur = render.clone();
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1360.0, 860.0))
         .with_pixels_per_point(1.0)
         .with_max_steps(12)
-        .with_context_setup(|context| {
+        .with_context_setup(move |context| {
             egui_extras::install_image_loaders(context);
             telinha::theme::install_fonts(context);
             telinha::theme::apply(context, &telinha::theme::Palette::GRAY);
+            telinha::glass::install(context, blur);
         })
-        .wgpu()
-        .build_ui(|ui| app.ui(ui));
+        .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(render))
+        // The whole window, without the margin kittest puts around the ui, as in the app.
+        .build_ui(|ui| {
+            let full = ui.ctx().content_rect();
+            let mut window = ui.new_child(egui::UiBuilder::new().max_rect(full));
+            window.set_clip_rect(full);
+            app.ui(&mut window);
+        });
     harness.run_steps(6);
     for (pos, button) in clicks {
         harness.hover_at(*pos);
@@ -143,6 +153,90 @@ fn shoot_clicking(app: &mut TelinhaApp, name: &str, clicks: &[(egui::Pos2, egui:
     let picture = harness.render().expect("the window renders");
     picture.save(folder.join(format!("{name}.png"))).unwrap();
     println!("saved {}", folder.join(format!("{name}.png")).display());
+    picture
+}
+
+/// How sharp a part of a picture is: the mean change of brightness from a pixel to the next one
+/// on its right, from 0 to 255. Text and edges seen through a working blur score near 0.
+fn sharpness(picture: &image::RgbaImage, area: egui::Rect) -> f32 {
+    let light = |x: u32, y: u32| {
+        let [r, g, b, _] = picture.get_pixel(x, y).0;
+        0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b)
+    };
+    let (mut sum, mut count) = (0.0, 0.0);
+    for y in area.top() as u32..area.bottom() as u32 {
+        for x in area.left() as u32..area.right() as u32 - 1 {
+            sum += (light(x + 1, y) - light(x, y)).abs();
+            count += 1.0;
+        }
+    }
+    sum / count
+}
+
+/// The glass blurs what is behind it: the same picture drawn with the blur and without it, and
+/// the part of the glass with nothing drawn on it is sharp without the blur and soft with it.
+fn blurs(scene: &mut Scene, name: &str, areas: &[(&str, egui::Rect)]) {
+    let soft = shoot(scene, name);
+    scene.app.sharp_glass_for_test(true);
+    let sharp = shoot(scene, &format!("{name}-sharp"));
+    scene.app.sharp_glass_for_test(false);
+    for (what, area) in areas {
+        let (soft, sharp) = (sharpness(&soft, *area), sharpness(&sharp, *area));
+        println!("{name} {what}: blurred {soft:.2}, sharp {sharp:.2}");
+        assert!(sharp >= 2.5, "{name}: nothing sharp behind the {what} to blur ({sharp:.2})");
+        assert!(soft <= 1.5 && soft <= sharp * 0.3, "{name}: the {what} does not blur ({soft:.2} against {sharp:.2})");
+    }
+}
+
+/// The glass theme, as the sketch in `design/sketch` draws it with the same data.
+#[test]
+fn the_glass_theme_draws() {
+    use telinha::appearance::{Appearance, ThemeChoice};
+    let mut scene = scene();
+    let (server_id, channel) = (scene.server_id.clone(), scene.text_channel.clone());
+    scene.app.navigate(Nav::Server { server_id, channel_id: Some(channel) });
+    scene.app.set_appearance(Appearance { theme: ThemeChoice::Glass, ..Appearance::default() });
+    shoot(&mut scene, "glass-server");
+    scene.app.open_settings();
+    scene.app.settings_page_for_test(telinha::settings::Page::Appearance);
+    shoot(&mut scene, "glass-settings");
+    scene.app.close_settings();
+    let voice = scene.voice_channel.clone();
+    scene.app.navigate(Nav::Server { server_id: scene.server_id.clone(), channel_id: Some(voice) });
+    shoot(&mut scene, "glass-voice");
+    scene.app.navigate(Nav::Home);
+    shoot(&mut scene, "glass-home");
+    scene.app.open_dialog(telinha::dialogs::Dialog::server("rapha"));
+    // The veil of a dialog blurs the window around it: the cards of the home page at the right.
+    blurs(&mut scene, "glass-dialog", &[("veil", egui::Rect::from_min_max(egui::pos2(1010.0, 215.0), egui::pos2(1260.0, 310.0)))]);
+    scene.app.close_dialog();
+    let (server_id, room) = (scene.server_id.clone(), scene.voice_channel.clone());
+    {
+        let _guard = scene.runtime.enter();
+        let signaling = scene.hub.signaling();
+        signaling.loopback(&server_id, &presence("peer-keep", "Keep", KEEP, json!({ "voice": { "roomId": room, "mic": true, "live": true, "liveName": "Jogo", "v": 2 } })));
+        signaling.loopback(&server_id, &presence("peer-nanda", "nanda", NANDA, json!({ "voice": { "roomId": room, "mic": false, "v": 2 } })));
+        scene.runtime.block_on(async { tokio::time::sleep(Duration::from_millis(100)).await });
+        scene.hub.join_voice(&server_id, &room, true, false, false).unwrap();
+        scene.runtime.block_on(async { tokio::time::sleep(Duration::from_millis(100)).await });
+    }
+    scene.app.navigate(Nav::Server { server_id: server_id.clone(), channel_id: Some(room) });
+    shoot(&mut scene, "glass-room");
+    {
+        let _guard = scene.runtime.enter();
+        scene.hub.leave_voice();
+    }
+    scene.app.disable_calls();
+    // The conversation scrolled so that its text runs under the message box.
+    let channel = scene.text_channel.clone();
+    scene.app.navigate(Nav::Server { server_id, channel_id: Some(channel) });
+    scene.app.scroll_chat_for_test(0.0);
+    blurs(&mut scene, "glass-blur", &[
+        // The name over the last message, under the message box and below what is written in it.
+        ("message box", egui::Rect::from_min_max(egui::pos2(404.0, 806.0), egui::pos2(600.0, 817.0))),
+        // The last message, under the band of the notice and below the notice itself.
+        ("notice", egui::Rect::from_min_max(egui::pos2(404.0, 840.0), egui::pos2(456.0, 847.0))),
+    ]);
 }
 
 #[test]

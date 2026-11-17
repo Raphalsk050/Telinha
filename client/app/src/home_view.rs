@@ -370,8 +370,12 @@ impl TelinhaApp {
                 let rect = Rect::from_min_size(line.min + Vec2::new(column as f32 * (card_width + 16.0), 0.0), Vec2::new(card_width, height));
                 let response = ui.interact(rect, ui.scope_id().with(("choice", index)), Sense::click());
                 let hovered = response.hovered();
-                ui.painter().rect_filled(rect, CornerRadius::same(8), if hovered { palette.hover } else { palette.sidebar });
-                ui.painter().rect_stroke(rect, CornerRadius::same(8), Stroke::new(1.0, if hovered { palette.accent } else { palette.line_soft }), egui::StrokeKind::Inside);
+                if palette.glass {
+                    crate::glass::glass_card(ui.painter(), rect, hovered, palette);
+                } else {
+                    ui.painter().rect_filled(rect, CornerRadius::same(8), if hovered { palette.hover } else { palette.sidebar });
+                    ui.painter().rect_stroke(rect, CornerRadius::same(8), Stroke::new(1.0, if hovered { palette.accent } else { palette.line_soft }), egui::StrokeKind::Inside);
+                }
                 let inner = rect.shrink(25.0);
                 cards[index].0.image(44.0, palette.accent).paint_at(ui, Rect::from_min_size(inner.min, Vec2::splat(44.0)));
                 let title_top = inner.min + Vec2::new(0.0, 44.0 + 8.0);

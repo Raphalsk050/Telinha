@@ -222,8 +222,20 @@ fn rounded_fill(rect: Rect, corners: [f32; 4], color_at: impl Fn(Pos2) -> Color3
     egui::Shape::mesh(mesh)
 }
 
+/// Where the parts of a card drawn by [`card_spots`] are, and whether its edit button was clicked.
+pub struct CardSpots {
+    pub edit: bool,
+    pub banner: Rect,
+    pub portrait: Rect,
+}
+
 /// Draws a profile card at the cursor, 300 wide. True when its edit button was clicked.
 pub fn card_ui(ui: &mut Ui, palette: &Palette, face: CardFace<'_>) -> bool {
+    card_spots(ui, palette, face).edit
+}
+
+/// Draws a profile card at the cursor, 300 wide, and tells where its banner and its picture are.
+pub fn card_spots(ui: &mut Ui, palette: &Palette, face: CardFace<'_>) -> CardSpots {
     use crate::appearance::Gradient;
     let theme_colors = face.style.and_then(|style| style.theme.as_ref()).and_then(|colors| Some((parse_color(colors.first()?)?, parse_color(colors.get(1)?)?)));
     // With a theme, the two colors are the frame and the middle is darkened so text reads over
@@ -256,6 +268,9 @@ pub fn card_ui(ui: &mut Ui, palette: &Palette, face: CardFace<'_>) -> bool {
     let mut content = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(body.min, Vec2::new(body.width(), f32::INFINITY))).layout(egui::Layout::top_down(egui::Align::Min)));
     content.spacing_mut().item_spacing.y = 2.0;
     name_label(&mut content, face.name, FontId::new(20.0, theme::bold()), strong, face.style, true);
+    if let Some(pronouns) = face.style.map(|style| style.pronouns.as_str()).filter(|pronouns| !pronouns.is_empty()) {
+        content.label(RichText::new(pronouns).color(text).size(13.0));
+    }
     content.label(RichText::new(face.activity).color(soft).size(13.0));
     if let Some(bio) = face.style.map(|style| style.bio.as_str()).filter(|bio| !bio.is_empty()) {
         content.add_space(12.0);
@@ -309,7 +324,7 @@ pub fn card_ui(ui: &mut Ui, palette: &Palette, face: CardFace<'_>) -> bool {
         egui::Shape::circle_filled(dot_center, 6.0, if face.online { palette.green } else { Color32::from_rgb(0x80, 0x84, 0x8e) }),
     ];
     ui.painter().set(dot_shape, egui::Shape::Vec(dot));
-    edit
+    CardSpots { edit, banner: strip, portrait }
 }
 impl TelinhaApp {
     pub fn open_card(&mut self, member_id: Option<String>, name: &str, anchor: Rect) {

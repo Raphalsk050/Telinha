@@ -475,7 +475,7 @@ fn text_field_limited(ui: &mut Ui, palette: &Palette, value: &mut String, limit:
     text_field_hint(ui, palette, value, limit, "")
 }
 
-fn text_field_hint(ui: &mut Ui, palette: &Palette, value: &mut String, limit: usize, hint: &str) -> egui::Response {
+pub(crate) fn text_field_hint(ui: &mut Ui, palette: &Palette, value: &mut String, limit: usize, hint: &str) -> egui::Response {
     let shown = Frame::new().fill(palette.rail).corner_radius(CornerRadius::same(4)).inner_margin(Margin::symmetric(10, 9)).show(ui, |ui| {
         ui.add(
             egui::TextEdit::singleline(value)

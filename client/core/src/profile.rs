@@ -16,6 +16,7 @@ use crate::text::{clean_name, encode_base64, random_hex, truncate_utf16};
 const MAX_RECENT_AVATARS: usize = 6;
 const MAX_BIO_LENGTH: usize = 190;
 const MAX_BIO_LINES: usize = 6;
+const MAX_PRONOUNS_LENGTH: usize = 40;
 
 static HEX_PATTERN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^#[0-9a-f]{6}$").unwrap());
 
@@ -42,12 +43,15 @@ pub struct Style {
     pub name: Option<NameStyle>,
     pub theme: Option<Vec<String>>,
     pub bio: String,
+    /// How the person wants to be called, as "ela/dela", on one short line.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pronouns: String,
 }
 
 impl Style {
     /// Whether there is anything in it worth announcing.
     pub fn is_set(&self) -> bool {
-        self.name.is_some() || self.theme.is_some() || !self.bio.is_empty()
+        self.name.is_some() || self.theme.is_some() || !self.bio.is_empty() || !self.pronouns.is_empty()
     }
 }
 
@@ -70,6 +74,12 @@ fn clean_bio(value: Option<&Value>) -> String {
     truncate_utf16(&lines, MAX_BIO_LENGTH).trim().to_owned()
 }
 
+fn clean_pronouns(value: Option<&Value>) -> String {
+    let text = value.and_then(Value::as_str).unwrap_or_default();
+    let line = text.lines().next().unwrap_or_default();
+    truncate_utf16(line.trim(), MAX_PRONOUNS_LENGTH).trim().to_owned()
+}
+
 pub fn clean_style(candidate: Option<&Value>) -> Style {
     let source = candidate.filter(|value| value.is_object());
     let wanted = source.and_then(|source| source.get("name")).filter(|value| value.is_object());
@@ -84,6 +94,7 @@ pub fn clean_style(candidate: Option<&Value>) -> Style {
         name,
         theme: (theme.len() == 2).then_some(theme),
         bio: clean_bio(source.and_then(|source| source.get("bio"))),
+        pronouns: clean_pronouns(source.and_then(|source| source.get("pronouns"))),
     }
 }
 
@@ -306,6 +317,10 @@ mod tests {
         assert!(name_of(json!({ "name": { "effect": "constructor", "colors": ["#ff0000"] } })).is_none());
         assert!(name_of(json!({ "name": "gradient" })).is_none());
         assert!(clean_style(Some(&json!({ "theme": ["#111111"] }))).theme.is_none());
+        // The pronouns are one short line.
+        let pronouns = clean_style(Some(&json!({ "pronouns": "  ela/dela\nmais nada  " }))).pronouns;
+        assert_eq!(pronouns, "ela/dela");
+        assert_eq!(clean_style(Some(&json!({ "pronouns": "x".repeat(80) }))).pronouns.len(), 40);
         assert!(clean_style(Some(&json!({ "theme": ["#111111", "url(x)"] }))).theme.is_none());
         let theme = clean_style(Some(&json!({ "theme": ["#111111", "#222222", "#333333"] }))).theme;
         assert_eq!(theme, Some(colors(&["#111111", "#222222"])));

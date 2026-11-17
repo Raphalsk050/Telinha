@@ -226,6 +226,9 @@ fn the_glass_theme_draws() {
     shoot(&mut scene, "glass-pins");
     scene.app.pins_for_test(false);
     scene.app.open_settings();
+    scene.app.profile_draft_for_test(Some(("Raphalsk", "ele/dele")));
+    shoot(&mut scene, "glass-settings-profile");
+    scene.app.profile_draft_for_test(None);
     scene.app.settings_page_for_test(telinha::settings::Page::Appearance);
     shoot(&mut scene, "glass-settings");
     scene.app.scroll_settings_for_test(560.0);
@@ -340,6 +343,12 @@ fn the_window_draws() {
     }
     scene.app.open_settings();
     shoot(&mut scene, "settings");
+    // A change not saved brings up the bar that saves or undoes it.
+    scene.app.profile_draft_for_test(Some(("Rapha", "ele/dele")));
+    shoot(&mut scene, "settings-unsaved");
+    scene.app.scroll_settings_for_test(420.0);
+    shoot(&mut scene, "settings-profile-2");
+    scene.app.profile_draft_for_test(None);
     scene.app.open_avatar_picker();
     shoot(&mut scene, "avatar-picker");
     scene.app.close_avatar_picker();

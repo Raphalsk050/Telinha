@@ -1325,6 +1325,21 @@ impl TelinhaApp {
         }
     }
 
+    /// Changes the profile without saving, or undoes it, with the name it had. For the tests.
+    pub fn profile_draft_for_test(&mut self, draft: Option<(&str, &str)>) {
+        let name = self.hub.profile_name();
+        if let Some(settings) = &mut self.settings {
+            match draft {
+                Some(draft) => settings.profile_draft_for_test(Some(draft)),
+                None => {
+                    // The name back as it is saved, and the style as it was saved.
+                    settings.profile_draft_for_test(Some((&name, "")));
+                    settings.profile_draft_for_test(None);
+                }
+            }
+        }
+    }
+
     pub fn scroll_settings_for_test(&mut self, offset: f32) {
         if let Some(settings) = &mut self.settings {
             settings.scroll_for_test(offset);

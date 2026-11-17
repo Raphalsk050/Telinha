@@ -7,8 +7,8 @@ use telinha_core::avatars::MAX_AVATAR_BYTES;
 use telinha_core::profile::{NameStyle, Style};
 
 use crate::appearance::{Appearance, COLOR_THEMES, CustomTheme, Density, GlassLook, Gradient, MAX_CUSTOM_COLORS, MessageStyle, ThemeChoice};
-use crate::dialogs::{Tone, button, text_field};
-use crate::name_style::{CARD_WIDTH, CardFace, card_ui, parse_color, write_color};
+use crate::dialogs::{Tone, button, text_field_hint};
+use crate::name_style::{CARD_WIDTH, CardFace, card_spots, parse_color, write_color};
 use crate::theme::{self, Palette, ThemeName};
 use crate::widgets;
 
@@ -47,9 +47,16 @@ pub struct Settings {
     inputs: Vec<String>,
     outputs: Vec<String>,
     cameras: Vec<String>,
-    /// The style of the profile as the person is changing it, and when it gets saved.
+    /// The style of the profile as the person is changing it, and as it was saved last.
     style: Style,
-    style_due: Option<f64>,
+    saved_style: Style,
+    /// When the person last tried to leave with changes not saved, to shake the bar.
+    refused_at: Option<f64>,
+    /// Whether leaving the page is refused now, and the clock of this frame.
+    blocked: bool,
+    now: f64,
+    /// When the page shown was opened, for its entrance.
+    page_opened: Option<f64>,
     /// The size while its slider is being dragged. It only takes hold when let go.
     zoom_drag: Option<f32>,
     /// How far down the page is scrolled, when a test wants a part further down.
@@ -90,7 +97,8 @@ pub struct SettingsView<'a> {
 const EFFECTS: [(&str, &str, usize, usize); 5] = [("", "Nenhum", 0, 0), ("solid", "Sólido", 1, 1), ("gradient", "Degradê", 2, 2), ("neon", "Neon", 1, 1), ("prism", "Prisma", 2, 5)];
 const DEFAULT_COLORS: [&str; 5] = ["#5865f2", "#eb459e", "#19b8b0", "#f0b232", "#23a55a"];
 /// How long after the last change the style is saved and told to everyone.
-const STYLE_DELAY: f64 = 0.4;
+/// The longest "about me", as the profile keeps it.
+const BIO_LIMIT: usize = 190;
 /// The width of what a page holds, and the room on each side of it.
 /// The width of the content of a page, and the room at its right where the scroll bar runs.
 const WIDTH: f32 = 656.0;
@@ -144,7 +152,7 @@ fn chip(ui: &mut Ui, palette: &Palette, label: &str, chosen: bool) -> bool {
 pub(crate) fn chip_button(ui: &mut Ui, palette: &Palette, label: &str, chosen: bool) -> egui::Response {
     let ink = if chosen { Color32::WHITE } else { palette.text };
     let galley = ui.painter().layout_no_wrap(label.to_owned(), FontId::new(14.0, theme::semibold()), ink);
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(galley.size().x + 24.0, 32.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(galley.size().x + 20.0, 32.0), Sense::click());
     let fill = if chosen { palette.accent } else if response.hovered() { palette.selected } else { palette.panel };
     ui.painter().rect_filled(rect, CornerRadius::same(4), fill);
     ui.painter().galley(rect.center() - galley.size() / 2.0, galley, ink);
@@ -421,7 +429,21 @@ fn random_color(light: bool) -> Color32 {
 
 impl Settings {
     pub fn new(name: &str, inputs: Vec<String>, outputs: Vec<String>, cameras: Vec<String>, style: Style) -> Self {
-        Self { name: name.to_owned(), inputs, outputs, cameras, style, style_due: None, zoom_drag: None, scroll_to: None, page: Page::default() }
+        Self {
+            name: name.to_owned(),
+            inputs,
+            outputs,
+            cameras,
+            saved_style: style.clone(),
+            style,
+            refused_at: None,
+            blocked: false,
+            now: 0.0,
+            page_opened: None,
+            zoom_drag: None,
+            scroll_to: None,
+            page: Page::default(),
+        }
     }
 
     /// Shows this page, from its top. For the tests.
@@ -434,110 +456,276 @@ impl Settings {
         self.page
     }
 
+    /// Changes the name and the pronouns without saving, or undoes the changes. For the tests.
+    pub fn profile_draft_for_test(&mut self, draft: Option<(&str, &str)>) {
+        match draft {
+            Some((name, pronouns)) => {
+                self.name = name.to_owned();
+                self.style.pronouns = pronouns.to_owned();
+            }
+            None => self.style = self.saved_style.clone(),
+        }
+    }
+
     /// Shows the window scrolled this far down. For the tests.
     pub fn scroll_for_test(&mut self, offset: f32) {
         self.scroll_to = Some(offset);
     }
 
-    /// The effect of the name, the colors of the card, the banner and the "about me", with the
-    /// card as others see it on the right. True when the style changed.
-    fn style_editor(&mut self, ui: &mut Ui, palette: &Palette, view: &mut SettingsView<'_>, actions: &mut Vec<SettingsAction>) -> bool {
-        let mut changed = false;
-        ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = 16.0;
-            ui.vertical(|ui| {
-                ui.set_width(WIDTH - CARD_WIDTH - 16.0);
-                ui.spacing_mut().item_spacing.y = 10.0;
-                let current = self.style.name.as_ref().map_or("", |name| name.effect.as_str()).to_owned();
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    for (effect, label, least, most) in EFFECTS {
-                        if chip(ui, palette, label, current == effect) && current != effect {
-                            changed = true;
-                            self.style.name = (!effect.is_empty()).then(|| {
-                                let before = self.style.name.as_ref().map_or_else(Vec::new, |name| name.colors.clone());
-                                let count = before.len().clamp(least, most);
-                                let colors = before.into_iter().chain(DEFAULT_COLORS.iter().map(|color| (*color).to_owned())).take(count).collect();
-                                NameStyle { effect: effect.to_owned(), colors }
-                            });
-                        }
-                    }
-                });
-                if let Some(name) = &mut self.style.name {
-                    let (least, most) = EFFECTS.iter().find(|(effect, ..)| *effect == name.effect).map_or((1, 1), |(_, _, least, most)| (*least, *most));
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        let removable = name.colors.len() > least;
-                        let mut remove = None;
-                        for (index, text) in name.colors.iter_mut().enumerate() {
-                            let mut color = parse_color(text).unwrap_or(Color32::GRAY);
-                            let (edited, removed) = swatch(ui, palette, &mut color, removable);
-                            if edited {
-                                *text = write_color(color);
-                                changed = true;
-                            }
-                            if removed {
-                                remove = Some(index);
-                            }
-                        }
-                        if let Some(index) = remove {
-                            name.colors.remove(index);
-                            changed = true;
-                        }
-                        if name.colors.len() < most && small_button(ui, palette, "Adicionar cor") {
-                            name.colors.push(DEFAULT_COLORS[name.colors.len() % DEFAULT_COLORS.len()].to_owned());
-                            changed = true;
-                        }
-                    });
-                }
-                let themed = self.style.theme.is_some();
-                if check(ui, palette, themed, "Colorir meu cartão de perfil") {
-                    self.style.theme = (!themed).then(|| DEFAULT_COLORS[..2].iter().map(|color| (*color).to_owned()).collect());
-                    changed = true;
-                }
-                if let Some(colors) = &mut self.style.theme {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        for text in colors {
-                            let mut color = parse_color(text).unwrap_or(Color32::GRAY);
-                            if swatch(ui, palette, &mut color, false).0 {
-                                *text = write_color(color);
-                                changed = true;
-                            }
-                        }
-                    });
-                }
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    if small_button(ui, palette, "Mudar banner") {
-                        pick_picture(true, actions);
-                    }
-                    if view.banner.is_some() && crate::debug_view::ghost_button(ui, palette, "Remover banner").clicked() {
-                        actions.push(SettingsAction::RemovePicture { banner: true });
-                    }
-                });
-                let about = Frame::new().fill(palette.rail).corner_radius(CornerRadius::same(4)).inner_margin(Margin::symmetric(10, 8)).show(ui, |ui| {
-                    ui.add(
-                        egui::TextEdit::multiline(&mut self.style.bio)
-                            .frame(Frame::new())
-                            .font(FontId::proportional(15.0))
-                            .text_color(palette.text)
-                            .hint_text(RichText::new("Sobre mim").color(palette.muted))
-                            .char_limit(190)
-                            .desired_rows(3)
-                            .desired_width(ui.available_width()),
-                    )
-                });
-                changed |= about.inner.changed();
-                ui.label(RichText::new("Quem estiver em uma conversa com você vê seu nome e seu cartão assim.").color(palette.muted).size(13.0));
-            });
-            ui.vertical(|ui| {
-                ui.set_width(CARD_WIDTH);
-                let face = CardFace { name: view.name, activity: view.activity, style: Some(&self.style), avatar: view.avatar.clone(), banner: view.banner.clone(), online: true, edit: false, shadow: false };
-                card_ui(ui, palette, face);
-            });
+    /// Whether the name or the style were changed and not saved yet.
+    fn unsaved(&self, saved_name: &str) -> bool {
+        let name = self.name.trim();
+        (!name.is_empty() && name != saved_name) || self.style != self.saved_style
+    }
+
+    /// Saves the name and the style as they are now.
+    fn save_profile(&mut self, saved_name: &str, actions: &mut Vec<SettingsAction>) {
+        let name = self.name.trim().to_owned();
+        if !name.is_empty() && name != saved_name {
+            actions.push(SettingsAction::Name(name));
+        }
+        if self.style != self.saved_style {
+            if let Ok(style) = serde_json::to_value(&self.style) {
+                actions.push(SettingsAction::Style(style));
+            }
+            self.saved_style = self.style.clone();
+        }
+    }
+
+    /// The person tried to leave with changes not saved: the bar shakes and goes red, as Discord.
+    fn refuse_to_leave(&mut self, now: f64) {
+        self.refused_at = Some(now);
+    }
+
+    /// The form of the profile, in the column at the left of the preview: the name, the
+    /// pronouns, the pictures, the style of the name, the colors of the card and the "about me".
+    fn profile_form(&mut self, ui: &mut Ui, palette: &Palette, view: &SettingsView<'_>, actions: &mut Vec<SettingsAction>) {
+        let width = ui.available_width();
+        let label = field_title(ui, palette, "Nome de exibição", true);
+        ui.allocate_ui(Vec2::new(width, 38.0), |ui| text_field_hint(ui, palette, &mut self.name, 32, view.name).labelled_by(label.id));
+
+        let label = field_title(ui, palette, "Pronomes", false);
+        ui.allocate_ui(Vec2::new(width, 38.0), |ui| text_field_hint(ui, palette, &mut self.style.pronouns, 40, "Adicione seus pronomes").labelled_by(label.id));
+
+        field_title(ui, palette, "Avatar", false);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            if button(ui, palette, "Mudar avatar", Tone::Primary).clicked() {
+                actions.push(SettingsAction::AvatarPicker);
+            }
+            if view.avatar.is_some() && button(ui, palette, "Remover avatar", Tone::Ghost).clicked() {
+                actions.push(SettingsAction::RemovePicture { banner: false });
+            }
         });
-        changed
+
+        field_title(ui, palette, "Banner do perfil", false);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            if button(ui, palette, "Mudar banner", Tone::Primary).clicked() {
+                pick_picture(true, actions);
+            }
+            if view.banner.is_some() && button(ui, palette, "Remover banner", Tone::Ghost).clicked() {
+                actions.push(SettingsAction::RemovePicture { banner: true });
+            }
+        });
+
+        field_title(ui, palette, "Estilo do nome", false);
+        let current = self.style.name.as_ref().map_or("", |name| name.effect.as_str()).to_owned();
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(4.0, 6.0);
+            for (effect, label, least, most) in EFFECTS {
+                if chip(ui, palette, label, current == effect) && current != effect {
+                    self.style.name = (!effect.is_empty()).then(|| {
+                        let before = self.style.name.as_ref().map_or_else(Vec::new, |name| name.colors.clone());
+                        let count = before.len().clamp(least, most);
+                        let colors = before.into_iter().chain(DEFAULT_COLORS.iter().map(|color| (*color).to_owned())).take(count).collect();
+                        NameStyle { effect: effect.to_owned(), colors }
+                    });
+                }
+            }
+        });
+        if let Some(name) = &mut self.style.name {
+            ui.add_space(10.0);
+            let (least, most) = EFFECTS.iter().find(|(effect, ..)| *effect == name.effect).map_or((1, 1), |(_, _, least, most)| (*least, *most));
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+                let removable = name.colors.len() > least;
+                let mut remove = None;
+                for (index, text) in name.colors.iter_mut().enumerate() {
+                    let mut color = parse_color(text).unwrap_or(Color32::GRAY);
+                    let (edited, removed) = swatch(ui, palette, &mut color, removable);
+                    if edited {
+                        *text = write_color(color);
+                    }
+                    if removed {
+                        remove = Some(index);
+                    }
+                }
+                if let Some(index) = remove {
+                    name.colors.remove(index);
+                }
+                if name.colors.len() < most && small_button(ui, palette, "Adicionar cor") {
+                    name.colors.push(DEFAULT_COLORS[name.colors.len() % DEFAULT_COLORS.len()].to_owned());
+                }
+            });
+        }
+
+        ui.add_space(30.0);
+        let themed = self.style.theme.is_some();
+        if toggle_row(ui, palette, "Cor do perfil", "Duas cores fazem a moldura e o fundo do seu cartão.", themed) {
+            self.style.theme = (!themed).then(|| DEFAULT_COLORS[..2].iter().map(|color| (*color).to_owned()).collect());
+        }
+        if let Some(colors) = &mut self.style.theme {
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 20.0;
+                for (text, label) in colors.iter_mut().zip(["Principal", "Destaque"]) {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 6.0;
+                        let mut color = parse_color(text).unwrap_or(Color32::GRAY);
+                        if swatch(ui, palette, &mut color, false).0 {
+                            *text = write_color(color);
+                        }
+                        ui.label(RichText::new(label).color(palette.muted).size(12.0));
+                    });
+                }
+            });
+        }
+
+        let label = field_title(ui, palette, "Sobre mim", false);
+        ui.label(RichText::new("Conte um pouco de você. Até 190 caracteres e 6 linhas.").color(palette.muted).size(13.0));
+        ui.add_space(8.0);
+        let fill = if palette.glass { Color32::from_white_alpha(12) } else { palette.rail };
+        let about = Frame::new().fill(fill).corner_radius(CornerRadius::same(if palette.glass { 10 } else { 4 })).inner_margin(Margin::symmetric(10, 8)).show(ui, |ui| {
+            ui.add(
+                egui::TextEdit::multiline(&mut self.style.bio)
+                    .frame(Frame::new())
+                    .font(FontId::proportional(15.0))
+                    .text_color(palette.text)
+                    .hint_text(RichText::new("Sobre mim").color(palette.muted))
+                    .char_limit(BIO_LIMIT)
+                    .desired_rows(4)
+                    .desired_width(ui.available_width()),
+            )
+            .labelled_by(label.id)
+        });
+        if about.inner.has_focus() {
+            ui.painter().rect_stroke(about.response.rect, CornerRadius::same(if palette.glass { 10 } else { 4 }), Stroke::new(2.0, palette.accent), egui::StrokeKind::Outside);
+        }
+        let used = self.style.bio.chars().count();
+        ui.add_space(4.0);
+        ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+            let ink = if used + 10 >= BIO_LIMIT { palette.yellow } else { palette.muted };
+            ui.label(RichText::new(format!("{used}/{BIO_LIMIT}")).color(ink).size(12.0));
+        });
+        // Room for the bar of unsaved changes, which floats over the foot of the page.
+        ui.add_space(72.0);
+    }
+
+    /// The card as the others will see it, beside the form and always in sight. Hovering its
+    /// banner or its picture offers to change them, as Discord.
+    fn profile_preview(&mut self, ui: &mut Ui, palette: &Palette, view: &SettingsView<'_>, actions: &mut Vec<SettingsAction>) {
+        // It rises into place when the page opens.
+        let now = ui.input(|input| input.time);
+        let opened = *self.page_opened.get_or_insert(now);
+        let shown = ((now - opened) / 0.35).clamp(0.0, 1.0) as f32;
+        let shown = egui::emath::easing::cubic_out(shown);
+        if shown < 1.0 {
+            ui.ctx().request_repaint();
+        }
+        ui.multiply_opacity(shown);
+        ui.add_space(8.0 + (1.0 - shown) * 14.0);
+        ui.label(RichText::new("PRÉVIA").color(palette.muted).size(12.0).family(theme::bold()));
+        ui.add_space(10.0);
+        let name = if self.name.trim().is_empty() { view.name } else { self.name.trim() };
+        let face = CardFace { name, activity: view.activity, style: Some(&self.style), avatar: view.avatar.clone(), banner: view.banner.clone(), online: true, edit: false, shadow: true };
+        let spots = card_spots(ui, palette, face);
+        let banner = ui.interact(spots.banner, ui.scope_id().with("preview-banner"), Sense::click());
+        let portrait = ui.interact(spots.portrait, ui.scope_id().with("preview-portrait"), Sense::click());
+        // The picture sits over the banner, so the banner is not lit while the picture is.
+        let banner_lit = crate::motion::hover(ui.ctx(), banner.id, banner.hovered() && !portrait.hovered());
+        let portrait_lit = crate::motion::hover(ui.ctx(), portrait.id, portrait.hovered());
+        if banner_lit > 0.0 {
+            ui.painter().rect_filled(spots.banner, CornerRadius { nw: 11, ne: 11, sw: 0, se: 0 }, Color32::from_black_alpha((120.0 * banner_lit) as u8));
+            let at = egui::pos2(spots.banner.right() - 12.0, spots.banner.top() + 12.0);
+            ui.painter().text(at, egui::Align2::RIGHT_TOP, "Mudar banner", FontId::new(12.0, theme::bold()), Color32::WHITE.gamma_multiply(banner_lit));
+        }
+        if portrait_lit > 0.0 {
+            ui.painter().circle_filled(spots.portrait.center(), spots.portrait.width() / 2.0, Color32::from_black_alpha((140.0 * portrait_lit) as u8));
+            ui.painter().text(spots.portrait.center(), egui::Align2::CENTER_CENTER, "MUDAR", FontId::new(11.0, theme::bold()), Color32::WHITE.gamma_multiply(portrait_lit));
+        }
+        if portrait.on_hover_text("Mudar avatar").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            actions.push(SettingsAction::AvatarPicker);
+        } else if banner.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            pick_picture(true, actions);
+        }
+        ui.add_space(12.0);
+        ui.add(egui::Label::new(RichText::new("Quem estiver em uma conversa com você vê seu nome e seu cartão assim.").color(palette.muted).size(12.0)).wrap());
+    }
+
+    /// The bar that rises from the foot of the page while there are changes not saved, with the
+    /// way to undo them and to save them. It shakes and goes red when the person tries to leave.
+    fn unsaved_bar(&mut self, ui: &mut Ui, palette: &Palette, page: Rect, view: &SettingsView<'_>, actions: &mut Vec<SettingsAction>) {
+        let pending = self.unsaved(view.name);
+        let rise = crate::motion::ease(ui.ctx(), ui.scope_id().with("unsaved-bar"), pending, crate::motion::OPEN);
+        if rise <= 0.0 {
+            self.refused_at = None;
+            return;
+        }
+        let now = ui.input(|input| input.time);
+        let refused = self.refused_at.map_or(0.0, |at| (now - at) as f32);
+        let (shake, alarm) = if self.refused_at.is_some() && refused < 0.9 {
+            ui.ctx().request_repaint();
+            let fade = 1.0 - refused / 0.9;
+            ((refused * 48.0).sin() * 9.0 * fade.min(1.0), fade)
+        } else {
+            (0.0, 0.0)
+        };
+        let height = 56.0;
+        let rect = Rect::from_min_size(egui::pos2(page.left() + shake, page.bottom() - 16.0 - height + (1.0 - rise) * (height + 24.0)), Vec2::new(page.width(), height));
+        let painter = ui.painter().with_clip_rect(page.expand2(Vec2::new(12.0, 0.0)));
+        let round = CornerRadius::same(if palette.glass { 14 } else { 8 });
+        let base = if palette.glass { Color32::from_rgb(22, 23, 36) } else if palette.dark { Color32::from_rgb(17, 18, 20) } else { palette.float };
+        let fill = crate::motion::mix(base, palette.danger, alarm).gamma_multiply(rise);
+        painter.add(egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha((110.0 * rise) as u8) }.as_shape(rect, round));
+        painter.rect_filled(rect, round, fill);
+        if palette.glass {
+            painter.rect_stroke(rect, round, Stroke::new(1.0, crate::glass::EDGE.gamma_multiply(rise)), egui::StrokeKind::Inside);
+        }
+        let ink = if palette.dark || palette.glass || alarm > 0.0 { Color32::WHITE } else { palette.strong };
+        painter.text(rect.left_center() + Vec2::new(18.0, 0.0), egui::Align2::LEFT_CENTER, "Cuidado — você tem alterações que não foram salvas!", FontId::new(14.0, theme::semibold()), ink.gamma_multiply(rise));
+
+        let save_galley = painter.layout_no_wrap("Salvar alterações".to_owned(), FontId::new(14.0, theme::semibold()), Color32::WHITE);
+        let save = Rect::from_min_size(egui::pos2(rect.right() - 12.0 - save_galley.size().x - 32.0, rect.center().y - 16.0), Vec2::new(save_galley.size().x + 32.0, 32.0));
+        let save_response = ui.interact(save, ui.scope_id().with("unsaved-save"), Sense::click());
+        let save_lit = crate::motion::hover(ui.ctx(), save_response.id, save_response.hovered());
+        let green = Color32::from_rgb(0x24, 0x80, 0x46);
+        painter.rect_filled(save, CornerRadius::same(if palette.glass { 10 } else { 4 }), crate::motion::mix(green, Color32::from_rgb(0x1a, 0x65, 0x34), save_lit).gamma_multiply(rise));
+        painter.galley_with_override_text_color(save.center() - save_galley.size() / 2.0, save_galley, Color32::WHITE.gamma_multiply(rise));
+
+        let undo_galley = painter.layout_no_wrap("Redefinir".to_owned(), FontId::new(14.0, theme::semibold()), ink);
+        let undo = Rect::from_min_size(egui::pos2(save.left() - 12.0 - undo_galley.size().x - 16.0, rect.center().y - 16.0), Vec2::new(undo_galley.size().x + 16.0, 32.0));
+        let undo_response = ui.interact(undo, ui.scope_id().with("unsaved-undo"), Sense::click());
+        let underline = undo_response.hovered();
+        let text_at = undo.center() - undo_galley.size() / 2.0;
+        let text_width = undo_galley.size().x;
+        let text_height = undo_galley.size().y;
+        painter.galley_with_override_text_color(text_at, undo_galley, ink.gamma_multiply(rise));
+        if underline {
+            painter.hline(text_at.x..=text_at.x + text_width, text_at.y + text_height, Stroke::new(1.0, ink.gamma_multiply(rise)));
+        }
+        if !pending {
+            return;
+        }
+        if save_response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            self.save_profile(view.name, actions);
+            self.refused_at = None;
+        }
+        if undo_response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            self.name = view.name.to_owned();
+            self.style = self.saved_style.clone();
+            self.refused_at = None;
+        }
     }
 
     /// The gradient the person makes themself: its base, its colors, its direction and how
@@ -587,10 +775,12 @@ impl Settings {
     }
 
     /// Draws the window. The second value is false when the person closed it.
-    pub fn show(&mut self, context: &egui::Context, palette: &Palette, mut view: SettingsView<'_>) -> (Vec<SettingsAction>, bool) {
+    pub fn show(&mut self, context: &egui::Context, palette: &Palette, view: SettingsView<'_>) -> (Vec<SettingsAction>, bool) {
         let mut actions = Vec::new();
         let mut open = true;
         let mut look = view.appearance.clone();
+        self.now = context.input(|input| input.time);
+        self.blocked = self.unsaved(view.name);
         let screen = context.content_rect();
         let height = (screen.height() - 48.0).clamp(400.0, 860.0);
         // On glass the window is a glass panel, and what is behind it goes dark and soft, as
@@ -622,39 +812,27 @@ impl Settings {
                     if let Some(offset) = self.scroll_to {
                         area = area.vertical_scroll_offset(offset);
                     }
+                    if self.page == Page::Profile {
+                        // The form scrolls at the left; the preview stays in sight at the right.
+                        let page = Rect::from_min_size(ui.cursor().min, Vec2::new(inner.width(), room));
+                        let form_width = page.width() - CARD_WIDTH - 28.0;
+                        let form_rect = Rect::from_min_size(page.min, Vec2::new(form_width + 16.0, room));
+                        let mut form = ui.new_child(egui::UiBuilder::new().max_rect(form_rect).layout(Layout::top_down(Align::Min)));
+                        area.show(&mut form, |ui| {
+                            ui.set_width(form_width);
+                            self.profile_form(ui, palette, &view, &mut actions);
+                        });
+                        let preview_rect = Rect::from_min_size(egui::pos2(page.right() - CARD_WIDTH, page.top()), Vec2::new(CARD_WIDTH, room));
+                        let mut preview = ui.new_child(egui::UiBuilder::new().max_rect(preview_rect).layout(Layout::top_down(Align::Min)));
+                        self.profile_preview(&mut preview, palette, &view, &mut actions);
+                        ui.allocate_rect(page, Sense::hover());
+                        self.unsaved_bar(ui, palette, page.with_max_y(page.bottom() + 16.0), &view, &mut actions);
+                        return;
+                    }
                     area.show(ui, |ui| {
                         ui.set_width(WIDTH);
                         match self.page {
-                            Page::Profile => {
-                                section(ui, palette, "AVATAR", true);
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 12.0;
-                                    let has_avatar = view.avatar.is_some();
-                                    widgets::avatar(ui, 72.0, view.name, view.avatar.clone());
-                                    if button(ui, palette, "Mudar avatar", Tone::Primary).clicked() {
-                                        actions.push(SettingsAction::AvatarPicker);
-                                    }
-                                    if has_avatar && button(ui, palette, "Remover avatar", Tone::Ghost).clicked() {
-                                        actions.push(SettingsAction::RemovePicture { banner: false });
-                                    }
-                                });
-
-                                let label = section(ui, palette, "SEU NOME", false);
-                                ui.horizontal(|ui| {
-                                    ui.allocate_ui(Vec2::new(WIDTH - 82.0, 38.0), |ui| text_field(ui, palette, &mut self.name).labelled_by(label.id));
-                                    if button(ui, palette, "Salvar", Tone::Primary).clicked() && !self.name.trim().is_empty() && self.name.trim() != view.name {
-                                        actions.push(SettingsAction::Name(self.name.trim().to_owned()));
-                                    }
-                                });
-
-                                section(ui, palette, "ESTILO DO NOME", false);
-                                if self.style_editor(ui, palette, &mut view, &mut actions) {
-                                    let now = ui.input(|input| input.time);
-                                    self.style_due = Some(now + STYLE_DELAY);
-                                    ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(STYLE_DELAY));
-                                }
-
-                            }
+                            Page::Profile => {}
                             Page::Voice => {
                                 section(ui, palette, "VOZ", true);
                                 ui.horizontal(|ui| {
@@ -857,16 +1035,13 @@ impl Settings {
         if response.should_close() {
             open = false;
         }
+        // Changes not saved keep the window open until they are saved or undone, as Discord.
+        if !open && self.unsaved(view.name) {
+            open = true;
+            self.refuse_to_leave(self.now);
+        }
         if look != *view.appearance {
             actions.push(SettingsAction::Appearance(Box::new(look)));
-        }
-        // The style is saved a moment after the last change, or at once when the window closes.
-        let now = context.input(|input| input.time);
-        if self.style_due.is_some_and(|due| now >= due || !open) {
-            self.style_due = None;
-            if let Ok(style) = serde_json::to_value(&self.style) {
-                actions.push(SettingsAction::Style(style));
-            }
         }
         (actions, open)
     }
@@ -923,8 +1098,16 @@ impl Settings {
     }
 
     fn go_to(&mut self, page: Page) {
+        if page == self.page {
+            return;
+        }
+        if self.blocked {
+            self.refuse_to_leave(self.now);
+            return;
+        }
         self.page = page;
         self.scroll_to = None;
+        self.page_opened = None;
     }
 
     /// The version, the button that looks for a new one now, and the log of errors.
@@ -1015,6 +1198,14 @@ fn section_with(ui: &mut Ui, palette: &Palette, title: &str, first: bool, button
         .inner;
     ui.add_space(14.0);
     (response, clicked)
+}
+
+/// The name of a field of the profile, as Discord's editor: no rule between them, room above.
+fn field_title(ui: &mut Ui, palette: &Palette, title: &str, first: bool) -> egui::Response {
+    ui.add_space(if first { 8.0 } else { 30.0 });
+    let response = ui.label(RichText::new(title).color(palette.strong).size(15.0).family(theme::semibold()));
+    ui.add_space(10.0);
+    response
 }
 
 /// "TEMAS COLORIDOS" as "Temas coloridos".

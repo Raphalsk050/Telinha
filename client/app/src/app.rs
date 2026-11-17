@@ -931,6 +931,13 @@ impl TelinhaApp {
             input: self.prefs.input_device.clone(),
             output: self.prefs.output_device.clone(),
         });
+        telinha_voice::audio::set_sensitivity(self.prefs.sensitivity_auto, self.prefs.sensitivity_db);
+    }
+
+    /// Sets the input sensitivity as the settings would, for the pictures of the tests.
+    pub fn sensitivity_for_test(&mut self, auto: bool, threshold: f32) {
+        self.prefs.sensitivity_auto = auto;
+        self.prefs.sensitivity_db = threshold;
     }
 
     pub fn open_settings(&mut self) {
@@ -1108,7 +1115,9 @@ impl TelinhaApp {
         let appearance = self.prefs.appearance.clone();
         self.check_preview();
         let mic_level = self.mic_test.as_ref().map_or(0.0, telinha_voice::audio::MicTest::level);
-        let mic_status = self.mic_test.as_ref().and_then(telinha_voice::audio::MicTest::problem).unwrap_or_else(|| "Fale alguma coisa: a barra verde mostra o volume que chega do microfone.".to_owned());
+        let mic_db = self.mic_test.as_ref().map_or(*telinha_voice::audio::SENSITIVITY_RANGE.start(), telinha_voice::audio::MicTest::decibels);
+        let (gate_open, gate_threshold) = self.mic_test.as_ref().map_or((false, -50.0), telinha_voice::audio::MicTest::gate);
+        let mic_status = self.mic_test.as_ref().and_then(telinha_voice::audio::MicTest::problem).unwrap_or_else(|| "".to_owned());
         if self.mic_test.is_some() {
             // The bar moves as `startMicTest` moved it, every 80 milliseconds.
             context.request_repaint_after(std::time::Duration::from_millis(80));
@@ -1136,6 +1145,11 @@ impl TelinhaApp {
             output: devices.1.as_deref(),
             mic_level,
             mic_status: &mic_status,
+            mic_db,
+            gate_open,
+            gate_threshold,
+            sensitivity_auto: self.prefs.sensitivity_auto,
+            sensitivity_db: self.prefs.sensitivity_db,
             camera: camera.as_deref(),
             blur: self.prefs.blur,
             previewing: self.previewing,
@@ -1179,6 +1193,13 @@ impl TelinhaApp {
                     if self.mic_test.take().is_some() {
                         self.mic_test = Some(telinha_voice::audio::MicTest::start());
                     }
+                }
+                SettingsAction::Sensitivity { auto, threshold } => {
+                    // The gate reads it on its next piece of sound: the call goes on as it is.
+                    self.prefs.sensitivity_auto = auto;
+                    self.prefs.sensitivity_db = threshold;
+                    self.prefs.save();
+                    telinha_voice::audio::set_sensitivity(auto, threshold);
                 }
                 SettingsAction::Camera(camera) => {
                     self.prefs.camera = camera;

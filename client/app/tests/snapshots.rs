@@ -213,6 +213,11 @@ fn the_glass_theme_draws() {
     scene.app.open_settings();
     scene.app.settings_page_for_test(telinha::settings::Page::Appearance);
     shoot(&mut scene, "glass-settings");
+    scene.app.settings_page_for_test(telinha::settings::Page::Voice);
+    shoot(&mut scene, "glass-voice-settings");
+    scene.app.sensitivity_for_test(false, -45.0);
+    shoot(&mut scene, "glass-voice-manual");
+    scene.app.sensitivity_for_test(true, -50.0);
     scene.app.close_settings();
     let voice = scene.voice_channel.clone();
     scene.app.navigate(Nav::Server { server_id: scene.server_id.clone(), channel_id: Some(voice) });

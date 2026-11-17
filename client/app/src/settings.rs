@@ -26,6 +26,8 @@ pub enum SettingsAction {
     Style(serde_json::Value),
     /// The microphone and the speakers to use. None is the default of Windows.
     Devices { input: Option<String>, output: Option<String> },
+    /// The input sensitivity: automatic, or where the gate opens, in decibels.
+    Sensitivity { auto: bool, threshold: f32 },
     /// The camera to use, by name. None is the first one found.
     Camera(Option<String>),
     Blur(bool),
@@ -66,6 +68,13 @@ pub struct SettingsView<'a> {
     /// How loud the microphone is now, from 0 to 1, and the line under the bar.
     pub mic_level: f32,
     pub mic_status: &'a str,
+    /// How loud the microphone is in decibels, whether that is sent now, and where the gate
+    /// opens; then the sensitivity chosen.
+    pub mic_db: f32,
+    pub gate_open: bool,
+    pub gate_threshold: f32,
+    pub sensitivity_auto: bool,
+    pub sensitivity_db: f32,
     pub camera: Option<&'a str>,
     pub blur: bool,
     /// Whether the camera is being tested, and its last frame.
@@ -158,6 +167,85 @@ fn check(ui: &mut Ui, palette: &Palette, on: bool, label: &str) -> bool {
     }
     ui.painter().galley(egui::pos2(rect.left() + 28.0, rect.center().y - galley.size().y / 2.0), galley, palette.text);
     response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+}
+
+/// A row as Discord draws its choices: the name in bold, a line under it that explains, and a
+/// switch at the right edge that slides. True when it was clicked.
+pub(crate) fn toggle_row(ui: &mut Ui, palette: &Palette, title: &str, note: &str, on: bool) -> bool {
+    let width = ui.available_width().min(WIDTH);
+    let text_width = width - 64.0;
+    let title_galley = ui.painter().layout(title.to_owned(), FontId::new(15.0, theme::semibold()), palette.strong, text_width);
+    let note_galley = (!note.is_empty()).then(|| ui.painter().layout(note.to_owned(), FontId::proportional(13.0), palette.muted, text_width));
+    let height = title_galley.size().y + note_galley.as_ref().map_or(0.0, |galley| 4.0 + galley.size().y);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height.max(24.0)), Sense::click());
+    ui.painter().galley(rect.left_top(), title_galley.clone(), palette.strong);
+    if let Some(galley) = note_galley {
+        ui.painter().galley(rect.left_top() + Vec2::new(0.0, title_galley.size().y + 4.0), galley, palette.muted);
+    }
+    let track = Rect::from_center_size(egui::pos2(rect.right() - 20.0, rect.top() + title_galley.size().y / 2.0 + 1.0), Vec2::new(40.0, 24.0));
+    paint_switch(ui, palette, response.id, track, on, response.hovered());
+    response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+}
+
+/// The switch of a [`toggle_row`]: the knob slides and the track takes the accent, eased.
+pub(crate) fn paint_switch(ui: &Ui, palette: &Palette, id: egui::Id, track: Rect, on: bool, hovered: bool) {
+    let t = crate::motion::ease(ui.ctx(), id.with("switch"), on, crate::motion::STATE);
+    let lit = crate::motion::hover(ui.ctx(), id, hovered);
+    let off = if palette.dark { Color32::from_rgb(0x4e, 0x50, 0x58) } else { Color32::from_rgb(0x80, 0x84, 0x8e) };
+    let fill = crate::motion::mix(off, palette.accent, t);
+    ui.painter().rect_filled(track, CornerRadius::same(12), crate::motion::mix(fill, Color32::WHITE, 0.08 * lit));
+    let x = crate::motion::lerp(track.left() + 12.0, track.right() - 12.0, t);
+    ui.painter().circle_filled(egui::pos2(x, track.center().y), 9.0, Color32::WHITE);
+}
+
+/// The bar of the input sensitivity, as Discord draws it: yellow up to where the gate opens and
+/// green after it, with how loud the microphone is now lit over it. With `manual` the mark can be
+/// dragged, and the new place comes back, in decibels.
+fn sensitivity_bar(ui: &mut Ui, palette: &Palette, view: &SettingsView) -> Option<f32> {
+    let width = ui.available_width().min(WIDTH);
+    let (slot, response) = ui.allocate_exact_size(Vec2::new(width, 24.0), if view.sensitivity_auto { Sense::hover() } else { Sense::click_and_drag() });
+    // Level with the text above it; the knob may stand out of the ends.
+    let bar = Rect::from_center_size(slot.center(), Vec2::new(width - 4.0, 8.0));
+    let (low, high) = (*telinha_voice::audio::SENSITIVITY_RANGE.start(), *telinha_voice::audio::SENSITIVITY_RANGE.end());
+    let x_of = |db: f32| bar.left() + bar.width() * ((db - low) / (high - low)).clamp(0.0, 1.0);
+    let threshold = if view.sensitivity_auto { view.gate_threshold } else { view.sensitivity_db };
+    let mark = x_of(threshold);
+    let yellow = Color32::from_rgb(0xf0, 0xb2, 0x32);
+    let green = palette.green;
+    let round = CornerRadius::same(4);
+    let painter = ui.painter();
+    if view.sensitivity_auto {
+        // Automatic: the level alone, green while the voice goes out.
+        painter.rect_filled(bar, round, if palette.glass { Color32::from_white_alpha(26) } else { palette.rail });
+    } else {
+        painter.with_clip_rect(Rect::from_min_max(bar.min, egui::pos2(mark, bar.max.y))).rect_filled(bar, round, yellow.gamma_multiply(0.35));
+        painter.with_clip_rect(Rect::from_min_max(egui::pos2(mark, bar.min.y), bar.max)).rect_filled(bar, round, green.gamma_multiply(0.35));
+    }
+    let level = ui.ctx().animate_value_with_time(response.id.with("level"), x_of(view.mic_db), 0.08);
+    if level > bar.left() + 0.5 {
+        let lit = Rect::from_min_max(bar.min, egui::pos2(level, bar.max.y));
+        if view.sensitivity_auto {
+            let color = if view.gate_open { green } else { palette.muted };
+            painter.with_clip_rect(lit).rect_filled(bar, round, color);
+        } else {
+            painter.with_clip_rect(lit.intersect(Rect::from_min_max(bar.min, egui::pos2(mark, bar.max.y)))).rect_filled(bar, round, yellow);
+            painter.with_clip_rect(lit.intersect(Rect::from_min_max(egui::pos2(mark, bar.min.y), bar.max))).rect_filled(bar, round, green);
+        }
+    }
+    if view.sensitivity_auto {
+        return None;
+    }
+    let lit = crate::motion::hover(ui.ctx(), response.id, response.hovered() || response.dragged());
+    let knob = egui::pos2(mark, bar.center().y);
+    ui.painter().circle_filled(knob, crate::motion::lerp(8.0, 9.5, lit), Color32::WHITE);
+    ui.painter().circle_stroke(knob, crate::motion::lerp(8.0, 9.5, lit), Stroke::new(1.0, Color32::from_black_alpha(40)));
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(format!("{threshold:.0} dB"));
+    if response.dragged() || response.clicked() {
+        let x = response.interact_pointer_pos()?.x;
+        let db = low + (high - low) * ((x - bar.left()) / bar.width()).clamp(0.0, 1.0);
+        return Some(db.round());
+    }
+    None
 }
 
 /// A square of a color that opens a picker, with a small cross to take the color away when it
@@ -565,17 +653,26 @@ impl Settings {
                                         actions.push(SettingsAction::Devices { input: view.input.map(str::to_owned), output });
                                     }
                                 });
-                                // As `.meter`: the green bar of how loud the microphone is.
-                                ui.add_space(2.0);
-                                let (bar, _) = ui.allocate_exact_size(Vec2::new(WIDTH, 8.0), Sense::hover());
-                                ui.painter().rect_filled(bar, CornerRadius::same(4), palette.rail);
-                                let level = view.mic_level.clamp(0.0, 1.0);
-                                if level > 0.0 {
-                                    let fill = Rect::from_min_size(bar.min, Vec2::new(bar.width() * level, bar.height()));
-                                    ui.painter().with_clip_rect(fill).rect_filled(bar, CornerRadius::same(4), palette.green);
+                                // The input sensitivity, as Discord lays it out: the switch of the automatic
+                                // mode, then the bar where the gate opens with the voice lit over it.
+                                ui.add_space(24.0);
+                                if toggle_row(ui, palette, "Ajustar automaticamente a sensibilidade de entrada", "Controla quanto som o Telinha transmite do seu microfone.", view.sensitivity_auto) {
+                                    actions.push(SettingsAction::Sensitivity { auto: !view.sensitivity_auto, threshold: view.sensitivity_db });
                                 }
+                                ui.add_space(12.0);
+                                if let Some(threshold) = sensitivity_bar(ui, palette, &view) {
+                                    actions.push(SettingsAction::Sensitivity { auto: false, threshold });
+                                }
+                                ui.add_space(8.0);
+                                let note = if view.sensitivity_auto {
+                                    "A barra fica verde quando a sua voz está sendo transmitida, e o anel verde em volta da sua foto acende junto."
+                                } else {
+                                    "Só o que passa da marca é transmitido: o amarelo fica de fora, o verde vai para a chamada e acende o anel em volta da sua foto."
+                                };
+                                ui.add(egui::Label::new(RichText::new(note).color(palette.muted).size(13.0)).wrap());
                                 if !view.mic_status.is_empty() {
-                                    ui.label(RichText::new(view.mic_status).color(palette.muted).size(13.0));
+                                    ui.add_space(4.0);
+                                    ui.add(egui::Label::new(RichText::new(view.mic_status).color(palette.muted).size(13.0)).wrap());
                                 }
 
                                 section(ui, palette, "VÍDEO", false);

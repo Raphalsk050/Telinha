@@ -35,8 +35,12 @@ use crate::video::{FrameStore, Waker, watch_track};
 /// The videos that arrive, one store for each person, shared with the window.
 type Videos = Arc<std::sync::Mutex<HashMap<String, Arc<FrameStore>>>>;
 
-const SPEAKING_LEVEL: f32 = 0.03;
+/// How loud the voice of someone else must arrive to light their ring. Their app sends silence
+/// while its gate is closed, so anything above the hiss of the codec is them speaking.
+const SPEAKING_LEVEL: f32 = 0.004;
 const SPEAKING_HOLD: Duration = Duration::from_millis(350);
+/// Our own ring follows the gate of the microphone, which already holds the ends of words.
+const OWN_SPEAKING_HOLD: Duration = Duration::from_millis(120);
 const RETRY_DELAY: Duration = Duration::from_secs(3);
 const DROP_RETRY_DELAY: Duration = Duration::from_secs(1);
 const DROP_GRACE: Duration = Duration::from_secs(2);
@@ -544,7 +548,7 @@ impl Actor {
             }
         });
 
-        let mut meter = tokio::time::interval(Duration::from_millis(100));
+        let mut meter = tokio::time::interval(Duration::from_millis(50));
         let mut stats = tokio::time::interval(STATS_INTERVAL);
         stats.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut mic_speaking = false;
@@ -558,8 +562,10 @@ impl Actor {
                 Some(problem) = problem_lines.recv() => self.emit(CallEvent::Problem(problem)),
                 _ = meter.tick() => {
                     let now = Instant::now();
-                    if level.get() > SPEAKING_LEVEL {
-                        mic_until = Some(now + SPEAKING_HOLD);
+                    // The capture writes a level only while the gate lets the voice out, so the
+                    // ring lights exactly when something is sent.
+                    if level.get() > 0.0 {
+                        mic_until = Some(now + OWN_SPEAKING_HOLD);
                     }
                     let speaking = mic_until.is_some_and(|until| now < until);
                     if speaking != mic_speaking {

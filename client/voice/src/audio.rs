@@ -27,6 +27,81 @@ pub struct DeviceChoice {
 
 static CHOICE: Mutex<DeviceChoice> = Mutex::new(DeviceChoice { input: None, output: None });
 
+/// The input sensitivity: with `auto`, the gate follows the noise of the room; otherwise it opens
+/// at `threshold`, in decibels below the loudest a microphone gives. One choice for every call
+/// and for the test of the settings, which shows the same gate the call uses.
+static SENSITIVITY_AUTO: AtomicBool = AtomicBool::new(true);
+static SENSITIVITY_DB: AtomicU32 = AtomicU32::new((-50.0f32).to_bits());
+
+/// The loudest and the quietest the sensitivity can be set to, in decibels.
+pub const SENSITIVITY_RANGE: std::ops::RangeInclusive<f32> = -80.0..=0.0;
+
+pub fn set_sensitivity(auto: bool, threshold_db: f32) {
+    SENSITIVITY_AUTO.store(auto, Ordering::Relaxed);
+    SENSITIVITY_DB.store(threshold_db.clamp(*SENSITIVITY_RANGE.start(), *SENSITIVITY_RANGE.end()).to_bits(), Ordering::Relaxed);
+}
+
+pub fn sensitivity() -> (bool, f32) {
+    (SENSITIVITY_AUTO.load(Ordering::Relaxed), f32::from_bits(SENSITIVITY_DB.load(Ordering::Relaxed)))
+}
+
+/// A loudness from 0 to 1 in decibels, at least the bottom of the range.
+pub fn decibels(level: f32) -> f32 {
+    (20.0 * level.max(1e-6).log10()).max(*SENSITIVITY_RANGE.start())
+}
+
+/// The gate of the microphone. Each piece of sound louder than the threshold opens it, and it
+/// stays open a moment after the last one, so the ends of words are not cut. What it lets through
+/// is what is sent, and the same answer lights the ring of the person, so the ring shows exactly
+/// when the voice goes out.
+pub struct Gate {
+    /// The noise of the room, as the quietest the microphone has been lately.
+    floor: f32,
+    /// How long it stays open from now, in milliseconds.
+    open_for: f32,
+    threshold: f32,
+}
+
+/// How long the gate stays open after the voice drops under the threshold.
+const GATE_HOLD_MS: f32 = 320.0;
+
+impl Default for Gate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Gate {
+    pub fn new() -> Self {
+        Self { floor: -60.0, open_for: 0.0, threshold: -50.0 }
+    }
+
+    /// Feeds `ms` of sound at `db`. True when that sound is sent.
+    pub fn feed(&mut self, db: f32, ms: f32) -> bool {
+        let (auto, manual) = sensitivity();
+        // The floor falls at once to a quieter moment and creeps up 1.5 dB a second, so it
+        // finds the noise of a fan or a street and leaves the voice above it.
+        if db < self.floor {
+            self.floor += (db - self.floor) * 0.25;
+        } else {
+            self.floor += 0.0015 * ms;
+        }
+        self.floor = self.floor.clamp(-90.0, -25.0);
+        self.threshold = if auto { (self.floor + 10.0).clamp(-68.0, -36.0) } else { manual };
+        if db >= self.threshold {
+            self.open_for = GATE_HOLD_MS;
+        } else {
+            self.open_for = (self.open_for - ms).max(0.0);
+        }
+        self.open_for > 0.0
+    }
+
+    /// Where the gate opens now, in decibels.
+    pub fn threshold(&self) -> f32 {
+        self.threshold
+    }
+}
+
 /// Sets the devices for the calls and tunes that start from now on.
 pub fn choose_devices(choice: DeviceChoice) {
     *CHOICE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = choice;
@@ -257,6 +332,7 @@ impl Level {
 /// the loudness of the last pieces times six, at most 1, as `startMicTest` showed it.
 pub struct MicTest {
     level: Arc<Level>,
+    meter: Arc<MeterState>,
     problem: Arc<Mutex<Option<String>>>,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -266,14 +342,16 @@ impl MicTest {
     /// Opens the microphone picked in the settings, or the default of Windows.
     pub fn start() -> Self {
         let level = Arc::new(Level::default());
+        let meter = Arc::new(MeterState::default());
         let problem = Arc::new(Mutex::new(None));
         let stop = Arc::new(AtomicBool::new(false));
         let (heard, failed, stopped) = (Arc::clone(&level), Arc::clone(&problem), Arc::clone(&stop));
+        let gated = Arc::clone(&meter);
         let thread = std::thread::Builder::new()
             .name("telinha-mic-test".into())
             .spawn(move || {
                 let host = cpal::default_host();
-                let stream = open_meter(&host, heard);
+                let stream = open_meter(&host, heard, gated);
                 if let Err(error) = &stream {
                     *failed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error.clone());
                 }
@@ -283,12 +361,22 @@ impl MicTest {
                 drop(stream);
             })
             .ok();
-        Self { level, problem, stop, thread }
+        Self { level, meter, problem, stop, thread }
     }
 
     /// From 0 to 1.
     pub fn level(&self) -> f32 {
         self.level.get()
+    }
+
+    /// How loud the microphone is, in decibels.
+    pub fn decibels(&self) -> f32 {
+        self.meter.decibels.get()
+    }
+
+    /// Whether what it hears now would be sent, and where the gate opens, in decibels.
+    pub fn gate(&self) -> (bool, f32) {
+        (self.meter.open.load(Ordering::Relaxed), self.meter.threshold.get())
     }
 
     /// Why the microphone did not open, when it did not.
@@ -307,15 +395,30 @@ impl Drop for MicTest {
     }
 }
 
+/// What the test of the settings measured last: the loudness in decibels and the gate.
+#[derive(Default)]
+struct MeterState {
+    decibels: Level,
+    open: AtomicBool,
+    threshold: Level,
+}
+
 /// A stream of the microphone that only measures it.
-fn open_meter(host: &cpal::Host, level: Arc<Level>) -> Result<cpal::Stream, String> {
+fn open_meter(host: &cpal::Host, level: Arc<Level>, meter: Arc<MeterState>) -> Result<cpal::Stream, String> {
     let device = input_device(host).ok_or("Nenhum microfone encontrado.")?;
     let supported = device.default_input_config().map_err(|_| "Não consegui abrir o microfone.".to_owned())?;
     let format = supported.sample_format();
     let config: cpal::StreamConfig = supported.into();
-    let measure = move |sum: f64, count: usize| {
+    let per_ms = config.sample_rate as f32 * f32::from(config.channels) / 1000.0;
+    let mut gate = Gate::new();
+    let mut measure = move |sum: f64, count: usize| {
         if count > 0 {
-            level.set(((sum / count as f64).sqrt() * 6.0).min(1.0) as f32);
+            let rms = (sum / count as f64).sqrt() as f32;
+            level.set((rms * 6.0).min(1.0));
+            let db = decibels(rms);
+            meter.decibels.set(db);
+            meter.open.store(gate.feed(db, count as f32 / per_ms), Ordering::Relaxed);
+            meter.threshold.set(gate.threshold());
         }
     };
     let failed = |error: cpal::Error| eprintln!("telinha: teste do microfone: {error}");
@@ -475,6 +578,8 @@ fn open_input(
     let mut mono = Vec::new();
     let mut resampled = Vec::new();
     let mut pending: Vec<i16> = Vec::with_capacity(FRAME * 4);
+    let mut gate = Gate::new();
+    let mut gain = 0.0f32;
     let mut take = move |frames: usize, read: &dyn Fn(usize) -> f32| {
         mono.clear();
         for frame in 0..frames {
@@ -491,9 +596,23 @@ fn open_input(
         pending.extend(samples.iter().map(|sample| to_i16(*sample)));
         while pending.len() >= FRAME {
             let mut frame: Vec<i16> = pending.drain(..FRAME).collect();
+            // The gate listens to the microphone as it arrives, the same sound the test of the
+            // settings measures, before the cleaning changes its level.
+            let open = gate.feed(decibels(level_of(&frame)), 10.0);
             processing.capture(&mut frame);
             if mic_on.load(Ordering::Relaxed) {
-                mic_level.set(level_of(&frame));
+                // Closed, the piece goes out as silence; the change fades over the 10 ms so it
+                // makes no click.
+                let target = if open { 1.0 } else { 0.0 };
+                if gain != target || target == 0.0 {
+                    let count = frame.len() as f32;
+                    for (index, sample) in frame.iter_mut().enumerate() {
+                        let step = gain + (target - gain) * (index as f32 + 1.0) / count;
+                        *sample = (f32::from(*sample) * step) as i16;
+                    }
+                    gain = target;
+                }
+                mic_level.set(if open { level_of(&frame).max(1e-4) } else { 0.0 });
             } else {
                 // A muted microphone still feeds the connection, with silence, so it stays alive.
                 frame.fill(0);
@@ -531,6 +650,26 @@ fn open_input(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_gate_lets_out_the_voice_holds_the_ends_of_words_and_follows_the_mark() {
+        set_sensitivity(true, -50.0);
+        let mut gate = Gate::new();
+        // A quiet room for a second: nothing goes out, and the floor finds the noise.
+        assert!((0..100).all(|_| !gate.feed(-70.0, 10.0)));
+        // A whisper well above the room opens it at once.
+        assert!(gate.feed(-52.0, 10.0));
+        // It stays open a moment after the voice stops, then closes.
+        assert!(gate.feed(-70.0, 300.0));
+        assert!(!gate.feed(-70.0, 30.0));
+        // Set by hand, only what passes the mark goes out.
+        set_sensitivity(false, -20.0);
+        assert!(!gate.feed(-30.0, 10.0));
+        assert!(gate.feed(-15.0, 10.0));
+        set_sensitivity(true, -50.0);
+        assert_eq!(decibels(1.0), 0.0);
+        assert_eq!(decibels(0.0), -80.0);
+    }
 
     #[test]
     fn showing_the_echo_canceller_what_plays_does_not_change_it() {
